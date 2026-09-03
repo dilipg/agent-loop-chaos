@@ -1,46 +1,150 @@
 """The chaos engine.
 
-Owns a fault plan, a seeded RNG and a trace recorder. Adapters turn their
-framework's hooks into `Crossing` objects and route them here; at each crossing the
-engine asks the plan whether anything fires, and if so applies the fault to a deep
-copy and records the diff.
+Owns a fault plan, a seeded RNG and a trace recorder. Adapters turn their framework's
+hooks into `Crossing` objects and route them here; at each crossing the engine asks
+the plan whether anything fires, applies what does to a copy, and records the diff.
 
-Everything in this module is a stub until M1 (`prompts/01-core-engine.md`).
+Two invariants run through this module:
+
+- **The observer never breaks the observed.** Any exception raised inside the
+  library — a fault's `apply`, a sink, the recorder — is caught, recorded as an
+  `internal_error` event with a traceback, and the original value passes through
+  untouched. An engine bug must never be reported as an agent failure.
+- **No clock in decision logic.** Wall-clock time appears only in timing fields and
+  in the cooperative deadline (D-08). Nothing about whether a fault fires, or how a
+  run is classified, depends on it.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
-from contextlib import AbstractContextManager
+import asyncio
+import contextlib
+import inspect
+import logging
+import time
+import traceback
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from .assertions import Expect
-from .context import Crossing, Layer, Limits
+from .adapters.vanilla import VanillaAdapter, build_wrapper, make_crossing
+from .assertions import Expect, HarnessFacts
+from .context import (
+    BaselineRef,
+    Counters,
+    Crossing,
+    FaultContext,
+    Layer,
+    Limits,
+    RunContext,
+    StateView,
+    ToolInfo,
+)
 from .enums import ExpectedBehavior
-from .report import ChaosResult
-from .targeting import Target, Trigger
+from .errors import ConfigError, LimitExceeded, SchemaError
+from .faults.base import (
+    TERMINAL_ACTIONS,
+    VALUE_ACTIONS,
+    Fault,
+    FaultOutcome,
+    FaultRecord,
+    MutationLog,
+    fault_key_for,
+)
+from .report import ChaosResult, empty_verdict
+from .seeding import canonical_json, sha256_of
+from .targeting import Target, Trigger, matches, should_fire
+from .trace import Event, JsonlSink, MemorySink, TraceLevel, TraceRecorder
+from .version import __version__
 
 __all__ = ["ChaosEngine"]
 
-_M1 = "arrives in M1 (prompts/01-core-engine.md)"
+log = logging.getLogger("agent_loop_chaos")
+
+# Precedence for `injected_faults[].skipped_reason`, most significant first (D-36).
+_SKIP_PRECEDENCE: tuple[str, ...] = (
+    "dry_run",
+    "target_never_called",
+    "no_checkpointer",
+    "max_fires_reached",
+    "cooldown",
+    "probability_not_met",
+    "call_index_mismatch",
+    "superseded",
+)
+
+_PRE_EVENT = {"tool": "tool_call_requested", "llm": "llm_request"}
+_POST_EVENT = {"tool": "tool_call_returned", "llm": "llm_response"}
+_ERROR_EVENT = {"tool": "tool_call_failed", "llm": "llm_response"}
+
+
+@dataclass
+class _ArmedFault:
+    """A fault as registered: identity, plan, and live fire history."""
+
+    fault: Fault
+    record: FaultRecord
+    target: Target
+    trigger: Trigger
+
+    @property
+    def fault_id(self) -> str:
+        """The ordinal label.
+
+        Returns:
+            ``f1``, ``f2``, …
+        """
+        return self.record.fault_id
+
+
+@dataclass
+class _RunState:
+    """Everything one in-flight run holds. Scoped to a contextvar."""
+
+    engine: ChaosEngine
+    ctx: RunContext
+    armed: list[_ArmedFault]
+    state_view: StateView | None
+    facts_values: set[str] = field(default_factory=set)
+    facts_messages: list[str] = field(default_factory=list)
+    faulted_seqs: set[int] = field(default_factory=set)
+    harness_invocation_seqs: set[int] = field(default_factory=set)
+    harness_raised_seqs: set[int] = field(default_factory=set)
+    keys_removed: set[str] = field(default_factory=set)
+    keys_retyped: set[str] = field(default_factory=set)
+    history: dict[str, list[Any]] = field(default_factory=dict)
+    pre_fault_history: dict[str, list[Any]] = field(default_factory=dict)
+    tool_records: list[dict[str, Any]] = field(default_factory=list)
+    llm_records: list[dict[str, Any]] = field(default_factory=list)
+    limit_hit: str | None = None
+    internal_errors: int = 0
+    intercept_only: frozenset[str] | None = None
+
+
+_ACTIVE: ContextVar[_RunState | None] = ContextVar("agent_loop_chaos_run", default=None)
+
+
+def _utc_now() -> str:
+    """Current UTC time, ISO-8601. A timing field only.
+
+    Returns:
+        An ISO-8601 timestamp with a ``Z`` suffix.
+    """
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 class ChaosEngine:
-    """Plans faults, instruments a target, runs it, and reports what broke.
-
-    The engine never raises into the agent under test on an internal error: a bug in
-    a fault, a probe or a judge is caught, recorded as an `internal_error` trace
-    event with a traceback, and the run continues. An engine bug must never be
-    reported as an agent failure.
-    """
+    """Plans faults, instruments a target, runs it, and reports what broke."""
 
     def __init__(
         self,
         *,
         seed: int = 1337,
         out_dir: str | Path = ".chaos",
-        trace_level: Literal["minimal", "standard", "verbose"] = "standard",
+        trace_level: TraceLevel = "standard",
         limits: Limits | None = None,
         judge: Any | str | None = None,
         redact_keys: Sequence[str] = (),
@@ -49,32 +153,51 @@ class ChaosEngine:
         write_bundle: bool = True,
         allow_remote_judge: bool = False,
         tags: Mapping[str, str] | None = None,
+        strict_trace: bool = False,
     ) -> None:
         """Initialise an engine.
 
         Args:
-            seed: Root seed. Every RNG stream derives from it, so the same seed
-                always tells the same story (D-02).
+            seed: Root seed. Every RNG stream derives from it (D-02).
             out_dir: Where run bundles are written. Sensitive by default (D-24).
             trace_level: How much payload detail to record.
             limits: Run guard rails. Defaults to `Limits()`.
-            judge: ``"rules"``, ``"slm"``, ``"ensemble"``, a `Judge` instance, or
-                `None` to auto-select.
-            redact_keys: Extra key patterns to redact on top of the default
-                deny-list.
-            strict_schema: Fail the run if the assembled report does not validate.
-            dry_run: Register faults but fire none, so the run must classify exactly
-                as an unfaulted baseline (D-12).
-            write_bundle: Write `report.json`, `trace.jsonl` and friends to disk.
-            allow_remote_judge: Required opt-in before a non-loopback judge
-                endpoint may receive code context (D-22).
+            judge: Judge selection. Unused until M6.
+            redact_keys: Extra key patterns on top of the default deny-list.
+            strict_schema: Raise `SchemaError` when the assembled report does not
+                validate, instead of recording `schema_errors[]` and continuing.
+            dry_run: Arm faults but fire none, so the run classifies exactly as an
+                unfaulted baseline (D-12).
+            write_bundle: Write `trace.jsonl`, `plan.json` and the report to disk.
+            allow_remote_judge: Opt-in required before a non-loopback judge endpoint
+                may receive code context (D-22). Unused until M6.
             tags: Free-form labels recorded in the report.
+            strict_trace: Validate every trace event against the schema as it is
+                written. Used throughout the test suite; off by default so a
+                production run is not slowed by it.
         """
-        raise NotImplementedError(f"ChaosEngine {_M1}")
+        self.seed = seed
+        self.out_dir = Path(out_dir)
+        self.trace_level: TraceLevel = trace_level
+        self.limits = limits or Limits()
+        self.judge = judge
+        self.redact_keys = tuple(redact_keys)
+        self.strict_schema = strict_schema
+        self.dry_run = dry_run
+        self.write_bundle = write_bundle
+        self.allow_remote_judge = allow_remote_judge
+        self.tags: dict[str, str] = dict(tags or {})
+        self.strict_trace = strict_trace
+
+        self._faults: list[_ArmedFault] = []
+        self._tools: dict[str, ToolInfo] = {}
+        self._fault_counter = 0
+
+    # ------------------------------------------------------------------ planning
 
     def register_fault(
         self,
-        fault: Any,
+        fault: Fault,
         *,
         target: Target | None = None,
         trigger: Trigger | None = None,
@@ -86,10 +209,8 @@ class ChaosEngine:
     ) -> str:
         """Add a fault to the plan and return its `fault_id`.
 
-        Validates eagerly: a target layer outside the fault's `accepts` set, an
-        impossible trigger such as ``on_call=0``, or a `probability` outside
-        ``[0, 1]`` raises `ConfigError` now rather than mid-run. The D-23
-        side-effect gate is enforced here too.
+        Validates eagerly, so a misconfiguration surfaces here rather than
+        mid-run where it could masquerade as an agent failure.
 
         Args:
             fault: The `Fault` instance to register.
@@ -105,32 +226,221 @@ class ChaosEngine:
             The `fault_id`, for cross-referencing in the report.
 
         Raises:
-            ConfigError: On any invalid combination.
-            NotImplementedError: Until M1.
+            ConfigError: On an unknown layer for the fault's `accepts` set, an
+                impossible trigger, a `probability` outside ``[0, 1]``, or both
+                `target` and a shorthand.
         """
-        raise NotImplementedError(f"ChaosEngine.register_fault {_M1}")
+        shorthands = {
+            "tool": target_tool,
+            "node": target_node,
+            "llm": target_llm,
+            "state_key": target_state_key,
+        }
+        given = {k: v for k, v in shorthands.items() if v is not None}
+        if target is not None and given:
+            raise ConfigError(
+                f"pass either `target` or a shorthand, not both; got target={target!r} "
+                f"and {given!r}"
+            )
+        if target is None:
+            target = Target(
+                tool=target_tool,
+                node=target_node,
+                llm=target_llm,
+                state_key=target_state_key,
+            )
 
-    def clear_faults(self) -> None:
-        """Drop every registered fault.
+        trigger = trigger or Trigger()
+        self._validate_trigger(trigger)
+        self._validate_accepts(fault, target)
+
+        self._fault_counter += 1
+        assigned = fault_id or f"f{self._fault_counter}"
+        if any(a.fault_id == assigned for a in self._faults):
+            raise ConfigError(f"duplicate fault_id {assigned!r}")
+
+        target_dict = self._target_to_dict(target)
+        trigger_dict = self._trigger_to_dict(trigger)
+        key = fault_key_for(fault.kind, fault.params(), target_dict, trigger_dict)
+
+        self._faults.append(
+            _ArmedFault(
+                fault=fault,
+                target=target,
+                trigger=trigger,
+                record=FaultRecord(
+                    fault_id=assigned,
+                    fault_key=key,
+                    type=fault.kind,
+                    params=fault.params(),
+                    target=target_dict,
+                    trigger=trigger_dict,
+                ),
+            )
+        )
+        return assigned
+
+    @staticmethod
+    def _validate_trigger(trigger: Trigger) -> None:
+        """Reject impossible triggers at registration.
+
+        Args:
+            trigger: The trigger to check.
 
         Raises:
-            NotImplementedError: Until M1.
+            ConfigError: With the offending value in the message.
         """
-        raise NotImplementedError(f"ChaosEngine.clear_faults {_M1}")
+        if not 0.0 <= trigger.probability <= 1.0:
+            raise ConfigError(f"Trigger.probability must be in [0, 1]; got {trigger.probability!r}")
+        if trigger.max_fires < 1:
+            raise ConfigError(f"Trigger.max_fires must be >= 1; got {trigger.max_fires!r}")
+        if trigger.cooldown_calls < 0:
+            raise ConfigError(
+                f"Trigger.cooldown_calls must be >= 0; got {trigger.cooldown_calls!r}"
+            )
+        indices = trigger.call_indices()
+        if indices is not None:
+            bad = [i for i in indices if i < 1]
+            if bad:
+                raise ConfigError(f"Trigger.on_call is 1-based; got {bad!r}")
+        for name in ("on_step", "after_step", "stop_after_step"):
+            value = getattr(trigger, name)
+            if value is not None and value < 0:
+                raise ConfigError(f"Trigger.{name} must be >= 0; got {value!r}")
 
-    def plan(self) -> dict[str, Any]:
+    @staticmethod
+    def _validate_accepts(fault: Fault, target: Target) -> None:
+        """Check the fault can handle the layer the target selects.
+
+        Args:
+            fault: The fault being registered.
+            target: Its target.
+
+        Raises:
+            ConfigError: When the fault accepts no phase on that layer.
+        """
+        if not fault.accepts:
+            raise ConfigError(f"{fault.kind} declares an empty `accepts` set")
+        layer = target.implied_layer()
+        if layer is None:
+            return
+        allowed = {pair[0] for pair in fault.accepts}
+        if layer not in allowed:
+            raise ConfigError(
+                f"{fault.kind} does not accept layer {layer!r}; it accepts {sorted(allowed)!r}"
+            )
+        if target.phase is not None and (layer, target.phase) not in fault.accepts:
+            pairs = sorted(f"{a}.{b}" for a, b in fault.accepts)
+            raise ConfigError(
+                f"{fault.kind} does not accept {layer}.{target.phase}; it accepts {pairs!r}"
+            )
+
+    @staticmethod
+    def _target_to_dict(target: Target) -> dict[str, Any]:
+        """Serialize a target for the plan hash and the report.
+
+        A `predicate` is recorded as a flag, not a reference: a function object is
+        neither hashable across processes nor serializable.
+
+        Args:
+            target: The target to serialize.
+
+        Returns:
+            A plain dict with unset fields omitted, so the plan hash is stable.
+        """
+        out = {
+            "layer": target.layer,
+            "tool": target.tool,
+            "node": target.node,
+            "llm": target.llm,
+            "state_key": target.state_key,
+            "phase": target.phase,
+        }
+        result = {k: v for k, v in out.items() if v is not None}
+        if target.predicate is not None:
+            # A name, not a reference: a function object is neither hashable across
+            # processes nor serializable, and the schema types this as string|null.
+            result["predicate"] = getattr(target.predicate, "__qualname__", "<callable>")
+        return result
+
+    @staticmethod
+    def _trigger_to_dict(trigger: Trigger) -> dict[str, Any]:
+        """Serialize a trigger for the plan hash and the report.
+
+        Args:
+            trigger: The trigger to serialize.
+
+        Returns:
+            A plain dict with unset fields omitted.
+        """
+        indices = trigger.call_indices()
+        out: dict[str, Any] = {
+            "on_call": list(indices) if indices is not None else None,
+            "on_step": trigger.on_step,
+            "after_step": trigger.after_step,
+            "probability": trigger.probability,
+            "max_fires": trigger.max_fires,
+            "cooldown_calls": trigger.cooldown_calls or None,
+            "stop_after_step": trigger.stop_after_step,
+        }
+        return {k: v for k, v in out.items() if v is not None}
+
+    def clear_faults(self) -> None:
+        """Drop every registered fault and reset the ordinal counter."""
+        self._faults.clear()
+        self._fault_counter = 0
+
+    def plan(
+        self,
+        *,
+        entrypoint: str | None = None,
+        adapter: str = "vanilla",
+        expected_behavior: ExpectedBehavior = "graceful_degradation",
+        must_not: Sequence[str] = (),
+    ) -> dict[str, Any]:
         """Return the canonical plan dict that `plan_hash` is computed over.
 
         Contains only seed, ordered fault specs, limits, adapter, entrypoint string,
-        `expected_behavior` and sorted `must_not` — nothing time- or path-dependent.
+        `expected_behavior` and sorted `must_not` — nothing time- or path-dependent,
+        so the hash proves plan identity and nothing else (`docs/04` §3).
+
+        Args:
+            entrypoint: A ``module:attr`` string, when known.
+            adapter: Which adapter will run.
+            expected_behavior: The scenario's expectation.
+            must_not: Probe codes that always fail the run.
 
         Returns:
-            The plan, ready for canonical JSON serialization.
-
-        Raises:
-            NotImplementedError: Until M1.
+            The plan, ready for `canonical_json`.
         """
-        raise NotImplementedError(f"ChaosEngine.plan {_M1}")
+        return {
+            "seed": self.seed,
+            "adapter": adapter,
+            "entrypoint": entrypoint,
+            "expected_behavior": expected_behavior,
+            "must_not": sorted(must_not),
+            "limits": {
+                "max_steps": self.limits.max_steps,
+                "max_tool_calls": self.limits.max_tool_calls,
+                "max_llm_calls": self.limits.max_llm_calls,
+                "timeout_s": self.limits.timeout_s,
+                "max_tokens": self.limits.max_tokens,
+                "max_injected_delay_ms": self.limits.max_injected_delay_ms,
+            },
+            "faults": [
+                {
+                    "fault_id": a.record.fault_id,
+                    "fault_key": a.record.fault_key,
+                    "type": a.record.type,
+                    "params": a.record.params,
+                    "target": a.record.target,
+                    "trigger": a.record.trigger,
+                }
+                for a in self._faults
+            ],
+        }
+
+    # ------------------------------------------------------- instrumentation API
 
     def tool(
         self,
@@ -145,19 +455,29 @@ class ChaosEngine:
         Args:
             fn: The tool, when used bare as ``@engine.tool``.
             name: Tool name. Defaults to the function's name.
-            side_effecting: Declare that this tool performs a real action.
-                Declaring `False` is a deliberate statement, and it is the opt-out
-                the D-23 gate checks (`SAFETY.md` §1).
+            side_effecting: Declare that this tool performs a real action. Declaring
+                `False` is a deliberate statement and is the opt-out the D-23 gate
+                checks (`SAFETY.md` §1).
             schema: JSON Schema for the tool's arguments.
 
         Returns:
-            The wrapped tool, or the decorator when used parameterized. Coroutine
-            functions yield coroutine wrappers.
-
-        Raises:
-            NotImplementedError: Until M1.
+            The wrapped tool, or the decorator when used parameterized. A coroutine
+            function yields a coroutine wrapper.
         """
-        raise NotImplementedError(f"ChaosEngine.tool {_M1}")
+
+        def decorate(target: Callable[..., Any]) -> Callable[..., Any]:
+            tool_name = name or target.__name__
+            self._tools[tool_name] = ToolInfo(
+                name=tool_name,
+                schema=schema,
+                side_effecting=side_effecting,
+                is_async=inspect.iscoroutinefunction(target),
+            )
+            return build_wrapper(self, target, layer="tool", name=tool_name)
+
+        if fn is None:
+            return decorate
+        return decorate(fn)
 
     def llm(
         self, fn: Callable[..., Any] | None = None, *, name: str = "default"
@@ -170,25 +490,34 @@ class ChaosEngine:
 
         Returns:
             The wrapped callable, or the decorator when used parameterized.
-
-        Raises:
-            NotImplementedError: Until M1.
         """
-        raise NotImplementedError(f"ChaosEngine.llm {_M1}")
+
+        def decorate(target: Callable[..., Any]) -> Callable[..., Any]:
+            return build_wrapper(self, target, layer="llm", name=name)
+
+        if fn is None:
+            return decorate
+        return decorate(fn)
 
     def wrap_tools(self, tools: Mapping[str, Callable[..., Any]]) -> dict[str, Callable[..., Any]]:
         """Wrap a name-to-callable mapping of tools.
+
+        This is the shape a hand-rolled dispatch loop uses (`docs/06` §2.2).
 
         Args:
             tools: The tools to wrap.
 
         Returns:
             A new mapping of wrapped tools. The input is not mutated.
-
-        Raises:
-            NotImplementedError: Until M1.
         """
-        raise NotImplementedError(f"ChaosEngine.wrap_tools {_M1}")
+        wrapped: dict[str, Callable[..., Any]] = {}
+        for tool_name, fn in tools.items():
+            self._tools.setdefault(
+                tool_name,
+                ToolInfo(name=tool_name, is_async=inspect.iscoroutinefunction(fn)),
+            )
+            wrapped[tool_name] = build_wrapper(self, fn, layer="tool", name=tool_name)
+        return wrapped
 
     def wrap_callable(
         self, fn: Callable[..., Any], *, layer: Layer, name: str
@@ -202,28 +531,65 @@ class ChaosEngine:
 
         Returns:
             The wrapped callable, preserving signature and coroutine-ness.
-
-        Raises:
-            NotImplementedError: Until M1.
         """
-        raise NotImplementedError(f"ChaosEngine.wrap_callable {_M1}")
+        if layer == "tool":
+            self._tools.setdefault(
+                name, ToolInfo(name=name, is_async=inspect.iscoroutinefunction(fn))
+            )
+        return build_wrapper(self, fn, layer=layer, name=name)
 
     def intercept_tools(self, *tool_names: str) -> Callable[..., Any]:
         """Decorate an agent entrypoint so registered tools are intercepted inside it.
 
-        Exists for compatibility with the original blueprint API, and is implemented
-        on top of `wrap_callable` plus a contextvar.
+        Exists for compatibility with the original blueprint API. Implemented on top
+        of `build_wrapper` plus a contextvar, which is what keeps a decorated tool
+        inert in production code when no run is active (`docs/06` §2.3).
 
         Args:
             *tool_names: Tools to intercept. Empty means every registered tool.
 
         Returns:
             A decorator for the agent entrypoint.
-
-        Raises:
-            NotImplementedError: Until M1.
         """
-        raise NotImplementedError(f"ChaosEngine.intercept_tools {_M1}")
+        allowed = frozenset(tool_names) if tool_names else None
+
+        def decorate(agent: Callable[..., Any]) -> Callable[..., Any]:
+            if inspect.iscoroutinefunction(agent):
+
+                async def async_scoped(*args: Any, **kwargs: Any) -> Any:
+                    with self._scoped_interception(allowed):
+                        return await agent(*args, **kwargs)
+
+                return functools_wraps(agent, async_scoped)
+
+            def scoped(*args: Any, **kwargs: Any) -> Any:
+                with self._scoped_interception(allowed):
+                    return agent(*args, **kwargs)
+
+            return functools_wraps(agent, scoped)
+
+        return decorate
+
+    @contextlib.contextmanager
+    def _scoped_interception(self, allowed: frozenset[str] | None) -> Iterator[None]:
+        """Restrict interception to `allowed` for the enclosing dynamic scope.
+
+        Args:
+            allowed: Tool names to intercept, or `None` for all.
+
+        Yields:
+            None.
+        """
+        state = _ACTIVE.get()
+        if state is None:
+            yield
+            return
+        previous = state.intercept_only
+        state.intercept_only = allowed
+        try:
+            yield
+        finally:
+            state.intercept_only = previous
 
     def instrument_object(
         self,
@@ -235,6 +601,9 @@ class ChaosEngine:
     ) -> Any:
         """Wrap named methods on an existing instance.
 
+        `name` is the bare method name for tools and LLM methods, and
+        ``f"{Class}.{method}"`` for nodes (`docs/06` §2.5).
+
         Args:
             obj: The instance to instrument.
             tools: Method names to treat as tools.
@@ -242,12 +611,55 @@ class ChaosEngine:
             nodes: Method names to treat as graph nodes.
 
         Returns:
-            The instrumented object.
+            The same instance, with the named methods replaced by wrappers.
 
         Raises:
-            NotImplementedError: Until M1.
+            ConfigError: When a named method does not exist.
         """
-        raise NotImplementedError(f"ChaosEngine.instrument_object {_M1}")
+        cls_name = type(obj).__name__
+        for names, layer in ((tools, "tool"), (llm_methods, "llm"), (nodes, "node")):
+            for method_name in names:
+                bound = getattr(obj, method_name, None)
+                if bound is None or not callable(bound):
+                    raise ConfigError(
+                        f"{cls_name} has no callable attribute {method_name!r} to instrument"
+                    )
+                crossing_name = f"{cls_name}.{method_name}" if layer == "node" else method_name
+                setattr(
+                    obj,
+                    method_name,
+                    self.wrap_callable(bound, layer=layer, name=crossing_name),  # type: ignore[arg-type]
+                )
+        return obj
+
+    # ------------------------------------------------------------ run-time state
+
+    def is_active(self) -> bool:
+        """Report whether a run of *this* engine is active in the current context.
+
+        This is the check every wrapper makes first, and it is why leaving
+        `@engine.tool` on production code is safe.
+
+        Returns:
+            True when a run is in flight here.
+        """
+        state = _ACTIVE.get()
+        return state is not None and state.engine is self
+
+    def _state(self) -> _RunState:
+        """Return the active run state.
+
+        Returns:
+            The current `_RunState`.
+
+        Raises:
+            RuntimeError: When no run of this engine is active. Callers gate on
+                `is_active` first, so this indicates an internal bug.
+        """
+        state = _ACTIVE.get()
+        if state is None or state.engine is not self:
+            raise RuntimeError("no active agent-loop-chaos run in this context")
+        return state
 
     def step(self) -> int:
         """Advance and return the step counter. Called by adapters.
@@ -256,56 +668,218 @@ class ChaosEngine:
         under vanilla. Tool calls and crossings do not increment it (D-05).
 
         Returns:
-            The new step number.
-
-        Raises:
-            NotImplementedError: Until M1.
+            The new step number, or 0 when no run is active.
         """
-        raise NotImplementedError(f"ChaosEngine.step {_M1}")
+        if not self.is_active():
+            return 0
+        state = self._state()
+        state.ctx.counters.steps += 1
+        self._emit(Event(kind="step_started", step=state.ctx.counters.steps, level="standard"))
+        self._check_limits()
+        return state.ctx.counters.steps
 
     def validated(self, value: Any = None, *, name: str | None = None) -> None:
         """Record positive evidence that the agent checked something.
 
         Optional, and absence is never read as misbehaviour — only as "no evidence
-        either way" (`docs/11` §3.2).
+        either way" (`docs/11` §3.2). Inert outside a run.
 
         Args:
             value: What was validated.
             name: A label for the check.
-
-        Raises:
-            NotImplementedError: Until M1.
         """
-        raise NotImplementedError(f"ChaosEngine.validated {_M1}")
+        if not self.is_active():
+            return
+        self._emit(
+            Event(
+                kind="log",
+                level="standard",
+                name=name or "validated",
+                layer="engine",
+                payload={"marker": "validated", "value": value},
+            )
+        )
 
     def note(self, message: str) -> None:
         """Record a free-text breadcrumb in the trace (`docs/11` §3.3).
 
+        Inert outside a run.
+
         Args:
             message: The note.
-
-        Raises:
-            NotImplementedError: Until M1.
         """
-        raise NotImplementedError(f"ChaosEngine.note {_M1}")
+        if not self.is_active():
+            return
+        self._emit(
+            Event(
+                kind="log",
+                level="standard",
+                layer="engine",
+                name="note",
+                payload={"marker": "note", "message": message},
+            )
+        )
 
-    def bind_context(self) -> AbstractContextManager[None]:
-        """Bind the run context inside a thread the agent spawned.
+    @contextlib.contextmanager
+    def bind_context(self) -> Iterator[None]:
+        """Bind the current run inside a thread the agent spawned.
 
         Faults do not fire in threads the agent starts unless that thread enters
         this context manager (D-42), because the run state lives in a
-        `contextvars.ContextVar`.
+        `contextvars.ContextVar` which a new thread does not inherit.
+
+        Yields:
+            None.
+        """
+        state = _ACTIVE.get()
+        token = _ACTIVE.set(state)
+        try:
+            yield
+        finally:
+            _ACTIVE.reset(token)
+
+    # -------------------------------------------------------------- the hot path
+
+    def _emit(self, event: Event) -> dict[str, Any] | None:
+        """Record an event, swallowing any recorder failure.
+
+        Args:
+            event: The event to record.
 
         Returns:
-            A context manager binding the current run.
+            The serialized event, or `None`.
+        """
+        state = _ACTIVE.get()
+        if state is None or state.engine is not self:
+            return None
+        try:
+            return state.ctx.trace.emit(event)
+        except AssertionError:
+            raise
+        except Exception:
+            log.exception("trace recorder failed")
+            return None
+
+    def _internal_error(self, where: str, exc: BaseException) -> None:
+        """Record a library bug as an event and keep going.
+
+        Args:
+            where: A short label for the failing call site.
+            exc: The exception that escaped.
+        """
+        state = _ACTIVE.get()
+        if state is not None:
+            state.internal_errors += 1
+        log.exception("internal error in %s", where)
+        self._emit(
+            Event(
+                kind="internal_error",
+                level="minimal",
+                layer="engine",
+                name=where,
+                payload={
+                    "error_type": type(exc).__name__,
+                    "message": str(exc)[:500],
+                    "traceback": "".join(traceback.format_exception(exc))[-4000:],
+                },
+            )
+        )
+
+    def _check_limits(self) -> None:
+        """Compare the run against its guard rails.
+
+        Called at every crossing and at every step, which is what makes the timeout
+        cooperative (D-08).
 
         Raises:
-            NotImplementedError: Until M1.
+            LimitExceeded: When any limit is breached. Derives from `BaseException`
+                so a broad ``except Exception`` in the agent cannot swallow it
+                (D-06).
         """
-        raise NotImplementedError(f"ChaosEngine.bind_context {_M1}")
+        state = self._state()
+        counters = state.ctx.counters
+        limits = state.ctx.limits
+        breach: str | None = None
+        if counters.steps > limits.max_steps:
+            breach = "max_steps"
+        elif counters.tool_calls > limits.max_tool_calls:
+            breach = "max_tool_calls"
+        elif counters.llm_calls > limits.max_llm_calls:
+            breach = "max_llm_calls"
+        elif state.ctx.deadline_mono is not None and time.perf_counter() > state.ctx.deadline_mono:
+            breach = "timeout_s"
+        if breach is None:
+            return
+        state.limit_hit = breach
+        self._emit(
+            Event(kind="limit_exceeded", level="minimal", layer="engine", payload={"limit": breach})
+        )
+        raise LimitExceeded(breach)
+
+    def _armed_for(self, crossing: Crossing) -> list[_ArmedFault]:
+        """Select the faults whose target matches this crossing.
+
+        Args:
+            crossing: The crossing under consideration.
+
+        Returns:
+            Matching faults in registration order.
+        """
+        state = self._state()
+        pair = (crossing.layer, crossing.phase)
+        out: list[_ArmedFault] = []
+        for armed in state.armed:
+            if pair not in armed.fault.accepts:
+                continue
+            try:
+                if matches(armed.target, crossing):
+                    out.append(armed)
+            except Exception as exc:
+                self._internal_error(f"target.match[{armed.fault_id}]", exc)
+        return out
+
+    @staticmethod
+    def _note_skip(record: FaultRecord, reason: str) -> None:
+        """Record the most significant skip reason seen so far (D-36).
+
+        Args:
+            record: The fault's record.
+            reason: The reason from `should_fire` or the engine.
+        """
+        if record.fire_count:
+            return
+        current = record.skipped_reason
+        order = {r: i for i, r in enumerate(_SKIP_PRECEDENCE)}
+        if current is None or order.get(reason, 99) < order.get(current, 99):
+            record.skipped_reason = reason
+
+    def _observed_value(self, crossing: Crossing) -> Any:
+        """The value a fault at this crossing operates on.
+
+        Args:
+            crossing: The crossing.
+
+        Returns:
+            The result for `post`, the normalized messages for an LLM `pre`, the
+            exception for `error`, otherwise the positional arguments.
+        """
+        if crossing.phase == "post":
+            return crossing.result
+        if crossing.phase == "error":
+            return crossing.exception
+        if crossing.layer == "llm" and crossing.messages is not None:
+            return crossing.messages
+        return crossing.args
 
     def cross(self, crossing: Crossing) -> Any:
         """Route one crossing through the plan.
+
+        Value-replacing actions **chain** in registration order — each fault
+        receives the previous one's output and records its own `MutationLog` — while
+        `raise`, `delay`, `invoke_target` and `resume_from_checkpoint` are
+        first-wins and mark the rest ``superseded``. That asymmetry is what makes a
+        multi-mutation preset exercise every mutation instead of only the first
+        (D-13).
 
         Args:
             crossing: The crossing to evaluate.
@@ -314,9 +888,694 @@ class ChaosEngine:
             The value execution should continue with — unchanged when nothing fires.
 
         Raises:
-            NotImplementedError: Until M1.
+            BaseException: Whatever a `raise`-action fault supplied, and
+                `LimitExceeded` from the limit check.
         """
-        raise NotImplementedError(f"ChaosEngine.cross {_M1}")
+        state = self._state()
+        self._check_limits()
+        value = self._observed_value(crossing)
+
+        if state.ctx.dry_run:
+            for armed in self._armed_for(crossing):
+                self._note_skip(armed.record, "dry_run")
+            return value
+
+        terminal: tuple[_ArmedFault, FaultOutcome] | None = None
+
+        for armed in self._armed_for(crossing):
+            if terminal is not None:
+                self._note_skip(armed.record, "superseded")
+                self._emit(
+                    Event(
+                        kind="fault_skipped",
+                        level="standard",
+                        layer=crossing.layer,
+                        phase=crossing.phase,
+                        name=crossing.name,
+                        fault_id=armed.fault_id,
+                        payload={"reason": "superseded"},
+                    )
+                )
+                continue
+
+            ctx = self._fault_context(armed)
+            try:
+                fired, reason = should_fire(armed.trigger, crossing, ctx, armed.fault_id)
+            except Exception as exc:
+                self._internal_error(f"should_fire[{armed.fault_id}]", exc)
+                continue
+
+            if not fired:
+                self._note_skip(armed.record, reason)
+                self._emit(
+                    Event(
+                        kind="fault_skipped",
+                        level="verbose",
+                        layer=crossing.layer,
+                        phase=crossing.phase,
+                        name=crossing.name,
+                        fault_id=armed.fault_id,
+                        payload={"reason": reason},
+                    )
+                )
+                continue
+
+            outcome = self._apply_fault(armed, crossing, ctx)
+            if outcome is None:
+                continue
+
+            counters = state.ctx.counters
+            counters.fires[armed.fault_id] = counters.fires.get(armed.fault_id, 0) + 1
+            counters.last_fire_call[armed.fault_id] = crossing.call_index
+            armed.record.fired = True
+            armed.record.fire_count += 1
+            armed.record.skipped_reason = None
+
+            event = self._emit(
+                Event(
+                    kind="fault_fired",
+                    level="minimal",
+                    layer=crossing.layer,
+                    phase=crossing.phase,
+                    name=crossing.name,
+                    step=crossing.step,
+                    call_index=crossing.call_index,
+                    span_id=crossing.span_id,
+                    fault_id=armed.fault_id,
+                    payload={
+                        "type": armed.record.type,
+                        "action": outcome.action,
+                        "note": outcome.note,
+                    },
+                    tags={"fault_key": armed.record.fault_key},
+                )
+            )
+            seq = int(event["seq"]) if event else 0
+            fire: dict[str, Any] = {
+                "seq": seq,
+                "step": crossing.step,
+                "layer": crossing.layer,
+                "phase": crossing.phase,
+                "name": crossing.name,
+                "call_index": crossing.call_index,
+                "action": outcome.action,
+                "note": outcome.note,
+            }
+            if outcome.mutation is not None:
+                fire["payload_before"] = outcome.mutation.payload_before
+                fire["payload_after"] = outcome.mutation.payload_after
+                fire["json_patch"] = outcome.mutation.json_patch
+                fire["unrepresentable"] = outcome.mutation.unrepresentable
+            if outcome.delay_ms:
+                fire["delay_ms"] = outcome.delay_ms
+            armed.record.fires.append(fire)
+
+            if outcome.mutation is not None:
+                self._record_mutation(armed, crossing, outcome.mutation, seq)
+
+            if outcome.action in VALUE_ACTIONS:
+                value = outcome.value
+                self._rebind(crossing, value)
+                state.faulted_seqs.add(seq)
+            elif outcome.action in TERMINAL_ACTIONS:
+                terminal = (armed, outcome)
+
+        if terminal is not None:
+            value = self._resolve_terminal(terminal[0], terminal[1], crossing, value)
+        return value
+
+    def _rebind(self, crossing: Crossing, value: Any) -> None:
+        """Feed a chained fault's output back into the crossing.
+
+        Without this, the second fault in a chain would see the original payload
+        rather than the first fault's output (D-13).
+
+        Args:
+            crossing: The crossing to update.
+            value: The new value.
+        """
+        if crossing.phase == "post":
+            crossing.result = value
+        elif crossing.layer == "llm" and crossing.messages is not None:
+            crossing.messages = value
+        elif isinstance(value, tuple):
+            crossing.args = value
+
+    def _resolve_terminal(
+        self,
+        armed: _ArmedFault,
+        outcome: FaultOutcome,
+        crossing: Crossing,
+        value: Any,
+    ) -> Any:
+        """Act on a first-wins terminal outcome.
+
+        Args:
+            armed: The fault that won.
+            outcome: Its outcome.
+            crossing: The crossing.
+            value: The value chained so far.
+
+        Returns:
+            The value to continue with, for a non-raising terminal.
+
+        Raises:
+            BaseException: The exception a `raise` action supplied.
+        """
+        state = self._state()
+        if outcome.action == "raise":
+            error = outcome.value
+            if not isinstance(error, BaseException):
+                error = RuntimeError(str(error) if error is not None else armed.record.type)
+            state.harness_raised_seqs.add(state.ctx.trace._seq)
+            raise error
+        if outcome.action == "delay":
+            delay_ms = min(outcome.delay_ms, state.ctx.limits.max_injected_delay_ms)
+            state.ctx.counters.injected_delay_ms += delay_ms
+            if delay_ms > 0:
+                time.sleep(delay_ms / 1000)
+            return value
+        # invoke_target and resume_from_checkpoint are performed by the adapter that
+        # knows how to await, and land in M2/M5 (D-10).
+        self._emit(
+            Event(
+                kind="fault_skipped",
+                level="standard",
+                layer=crossing.layer,
+                phase=crossing.phase,
+                name=crossing.name,
+                fault_id=armed.fault_id,
+                payload={"reason": "action_not_supported_by_adapter", "action": outcome.action},
+            )
+        )
+        return value
+
+    def _record_mutation(
+        self,
+        armed: _ArmedFault,
+        crossing: Crossing,
+        mutation: MutationLog,
+        seq: int,
+    ) -> None:
+        """Emit the `mutation_applied` event for one firing.
+
+        Args:
+            armed: The fault that fired.
+            crossing: The crossing.
+            mutation: What changed.
+            seq: The `fault_fired` sequence number, for cross-reference.
+        """
+        self._emit(
+            Event(
+                kind="mutation_applied",
+                level="standard",
+                layer=crossing.layer,
+                phase=crossing.phase,
+                name=crossing.name,
+                step=crossing.step,
+                call_index=crossing.call_index,
+                span_id=crossing.span_id,
+                fault_id=armed.fault_id,
+                payload={"fired_seq": seq, **mutation.to_dict()},
+            )
+        )
+
+    def _apply_fault(
+        self, armed: _ArmedFault, crossing: Crossing, ctx: FaultContext
+    ) -> FaultOutcome | None:
+        """Call a fault's `apply`, containing any exception it raises.
+
+        A fault that raises is a library bug, and a library bug must never reach the
+        agent under test.
+
+        Args:
+            armed: The fault to apply.
+            crossing: The crossing.
+            ctx: The fault context.
+
+        Returns:
+            The outcome, or `None` when `apply` raised — in which case an
+            `internal_error` was recorded and the original value passes through.
+        """
+        try:
+            # Typed as `object`: a third-party fault can return anything, and the
+            # isinstance check below is the guard that keeps that from breaking a run.
+            outcome: object = armed.fault.apply(crossing, ctx)
+        except Exception as exc:
+            self._internal_error(f"{armed.record.type}.apply[{armed.fault_id}]", exc)
+            return None
+        if not isinstance(outcome, FaultOutcome):
+            self._internal_error(
+                f"{armed.record.type}.apply[{armed.fault_id}]",
+                TypeError(f"apply returned {type(outcome).__name__}, expected FaultOutcome"),
+            )
+            return None
+        return outcome
+
+    def _fault_context(self, armed: _ArmedFault) -> FaultContext:
+        """Build the context one fault sees.
+
+        Args:
+            armed: The fault.
+
+        Returns:
+            A `FaultContext` per D-01, amended by D-53.
+        """
+        state = self._state()
+        return FaultContext(
+            fault_id=armed.fault_id,
+            fault_key=armed.record.fault_key,
+            run=state.ctx,
+            limits=state.ctx.limits,
+            counters=state.ctx.counters,
+            canary=state.ctx.canary,
+            history=state.history,
+            pre_fault_history=state.pre_fault_history,
+            tool_registry=dict(self._tools),
+            baseline=state.ctx.baseline,
+            state_view=state.state_view,
+            objective=None,
+        )
+
+    # ---------------------------------------------------------- crossing routing
+
+    def _should_intercept(self, layer: str, name: str) -> bool:
+        """Honour an `intercept_tools` restriction.
+
+        Args:
+            layer: The crossing layer.
+            name: The crossing name.
+
+        Returns:
+            True when this crossing should be routed through the plan.
+        """
+        state = _ACTIVE.get()
+        if state is None:
+            return False
+        if layer != "tool" or state.intercept_only is None:
+            return True
+        return name in state.intercept_only
+
+    def _open_crossing(self, layer: str, name: str) -> tuple[int, str]:
+        """Count the call and allocate a span.
+
+        A tool call increments `tool_calls`; an LLM call increments both `llm_calls`
+        and `steps`, because one LLM call is one agent iteration under vanilla
+        (D-05).
+
+        Args:
+            layer: The crossing layer.
+            name: The crossing name.
+
+        Returns:
+            ``(call_index, span_id)``.
+        """
+        state = self._state()
+        counters = state.ctx.counters
+        call_index = counters.next_call_index(f"{layer}:{name}")
+        if layer == "tool":
+            counters.tool_calls += 1
+        elif layer == "llm":
+            counters.llm_calls += 1
+            counters.steps += 1
+        return call_index, state.ctx.next_span_id()
+
+    def _replaced_args(
+        self,
+        crossing: Crossing,
+        routed: Any,
+        pre_value: Any,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> tuple[tuple[Any, ...], dict[str, Any]]:
+        """Fold a `pre`-phase result back into the call arguments.
+
+        `cross` returns the *same object* it was given when nothing fired, so
+        identity is an exact and cheap test for "did a fault change this". Guessing
+        by equality instead would rewrite an untouched call, which is how a
+        normalized message list ends up being passed to a callable that wanted a
+        string.
+
+        Args:
+            crossing: The pre crossing.
+            routed: What `cross` returned.
+            pre_value: The value handed to `cross`.
+            args: The original positional arguments.
+            kwargs: The original keyword arguments.
+
+        Returns:
+            The arguments to invoke the real callable with, unchanged when no fault
+            replaced anything.
+        """
+        if routed is pre_value:
+            return args, kwargs
+        if crossing.layer == "llm":
+            payload = _denormalize(args[0] if args else None, routed)
+            return ((payload, *args[1:]) if args else (payload,)), kwargs
+        if isinstance(routed, tuple):
+            return routed, kwargs
+        return args, kwargs
+
+    def route_sync(
+        self,
+        fn: Callable[..., Any],
+        *,
+        layer: str,
+        name: str,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> Any:
+        """Route a synchronous call through pre, real call, and post or error.
+
+        Args:
+            fn: The real callable.
+            layer: The crossing layer.
+            name: The crossing name.
+            args: Positional arguments.
+            kwargs: Keyword arguments.
+
+        Returns:
+            The value the agent should see.
+
+        Raises:
+            BaseException: Whatever the real callable or a `raise` fault produced.
+        """
+        if not self._should_intercept(layer, name):
+            return fn(*args, **kwargs)
+        pre = self._pre_phase(layer, name, args, kwargs)
+        call_args, call_kwargs, crossing = pre
+        started = time.perf_counter()
+        try:
+            result = fn(*call_args, **call_kwargs)
+        except LimitExceeded:
+            raise
+        except BaseException as exc:
+            return self._error_phase(crossing, exc, started)
+        return self._post_phase(crossing, result, started)
+
+    async def route_async(
+        self,
+        fn: Callable[..., Any],
+        *,
+        layer: str,
+        name: str,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> Any:
+        """Async twin of `route_sync`.
+
+        Args:
+            fn: The real coroutine function.
+            layer: The crossing layer.
+            name: The crossing name.
+            args: Positional arguments.
+            kwargs: Keyword arguments.
+
+        Returns:
+            The value the agent should see.
+
+        Raises:
+            BaseException: Whatever the real callable or a `raise` fault produced.
+        """
+        if not self._should_intercept(layer, name):
+            return await fn(*args, **kwargs)
+        call_args, call_kwargs, crossing = self._pre_phase(layer, name, args, kwargs)
+        started = time.perf_counter()
+        try:
+            result = await fn(*call_args, **call_kwargs)
+        except LimitExceeded:
+            raise
+        except BaseException as exc:
+            return self._error_phase(crossing, exc, started)
+        return self._post_phase(crossing, result, started)
+
+    def _pre_phase(
+        self, layer: str, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> tuple[tuple[Any, ...], dict[str, Any], Crossing]:
+        """Emit the pre event and route the pre crossing.
+
+        Args:
+            layer: The crossing layer.
+            name: The crossing name.
+            args: Positional arguments.
+            kwargs: Keyword arguments.
+
+        Returns:
+            ``(call_args, call_kwargs, crossing)``.
+        """
+        state = self._state()
+        call_index, span_id = self._open_crossing(layer, name)
+        crossing = make_crossing(
+            state.ctx,
+            layer=layer,
+            phase="pre",
+            name=name,
+            args=args,
+            kwargs=kwargs,
+            call_index=call_index,
+            span_id=span_id,
+            state=state.state_view.raw if state.state_view else None,
+        )
+        payload: dict[str, Any] = {"args": list(args), "kwargs": kwargs}
+        if layer == "llm":
+            payload = {
+                "messages": crossing.messages,
+                "messages_unavailable": crossing.messages_unavailable,
+            }
+        self._emit(
+            Event(
+                kind=_PRE_EVENT.get(layer, "log"),  # type: ignore[arg-type]
+                level="standard",
+                layer=layer,
+                phase="pre",
+                name=name,
+                step=crossing.step,
+                call_index=call_index,
+                span_id=span_id,
+                payload=payload,
+            )
+        )
+        pre_value = self._observed_value(crossing)
+        routed = self.cross(crossing)
+        call_args, call_kwargs = self._replaced_args(crossing, routed, pre_value, args, kwargs)
+        return call_args, call_kwargs, crossing
+
+    def _post_phase(self, crossing: Crossing, result: Any, started: float) -> Any:
+        """Emit the post event and route the post crossing.
+
+        Args:
+            crossing: The pre crossing, reused with `phase="post"`.
+            result: What the real callable returned.
+            started: `perf_counter` at call start, for `duration_ms`.
+
+        Returns:
+            The possibly-faulted result.
+        """
+        state = self._state()
+        state.pre_fault_history.setdefault(crossing.name, []).append(result)
+        crossing.phase = "post"
+        crossing.result = result
+        duration = (time.perf_counter() - started) * 1000
+
+        self._emit(
+            Event(
+                kind=_POST_EVENT.get(crossing.layer, "log"),  # type: ignore[arg-type]
+                level="standard",
+                layer=crossing.layer,
+                phase="post",
+                name=crossing.name,
+                step=crossing.step,
+                call_index=crossing.call_index,
+                span_id=crossing.span_id,
+                duration_ms=round(duration, 3),
+                payload={"result": result},
+            )
+        )
+        final = self.cross(crossing)
+        # Recorded results are post-fault: what the agent actually saw (D-18).
+        state.history.setdefault(crossing.name, []).append(final)
+        self._record_call(state, crossing, ok=True, duration_ms=duration, result=final, error=None)
+        return final
+
+    def _record_call(
+        self,
+        state: _RunState,
+        crossing: Crossing,
+        *,
+        ok: bool,
+        duration_ms: float,
+        result: Any,
+        error: str | None,
+    ) -> None:
+        """Append a `tool_calls[]` or `llm_exchanges[]` entry.
+
+        The two arrays have different required shapes in the schema, so they are
+        built separately rather than sharing one dict.
+
+        Args:
+            state: The run state.
+            crossing: The crossing being recorded.
+            ok: Whether the call succeeded.
+            duration_ms: How long it took. A timing field only.
+            result: The post-fault result the agent saw (D-18).
+            error: The exception class name, when it failed.
+        """
+        faulted = bool(state.ctx.counters.fires) and any(
+            fire.get("name") == crossing.name and fire.get("call_index") == crossing.call_index
+            for armed in state.armed
+            for fire in armed.record.fires
+        )
+        if crossing.layer == "tool":
+            state.tool_records.append(
+                {
+                    "step": crossing.step,
+                    "tool": crossing.name,
+                    "call_index": crossing.call_index,
+                    "args": list(crossing.args),
+                    "kwargs": dict(crossing.kwargs),
+                    "result": result,
+                    "ok": ok,
+                    "error": error,
+                    "duration_ms": int(duration_ms),
+                    "faulted": faulted,
+                }
+            )
+            return
+        if crossing.layer == "llm":
+            messages = crossing.messages or []
+            state.llm_records.append(
+                {
+                    "step": crossing.step,
+                    "llm": crossing.name,
+                    "exact_prompt": _render_prompt(messages),
+                    "messages": messages,
+                    "raw_response": None if result is None else str(result)[:8000],
+                    "finish_reason": None if ok else "error",
+                    "faulted": faulted,
+                }
+            )
+
+    def _error_phase(self, crossing: Crossing, exc: BaseException, started: float) -> Any:
+        """Emit the error event and route the error crossing.
+
+        Args:
+            crossing: The pre crossing, reused with `phase="error"`.
+            exc: The exception the real callable raised.
+            started: `perf_counter` at call start.
+
+        Returns:
+            A substitute value, when a fault supplied one.
+
+        Raises:
+            BaseException: The original exception, when no fault handled it.
+        """
+        state = self._state()
+        crossing.phase = "error"
+        crossing.exception = exc
+        self._emit(
+            Event(
+                kind=_ERROR_EVENT.get(crossing.layer, "log"),  # type: ignore[arg-type]
+                level="standard",
+                layer=crossing.layer,
+                phase="error",
+                name=crossing.name,
+                step=crossing.step,
+                call_index=crossing.call_index,
+                span_id=crossing.span_id,
+                duration_ms=round((time.perf_counter() - started) * 1000, 3),
+                payload={"error_type": type(exc).__name__, "message": str(exc)[:500]},
+            )
+        )
+        self._record_call(
+            state,
+            crossing,
+            ok=False,
+            duration_ms=(time.perf_counter() - started) * 1000,
+            result=None,
+            error=type(exc).__name__,
+        )
+        substitute = self.cross(crossing)
+        if substitute is crossing.exception or substitute is exc:
+            raise exc
+        return substitute
+
+    # -------------------------------------------------------------------- running
+
+    def _new_run(
+        self,
+        *,
+        scenario_id: str | None,
+        attempt: int,
+        seed: int,
+        plan_hash: str,
+        dry_run: bool,
+        initial_state: Mapping[str, Any] | None,
+        baseline: ChaosResult | None,
+    ) -> tuple[_RunState, Path]:
+        """Create the run context, run directory and trace.
+
+        The directory is created and the sink flushes per event, so a reader can
+        follow the run live (`docs/01` §5 step 2).
+
+        Args:
+            scenario_id: The scenario id, used in the run path.
+            attempt: Which attempt this is (D-04).
+            seed: The effective seed for this run.
+            plan_hash: The frozen plan's hash.
+            dry_run: Whether faults are armed but never applied.
+            initial_state: The caller's starting state.
+            baseline: A prior unfaulted result.
+
+        Returns:
+            ``(state, run_dir)``.
+        """
+        run_id = (
+            "run-"
+            + sha256_of(f"{seed}|{scenario_id}|{plan_hash}|{attempt}").removeprefix("sha256:")[:8]
+        )
+        run_dir = self.out_dir / (scenario_id or "run") / run_id
+        sinks: list[Any] = [MemorySink()]
+        if self.write_bundle:
+            run_dir.mkdir(parents=True, exist_ok=True)
+            sinks.append(JsonlSink(run_dir / "trace.jsonl"))
+
+        canary = f"ALC-CANARY-{run_id}"
+        trace = TraceRecorder(
+            run_id,
+            level=self.trace_level,
+            sinks=sinks,
+            run_dir=run_dir if self.write_bundle else None,
+            redact_keys=self.redact_keys,
+            canary=canary,
+            strict=self.strict_trace,
+        )
+        baseline_ref = (
+            BaselineRef(run_id=baseline.run_id, plan_hash=baseline.plan_hash)
+            if baseline is not None
+            else None
+        )
+        ctx = RunContext(
+            run_id=run_id,
+            seed=seed,
+            started_at=_utc_now(),
+            limits=self.limits,
+            trace=trace,
+            scenario_id=scenario_id,
+            counters=Counters(),
+            attempt=attempt,
+            dry_run=dry_run,
+            canary=canary,
+            baseline=baseline_ref,
+            tags=dict(self.tags),
+            deadline_mono=time.perf_counter() + self.limits.timeout_s,
+        )
+        state = _RunState(
+            engine=self,
+            ctx=ctx,
+            armed=list(self._faults),
+            state_view=StateView(initial_state) if initial_state is not None else None,
+        )
+        return state, run_dir
 
     def run(
         self,
@@ -339,15 +1598,15 @@ class ChaosEngine:
         """Run an agent under the fault plan.
 
         Args:
-            target: An agent callable, or a compiled LangGraph app.
-            inputs: Payload passed to the agent.
-            initial_state: Starting state, for stateful agents.
+            target: An agent callable, or a compiled LangGraph app (M5).
+            inputs: Payload passed to the agent, resolved per D-19.
+            initial_state: Starting state, tracked by the engine and exposed to state
+                faults through `state_view`.
             scenario_id: Identifier recorded in the report and used in the run path.
             expected_behavior: What good behaviour would look like here.
-            must_not: Probe codes that always fail the run.
-            expect: Declarative assertions (`docs/11` §4).
-            expected_errors: Exception class names that count as an explicit error
-                rather than a crash.
+            must_not: Probe codes that always fail the run. Evaluated in M4.
+            expect: Declarative assertions (`docs/11` §4). Evaluated in M4.
+            expected_errors: Exception names that count as an explicit error.
             allow_side_effects: Tools the D-23 gate may target.
             dry_run: Override the engine's `dry_run` for this run.
             attempt: Part of `run_id`; threaded by `RefinementLoop` as the round
@@ -360,9 +1619,23 @@ class ChaosEngine:
             The assembled `ChaosResult`.
 
         Raises:
-            NotImplementedError: Until M1.
+            ConfigError: On a signature mismatch, or an unsupported adapter.
+            SchemaError: When `strict_schema` and the report does not validate.
         """
-        raise NotImplementedError(f"ChaosEngine.run {_M1}")
+        return self._execute(
+            target,
+            inputs=inputs,
+            initial_state=initial_state,
+            scenario_id=scenario_id,
+            expected_behavior=expected_behavior,
+            must_not=must_not,
+            dry_run=dry_run,
+            attempt=attempt,
+            adapter=adapter,
+            baseline=baseline,
+            seed=seed,
+            is_async=False,
+        )
 
     async def arun(
         self,
@@ -385,15 +1658,41 @@ class ChaosEngine:
         """Async twin of `run`, with the same signature.
 
         Unlike the sync path, this wraps the agent in `asyncio.wait_for`, so a
-        timeout genuinely cancels (D-08).
+        timeout genuinely cancels rather than being noticed at the next crossing
+        (D-08).
+
+        Args:
+            target: An agent coroutine function, or a compiled graph.
+            inputs: Payload passed to the agent.
+            initial_state: Starting state.
+            scenario_id: Identifier recorded in the report.
+            expected_behavior: What good behaviour would look like here.
+            must_not: Probe codes that always fail the run.
+            expect: Declarative assertions.
+            expected_errors: Exception names that count as an explicit error.
+            allow_side_effects: Tools the D-23 gate may target.
+            dry_run: Override the engine's `dry_run` for this run.
+            attempt: Part of `run_id`.
+            adapter: Force an adapter, or sniff it.
+            baseline: A prior unfaulted result.
+            seed: Override the engine seed.
 
         Returns:
             The assembled `ChaosResult`.
-
-        Raises:
-            NotImplementedError: Until M1.
         """
-        raise NotImplementedError(f"ChaosEngine.arun {_M1}")
+        return await self._aexecute(
+            target,
+            inputs=inputs,
+            initial_state=initial_state,
+            scenario_id=scenario_id,
+            expected_behavior=expected_behavior,
+            must_not=must_not,
+            dry_run=dry_run,
+            attempt=attempt,
+            adapter=adapter,
+            baseline=baseline,
+            seed=seed,
+        )
 
     def run_with_state(
         self,
@@ -413,17 +1712,11 @@ class ChaosEngine:
 
         Returns:
             The assembled `ChaosResult`.
-
-        Raises:
-            NotImplementedError: Until M1.
         """
-        raise NotImplementedError(f"ChaosEngine.run_with_state {_M1}")
+        return self.run(target, inputs=query, initial_state=initial_state, **kw)
 
     def baseline(self, target: Callable[..., Any] | Any, **kw: Any) -> ChaosResult:
         """Run with the plan disabled, for comparison.
-
-        Equivalent to `run` with ``dry_run=True`` and
-        ``expected_behavior="ignore_and_continue"``.
 
         Args:
             target: The agent callable or graph.
@@ -431,29 +1724,587 @@ class ChaosEngine:
 
         Returns:
             The unfaulted `ChaosResult`.
-
-        Raises:
-            NotImplementedError: Until M1.
         """
-        raise NotImplementedError(f"ChaosEngine.baseline {_M1}")
+        kw.setdefault("expected_behavior", "ignore_and_continue")
+        return self.run(target, dry_run=True, **kw)
 
     def replay(
         self, run_dir: str | Path, *, target: Callable[..., Any] | Any | None = None
     ) -> ChaosResult:
         """Rebuild the plan and seed from `plan.json` and re-run.
 
-        Refuses rather than guessing when it cannot verify the plan it loaded
-        (D-31).
-
         Args:
             run_dir: A previous run directory.
-            target: The agent to re-run, when it cannot be resolved from
-                `plan.json`'s entrypoint.
+            target: The agent to re-run.
 
         Returns:
             The new `ChaosResult`, with `attempt` incremented.
 
         Raises:
-            NotImplementedError: Until M1.
+            NotImplementedError: Until M7, which also adds the plan-hash tamper
+                check that lets `replay` refuse rather than guess (D-31).
         """
-        raise NotImplementedError(f"ChaosEngine.replay {_M1}")
+        raise NotImplementedError(
+            "ChaosEngine.replay arrives in M7 (prompts/07-refinement-loop.md)"
+        )
+
+    def _prepare(
+        self,
+        *,
+        scenario_id: str | None,
+        expected_behavior: ExpectedBehavior,
+        must_not: Sequence[str],
+        adapter: str,
+        dry_run: bool | None,
+        attempt: int,
+        seed: int | None,
+        initial_state: Mapping[str, Any] | None,
+        baseline: ChaosResult | None,
+        entrypoint: str | None,
+    ) -> tuple[_RunState, Path, dict[str, Any], str]:
+        """Freeze the plan and open the run (lifecycle steps 1-2).
+
+        Args:
+            scenario_id: The scenario id.
+            expected_behavior: The scenario's expectation.
+            must_not: Probe codes that always fail.
+            adapter: Which adapter will run.
+            dry_run: Per-run override.
+            attempt: Which attempt this is.
+            seed: Per-run seed override.
+            initial_state: The caller's state.
+            baseline: A prior unfaulted result.
+            entrypoint: A ``module:attr`` string, when known.
+
+        Returns:
+            ``(state, run_dir, plan, plan_hash)``.
+        """
+        plan = self.plan(
+            entrypoint=entrypoint,
+            adapter=adapter,
+            expected_behavior=expected_behavior,
+            must_not=must_not,
+        )
+        plan_hash = sha256_of(canonical_json(plan))
+        state, run_dir = self._new_run(
+            scenario_id=scenario_id,
+            attempt=attempt,
+            seed=self.seed if seed is None else seed,
+            plan_hash=plan_hash,
+            dry_run=self.dry_run if dry_run is None else dry_run,
+            initial_state=initial_state,
+            baseline=baseline,
+        )
+        if self.write_bundle:
+            (run_dir / "plan.json").write_text(
+                canonical_json({**plan, "plan_hash": plan_hash, "attempt": attempt}),
+                encoding="utf-8",
+            )
+        return state, run_dir, plan, plan_hash
+
+    def _open(self, state: _RunState, plan_hash: str) -> None:
+        """Emit `run_started` and arm every fault.
+
+        Args:
+            state: The run state.
+            plan_hash: The frozen plan's hash.
+        """
+        self._emit(
+            Event(
+                kind="run_started",
+                level="minimal",
+                layer="engine",
+                payload={
+                    "plan_hash": plan_hash,
+                    "seed": state.ctx.seed,
+                    "attempt": state.ctx.attempt,
+                    "dry_run": state.ctx.dry_run,
+                    "library_version": __version__,
+                },
+            )
+        )
+        for armed in state.armed:
+            self._emit(
+                Event(
+                    kind="fault_armed",
+                    level="minimal",
+                    fault_id=armed.fault_id,
+                    payload={
+                        "type": armed.record.type,
+                        "params": armed.record.params,
+                        "target": armed.record.target,
+                        "trigger": armed.record.trigger,
+                    },
+                    tags={"fault_key": armed.record.fault_key},
+                )
+            )
+            if state.ctx.dry_run:
+                self._note_skip(armed.record, "dry_run")
+
+    def _resolve_adapter(self, target: Any, requested: str) -> VanillaAdapter:
+        """Choose an adapter.
+
+        Args:
+            target: The agent or graph.
+            requested: ``"auto"``, ``"vanilla"`` or ``"langgraph"``.
+
+        Returns:
+            The adapter instance.
+
+        Raises:
+            ConfigError: When LangGraph is requested, which lands in M5.
+        """
+        if requested == "langgraph" or (
+            requested == "auto" and hasattr(target, "get_graph") and not callable(target)
+        ):
+            raise ConfigError(
+                "the LangGraph adapter arrives in M5 (prompts/05-langgraph-adapter.md); "
+                "pass a plain callable, or adapter='vanilla'"
+            )
+        return VanillaAdapter()
+
+    def _execute(
+        self,
+        target: Any,
+        *,
+        inputs: Any,
+        initial_state: Mapping[str, Any] | None,
+        scenario_id: str | None,
+        expected_behavior: ExpectedBehavior,
+        must_not: Sequence[str],
+        dry_run: bool | None,
+        attempt: int,
+        adapter: str,
+        baseline: ChaosResult | None,
+        seed: int | None,
+        is_async: bool,
+    ) -> ChaosResult:
+        """Lifecycle steps 1-7 and 14, synchronously.
+
+        Args:
+            target: The agent callable.
+            inputs: The payload.
+            initial_state: The caller's state.
+            scenario_id: The scenario id.
+            expected_behavior: The scenario's expectation.
+            must_not: Probe codes that always fail.
+            dry_run: Per-run override.
+            attempt: Which attempt this is.
+            adapter: Which adapter to use.
+            baseline: A prior unfaulted result.
+            seed: Per-run seed override.
+            is_async: Unused; the async path is `_aexecute`.
+
+        Returns:
+            The assembled `ChaosResult`.
+        """
+        resolved = self._resolve_adapter(target, adapter)
+        entrypoint = getattr(target, "__qualname__", None)
+        state, run_dir, _plan, plan_hash = self._prepare(
+            scenario_id=scenario_id,
+            expected_behavior=expected_behavior,
+            must_not=must_not,
+            adapter=resolved.name,
+            dry_run=dry_run,
+            attempt=attempt,
+            seed=seed,
+            initial_state=initial_state,
+            baseline=baseline,
+            entrypoint=entrypoint,
+        )
+        token = _ACTIVE.set(state)
+        started = time.perf_counter()
+        output: Any = None
+        error: dict[str, Any] | None = None
+        try:
+            self._open(state, plan_hash)
+            instrumented = resolved.instrument(target, self, state.ctx)
+            from .adapters.vanilla import resolve_invocation
+
+            args, kwargs = resolve_invocation(instrumented, inputs, initial_state)
+            try:
+                output = instrumented(*args, **kwargs)
+            except LimitExceeded as limit:
+                state.limit_hit = limit.limit
+            except Exception as exc:
+                error = self._error_info(exc)
+        finally:
+            wall_ms = int((time.perf_counter() - started) * 1000)
+            result = self._finish(
+                state,
+                run_dir,
+                plan_hash,
+                resolved,
+                entrypoint,
+                output,
+                error,
+                wall_ms,
+                expected_behavior,
+            )
+            _ACTIVE.reset(token)
+        return result
+
+    async def _aexecute(
+        self,
+        target: Any,
+        *,
+        inputs: Any,
+        initial_state: Mapping[str, Any] | None,
+        scenario_id: str | None,
+        expected_behavior: ExpectedBehavior,
+        must_not: Sequence[str],
+        dry_run: bool | None,
+        attempt: int,
+        adapter: str,
+        baseline: ChaosResult | None,
+        seed: int | None,
+    ) -> ChaosResult:
+        """Lifecycle steps 1-7 and 14, asynchronously.
+
+        Args:
+            target: The agent coroutine function.
+            inputs: The payload.
+            initial_state: The caller's state.
+            scenario_id: The scenario id.
+            expected_behavior: The scenario's expectation.
+            must_not: Probe codes that always fail.
+            dry_run: Per-run override.
+            attempt: Which attempt this is.
+            adapter: Which adapter to use.
+            baseline: A prior unfaulted result.
+            seed: Per-run seed override.
+
+        Returns:
+            The assembled `ChaosResult`.
+        """
+        resolved = self._resolve_adapter(target, adapter)
+        entrypoint = getattr(target, "__qualname__", None)
+        state, run_dir, _plan, plan_hash = self._prepare(
+            scenario_id=scenario_id,
+            expected_behavior=expected_behavior,
+            must_not=must_not,
+            adapter=resolved.name,
+            dry_run=dry_run,
+            attempt=attempt,
+            seed=seed,
+            initial_state=initial_state,
+            baseline=baseline,
+            entrypoint=entrypoint,
+        )
+        token = _ACTIVE.set(state)
+        started = time.perf_counter()
+        output: Any = None
+        error: dict[str, Any] | None = None
+        try:
+            self._open(state, plan_hash)
+            instrumented = resolved.instrument(target, self, state.ctx)
+            from .adapters.vanilla import resolve_invocation
+
+            args, kwargs = resolve_invocation(instrumented, inputs, initial_state)
+            try:
+                output = await asyncio.wait_for(
+                    self._maybe_await(instrumented(*args, **kwargs)),
+                    timeout=self.limits.timeout_s,
+                )
+            except LimitExceeded as limit:
+                state.limit_hit = limit.limit
+            except (TimeoutError, asyncio.TimeoutError):
+                state.limit_hit = "timeout_s"
+                self._emit(
+                    Event(
+                        kind="limit_exceeded",
+                        level="minimal",
+                        layer="engine",
+                        payload={"limit": "timeout_s"},
+                    )
+                )
+            except Exception as exc:
+                error = self._error_info(exc)
+        finally:
+            wall_ms = int((time.perf_counter() - started) * 1000)
+            result = self._finish(
+                state,
+                run_dir,
+                plan_hash,
+                resolved,
+                entrypoint,
+                output,
+                error,
+                wall_ms,
+                expected_behavior,
+            )
+            _ACTIVE.reset(token)
+        return result
+
+    @staticmethod
+    async def _maybe_await(value: Any) -> Any:
+        """Await a value if it is awaitable.
+
+        Args:
+            value: A value or awaitable.
+
+        Returns:
+            The resolved value.
+        """
+        if inspect.isawaitable(value):
+            return await value
+        return value
+
+    @staticmethod
+    def _error_info(exc: BaseException) -> dict[str, Any]:
+        """Capture an agent exception for the report.
+
+        Args:
+            exc: The exception the agent raised.
+
+        Returns:
+            A dict with the type, message and the tail of the traceback.
+        """
+        return {
+            "type": type(exc).__name__,
+            "message": str(exc)[:1000],
+            "traceback": "".join(traceback.format_exception(exc))[-4000:],
+        }
+
+    def harness_facts(self) -> HarnessFacts:
+        """Snapshot what the harness itself caused.
+
+        Every probe and assertion receives this, and none may fire on what it
+        records — the four attribution rules in `docs/11` §2. This is the structural
+        reason a well-behaved agent passes instead of being punished for the fault it
+        handled correctly.
+
+        Returns:
+            The accumulated facts, empty under `dry_run` (D-12).
+        """
+        state = self._state()
+        if state.ctx.dry_run:
+            return HarnessFacts(dry_run=True, canary=state.ctx.canary)
+        return HarnessFacts(
+            fired=tuple(a.record for a in state.armed if a.record.fired),
+            faulted_seqs=frozenset(state.faulted_seqs),
+            harness_invocation_seqs=frozenset(state.harness_invocation_seqs),
+            harness_raised_seqs=frozenset(state.harness_raised_seqs),
+            keys_removed=frozenset(state.keys_removed),
+            keys_retyped=frozenset(state.keys_retyped),
+            values_injected=frozenset(state.facts_values),
+            messages_injected=tuple(state.facts_messages),
+            tokens_injected=state.ctx.counters.injected_tokens,
+            delay_injected_ms=state.ctx.counters.injected_delay_ms,
+            canary=state.ctx.canary,
+            dry_run=False,
+        )
+
+    def _finish(
+        self,
+        state: _RunState,
+        run_dir: Path,
+        plan_hash: str,
+        adapter: VanillaAdapter,
+        entrypoint: str | None,
+        output: Any,
+        error: dict[str, Any] | None,
+        wall_ms: int,
+        expected_behavior: ExpectedBehavior,
+    ) -> ChaosResult:
+        """Close the trace and assemble the result (lifecycle steps 6-7, then 14).
+
+        Steps 8-13 — metrics, assertions, probes, classification, the judge and the
+        bundle — land in M4. `_post_run` is the seam they attach to, and it is pure
+        over `(trace, plan)` so `alc judge` can re-run them on a stored trace.
+
+        Args:
+            state: The run state.
+            run_dir: The run directory.
+            plan_hash: The frozen plan's hash.
+            adapter: The adapter that ran.
+            entrypoint: The agent's qualified name.
+            output: The agent's final output.
+            error: Captured agent exception, if any.
+            wall_ms: Wall time, a timing field only.
+            expected_behavior: The scenario's expectation.
+
+        Returns:
+            The assembled `ChaosResult`.
+        """
+        facts_error: dict[str, Any] | None = error
+        try:
+            self._emit(
+                Event(
+                    kind="run_finished",
+                    level="minimal",
+                    layer="engine",
+                    payload={
+                        "limit_hit": state.limit_hit,
+                        "internal_errors": state.internal_errors,
+                        "steps": state.ctx.counters.steps,
+                    },
+                )
+            )
+        except Exception as exc:
+            self._internal_error("run_finished", exc)
+        finally:
+            state.ctx.trace.close()
+
+        return self._post_run(
+            state,
+            run_dir,
+            plan_hash,
+            adapter,
+            entrypoint,
+            output,
+            facts_error,
+            wall_ms,
+            expected_behavior,
+        )
+
+    def _post_run(
+        self,
+        state: _RunState,
+        run_dir: Path,
+        plan_hash: str,
+        adapter: VanillaAdapter,
+        entrypoint: str | None,
+        output: Any,
+        error: dict[str, Any] | None,
+        wall_ms: int,
+        expected_behavior: ExpectedBehavior,
+    ) -> ChaosResult:
+        """Assemble a minimal `ChaosResult`. The seam M4 extends.
+
+        `success` is pinned `True` here on purpose: computing it requires the probes
+        and the assertions layer, and it must never be guessed at — least of all by a
+        model (`docs/11` §1).
+
+        Args:
+            state: The run state.
+            run_dir: The run directory.
+            plan_hash: The frozen plan's hash.
+            adapter: The adapter that ran.
+            entrypoint: The agent's qualified name.
+            output: The agent's final output.
+            error: Captured agent exception, if any.
+            wall_ms: Wall time.
+            expected_behavior: The scenario's expectation.
+
+        Returns:
+            The result, schema-validated.
+
+        Raises:
+            SchemaError: When `strict_schema` and the report does not validate.
+        """
+        ctx = state.ctx
+        counters = ctx.counters
+        streams = {k: v for k, v in sorted(ctx.draws.items()) if v > 0}
+        result = ChaosResult(
+            run_id=ctx.run_id,
+            scenario_id=ctx.scenario_id,
+            seed=ctx.seed,
+            plan_hash=plan_hash,
+            attempt=ctx.attempt,
+            dry_run=ctx.dry_run,
+            started_at=ctx.started_at,
+            finished_at=_utc_now(),
+            duration_ms=wall_ms,
+            target={
+                "framework": adapter.name,
+                "entrypoint": entrypoint,
+                "adapter_version": adapter.version,
+                "tools": sorted(self._tools),
+            },
+            metrics={
+                "steps": counters.steps,
+                "tool_calls": counters.tool_calls,
+                "llm_calls": counters.llm_calls,
+                "retries": counters.retries,
+                "wall_ms": wall_ms,
+                "injected_delay_ms": counters.injected_delay_ms,
+                "injected_tokens": counters.injected_tokens,
+                "faults_armed": len(state.armed),
+                "faults_fired": sum(1 for a in state.armed if a.record.fired),
+                "tokens_estimated": False,
+            },
+            loop={
+                "steps": counters.steps,
+                "max_steps": ctx.limits.max_steps,
+                "limit_hit": state.limit_hit,
+            },
+            randomness={"seed": ctx.seed, "streams": streams, "decisions": ctx.decisions},
+            reproduce={
+                "cmd": f"alc replay {run_dir}",
+                "seed": ctx.seed,
+                "plan_path": str(run_dir / "plan.json") if self.write_bundle else None,
+            },
+            artifacts={
+                "report": str(run_dir / "report.json"),
+                "trace": str(run_dir / "trace.jsonl"),
+                "plan": str(run_dir / "plan.json") if self.write_bundle else None,
+                "run_dir": str(run_dir),
+            },
+            verdict=empty_verdict(expected_behavior),
+            injected_faults=[a.record.to_dict() for a in state.armed],
+            tool_calls=state.tool_records,
+            llm_exchanges=state.llm_records,
+            final_output=output,
+            error=error,
+            tags=dict(ctx.tags),
+        )
+        errors = result.validate()
+        if errors:
+            if self.strict_schema:
+                raise SchemaError(f"assembled report is not schema-valid: {errors[:5]}")
+            result.schema_errors = errors
+        return result
+
+
+def _denormalize(original: Any, messages: Any) -> Any:
+    """Convert mutated messages back into the shape the callable expects.
+
+    An LLM fault operates on normalized messages, but the wrapped callable was
+    written against whatever the caller passes it. Returning a list to a function
+    that wanted a string would surface as the agent crashing on a harness artefact,
+    so the original shape is preserved.
+
+    Args:
+        original: The callable's first argument before interception.
+        messages: The mutated payload from the plan.
+
+    Returns:
+        `messages` rendered back to `original`'s shape.
+    """
+    if isinstance(original, str) and isinstance(messages, list):
+        return "\n".join(str(m.get("content", "")) for m in messages if isinstance(m, Mapping))
+    return messages
+
+
+def _render_prompt(messages: Sequence[Mapping[str, Any]]) -> str:
+    """Render normalized messages as the exact prompt text the model received.
+
+    `exact_prompt` exists so a work order can quote what actually went to the model,
+    rather than a paraphrase of it.
+
+    Args:
+        messages: Normalized message dicts.
+
+    Returns:
+        One ``role: content`` line per message.
+    """
+    return "\n".join(f"{m.get('role', '?')}: {m.get('content', '')}" for m in messages)
+
+
+def functools_wraps(source: Callable[..., Any], wrapper: Callable[..., Any]) -> Callable[..., Any]:
+    """Copy `source`'s metadata and signature onto `wrapper`.
+
+    Args:
+        source: The wrapped callable.
+        wrapper: The wrapper to decorate.
+
+    Returns:
+        `wrapper`, with `__name__`, `__doc__`, `__wrapped__` and `__signature__` set.
+    """
+    import functools
+
+    functools.update_wrapper(wrapper, source)
+    with contextlib.suppress(TypeError, ValueError):
+        wrapper.__signature__ = inspect.signature(source)  # type: ignore[attr-defined]
+    return wrapper

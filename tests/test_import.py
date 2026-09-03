@@ -80,14 +80,42 @@ def test_unknown_attribute_raises_attribute_error() -> None:
         _ = agent_loop_chaos.NoSuchName  # type: ignore[attr-defined]
 
 
-def test_stubs_raise_not_implemented_rather_than_returning_none() -> None:
-    """A stub must fail loudly. Silently returning `None` is forbidden by CLAUDE.md."""
-    with pytest.raises(NotImplementedError):
-        agent_loop_chaos.ChaosEngine()
-    with pytest.raises(NotImplementedError):
-        agent_loop_chaos.RuleJudge()
-    with pytest.raises(NotImplementedError):
-        agent_loop_chaos.load_suite("nope.yaml")
+def test_chaos_engine_is_implemented_as_of_m1() -> None:
+    """M1 built the engine, so constructing one must no longer raise.
+
+    This is the half of the old M0 stub test that changed: `ChaosEngine` was a stub
+    then and is real now.
+    """
+    engine = agent_loop_chaos.ChaosEngine(seed=1, write_bundle=False)
+    assert engine.seed == 1
+    assert engine.is_active() is False
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param(lambda: agent_loop_chaos.RuleJudge(), id="RuleJudge (M6)"),
+        pytest.param(lambda: agent_loop_chaos.SLMJudge(), id="SLMJudge (M6)"),
+        pytest.param(lambda: agent_loop_chaos.EnsembleJudge(), id="EnsembleJudge (M6)"),
+        pytest.param(lambda: agent_loop_chaos.load_suite("nope.yaml"), id="load_suite (M4)"),
+        pytest.param(
+            lambda: agent_loop_chaos.Scenario(id="s", entrypoint="m:a"), id="Scenario (M4)"
+        ),
+        pytest.param(lambda: agent_loop_chaos.ChaosSuite([]), id="ChaosSuite (M4)"),
+        pytest.param(
+            lambda: agent_loop_chaos.ChaosEngine(write_bundle=False).replay("d"),
+            id="replay (M7)",
+        ),
+    ],
+)
+def test_remaining_stubs_still_fail_loudly(call: object) -> None:
+    """A stub must raise. Silently returning `None` is forbidden by CLAUDE.md.
+
+    Each of these lands in a later milestone; until then, calling one must say so
+    rather than hand back a `None` that surfaces as a confusing error later.
+    """
+    with pytest.raises(NotImplementedError, match=r"M\d"):
+        call()  # type: ignore[operator]
 
 
 def test_limit_exceeded_is_not_catchable_as_exception() -> None:

@@ -76,8 +76,23 @@ set, impossible trigger (`on_call=0`), or `probability` outside `[0, 1]` raise
 
 ```python
     def clear_faults(self) -> None: ...
-    def plan(self) -> dict: ...                # canonical plan dict; plan_hash source
+    def plan(self, *, entrypoint: str | None = None, adapter: str = "vanilla",
+             expected_behavior: ExpectedBehavior = "graceful_degradation",
+             must_not: Sequence[str] = ()) -> dict: ...   # canonical plan; plan_hash source
 ```
+
+`plan()` still works bare; the keyword arguments exist because `plan_hash` is
+computed over the entrypoint, adapter, `expected_behavior` and sorted `must_not`
+as well as the fault list (`docs/04-SCHEMAS.md` §3), and the engine supplies them
+at run time.
+
+Three further methods exist for adapters and the post-run pipeline, and are stable
+but secondary: `is_active()` (whether a run of this engine is live in the current
+context — the check that keeps a decorated tool inert in production),
+`route_sync()` / `route_async()` (drive the pre/post/error crossings for one call),
+and `harness_facts()` (snapshot what the harness itself caused, for `docs/11` §2).
+`ChaosEngine(strict_trace=True)` validates every trace event against the schema as
+it is written; the test suite runs with it on.
 
 ### Instrumenting plain Python
 
@@ -163,6 +178,14 @@ Target(layer=None, tool=None, node=None, llm=None, state_key=None, phase=None, p
 Trigger(on_call=None, on_step=None, after_step=None, probability=1.0,
         max_fires=1, cooldown_calls=0, stop_after_step=None)
 ```
+
+`on_call` accepts an `int` or a sequence of `int`, so one fault can fire on several
+call indices (`on_call=[1, 3]`). `Trigger.call_indices()` normalizes it.
+
+A `Target` with `phase=None` matches every phase on its layer, but a fault is only
+ever offered a crossing whose `(layer, phase)` pair is in its `accepts` set — checked
+at registration *and* at every crossing (D-55). `Target.implied_layer()` returns the
+layer a name field implies.
 
 `tool`, `node`, `llm` accept `fnmatch` globs. `state_key` is a dotted path with
 `*` wildcards (`"messages.*.content"`).

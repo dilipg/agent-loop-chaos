@@ -120,7 +120,7 @@ testpaths = ["tests"]
 # breaks `import agent_loop_chaos` with no diagnostic. This makes the suite
 # independent of install mode; wheel correctness is verified separately by building
 # and installing into a clean venv.
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 markers = [
     "live: needs a real model endpoint or network; excluded from the default run",
     "slow: end-to-end demo-suite tests",

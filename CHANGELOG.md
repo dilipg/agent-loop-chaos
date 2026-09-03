@@ -11,6 +11,39 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ### Added
 
+- **M1 — core engine (phase 01).** `Crossing` and the run-scoped context objects,
+  seeded RNG and derived ids, secret redaction, the RFC 6902 subset, the trace
+  recorder, targeting and triggering, the `Fault` base with `NoopFault`, the vanilla
+  adapter, and the `ChaosEngine` run lifecycle (steps 1-7 and 14). `_post_run` is the
+  seam M4 attaches metrics, assertions, probes and the judge to.
+- `ChaosResult` now assembles and validates for real: identity, target, metrics,
+  loop, artifacts, reproduce, randomness and `injected_faults` are populated, with
+  `success=True` and `failure_mode="none"` pinned until M4 computes them from the
+  probes and the assertions layer.
+- Faults compose per D-13: value-replacing actions chain in registration order and
+  each records its own `MutationLog`, while `raise`/`delay`/`invoke_target`/
+  `resume_from_checkpoint` are first-wins and mark the rest `superseded`.
+- 323 tests, 89.6% coverage. Targeting and trigger truth tables, `apply(diff(a, b),
+  a) == b` as a hypothesis property, redaction as a property, RNG-stream
+  independence, harness-attribution rules, and the resilience test that proves an
+  exception inside a fault never reaches the agent under test.
+
+### Fixed in M1 development
+
+- A fault was offered crossings outside its `accepts` set whenever the target left
+  `phase` unset, so a post-only fault fired at `pre`, spent its `max_fires`, and
+  never reached the phase it was written for (D-55).
+- `target.predicate` serialized as a boolean, which the report schema types as
+  `string|null`; it now records the predicate's qualified name.
+- The no-network test fixture blocked every socket family, including the `AF_UNIX`
+  socketpair asyncio uses for its own self-pipe, which broke every async test while
+  proving nothing. It now blocks only `AF_INET` and `AF_INET6`.
+- `report.py` and `trace.py` imported `jsonschema` at module scope, so
+  `import agent_loop_chaos` pulled it in eagerly and contradicted the documented
+  lazy-import claim.
+
+### Added
+
 - **M0 — repository skeleton (phase 00).** Packaging via hatchling with a dynamic
   version read from `src/agent_loop_chaos/version.py`; `jsonschema>=4.18` as the
   only required dependency; `langgraph`, `slm`, `yaml`, `anthropic`, `dev` and `all`

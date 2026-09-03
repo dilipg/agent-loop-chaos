@@ -621,3 +621,55 @@ level prefixes and send it to stderr, breaking the documented interface.
 So: `cli.py` may write to stdout and stderr directly. Every other module under
 `src/agent_loop_chaos/` uses the `agent_loop_chaos` logger and a test may assert
 that. The engine, faults, probes, judges and adapters have no exception.
+
+### D-53 — `FaultContext` gains `fault_key`, amending D-01
+*Affects `docs/DECISIONS.md` D-01, `context.py`, phase 01, 2026-09-03.*
+
+D-01 lists `fault_id` but its own `rng` signature says the stream "keys on
+`(seed, fault_key, purpose)`", and D-03 requires the **hashed** `fault_key` rather
+than the ordinal `fault_id` so that inserting or reordering a fault cannot re-key
+another fault's stream. A `FaultContext` holding only `fault_id` therefore cannot
+implement `rng`.
+
+`FaultContext` gains `fault_key: str`. Both are present: `fault_id` for display and
+cross-referencing, `fault_key` for RNG and `randomness.streams`. This is the
+"genuinely missing field" path D-01 prescribes, not an ad-hoc addition; phases
+02/03/05 still may not add fields without amending D-01 here.
+
+### D-54 — TDD is mandatory from M2 onward; M0 and M1 were not built that way
+*Affects `CLAUDE.md` (testing rules), phases 02-10, 2026-09-03.*
+
+Recorded rather than hidden. M0 and M1 were written implementation-first, with tests
+added afterwards. The cost is visible in the record: every M1 test passed on close to
+first contact, and the two genuine defects found during M1 were caught by the JSON
+Schema validator and a hand-run smoke script, not by the test suite. A test that has
+never failed has not been shown to test anything.
+
+From M2 onward every fault, mutation, probe, assertion, judge and adapter is built
+red-green-refactor: write one failing test, watch it fail for the expected reason,
+write the minimum code to pass, keep the suite green. This is not a style preference
+here — the fault catalog is 26 classes whose contracts are individually specified in
+`docs/03-FAULT-CATALOG.md`, which is exactly the shape of work where tests-first
+discovers edge cases and tests-after merely confirms remembered ones.
+
+M1 is not being rebuilt. Its behaviour was fully pinned by 53 binding decisions
+before a line was written, so there was little behaviour left to discover, and the
+suite that now covers it is contract-oriented (targeting and trigger truth tables,
+`apply(diff(a, b), a) == b` as a property, harness-attribution rules, resilience).
+The gap is stated here so no one later mistakes M1's coverage for TDD-derived
+confidence.
+
+### D-55 — `accepts` is enforced at every crossing, not only at registration
+*Affects `docs/02-API.md` §§3-4, `docs/01-ARCHITECTURE.md` §4, phase 01, 2026-09-03.*
+
+A `Target` with no `phase` matches every phase on its layer. Registration validates
+the *target* against the fault's `accepts` set, but that is not sufficient: a fault
+declaring only `{("tool", "post")}` registered with `target_tool="t"` was being
+offered the `tool.pre` crossing, where it fired, spent its single `max_fires`, and
+never reached the phase it was written for.
+
+So the engine filters twice. `register_fault` rejects a target whose layer or
+explicit phase the fault cannot accept, and `cross` offers a fault only crossings
+whose `(layer, phase)` pair is in `accepts`. A fault therefore never sees a crossing
+it did not declare, and `target_tool="x"` is always safe shorthand regardless of
+which phases the fault handles.

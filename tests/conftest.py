@@ -11,7 +11,7 @@ from __future__ import annotations
 import socket
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any
 
 import pytest
 
@@ -35,14 +35,20 @@ def no_network(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) 
         return
 
     real_socket = socket.socket
+    blocked_families = {socket.AF_INET, socket.AF_INET6}
 
-    def blocked(*args: Any, **kwargs: Any) -> NoReturn:
-        raise RuntimeError(
-            "network access is blocked in the default test run; mark the test "
-            "`@pytest.mark.live` if it genuinely needs an endpoint"
-        )
+    def guarded(family: Any = socket.AF_INET, *args: Any, **kwargs: Any) -> Any:
+        # Only IP families are blocked. asyncio's event loop builds an AF_UNIX
+        # socketpair for its self-pipe, so refusing every family would break every
+        # async test while proving nothing about network access.
+        if family in blocked_families:
+            raise RuntimeError(
+                "network access is blocked in the default test run; mark the test "
+                "`@pytest.mark.live` if it genuinely needs an endpoint"
+            )
+        return real_socket(family, *args, **kwargs)
 
-    monkeypatch.setattr(socket, "socket", blocked)
+    monkeypatch.setattr(socket, "socket", guarded)
     try:
         yield
     finally:
