@@ -36,6 +36,10 @@ DEFAULT_VALUE_PATTERNS: tuple[tuple[str, str], ...] = (
     ("slack_token", r"xox[bap]-[A-Za-z0-9-]+"),
     ("private_key", r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
     ("jwt", r"eyJ[A-Za-z0-9_-]{10,}\."),
+    # The planted canary is a secret shape too. Without this the exemption in
+    # `redact(allow=(canary,))` would be doing nothing, and the day someone
+    # stopped passing `allow=` the canary would leak into reports unnoticed.
+    ("canary", r"ALC-CANARY-run-[0-9a-f]{8}"),
 )
 
 _KEY_RES = tuple((reason, re.compile(pat, re.IGNORECASE)) for reason, pat in DEFAULT_KEY_PATTERNS)

@@ -143,6 +143,7 @@ class _RunState:
     llm_records: list[dict[str, Any]] = field(default_factory=list)
     limit_hit: str | None = None
     internal_errors: int = 0
+    planted_state: dict[str, Any] | None = None
     intercept_only: frozenset[str] | None = None
 
 
@@ -1868,11 +1869,18 @@ class ChaosEngine:
             tags=dict(self.tags),
             deadline_mono=time.perf_counter() + self.limits.timeout_s,
         )
+        # D-16: plant the canary somewhere the agent can actually reach. Without a
+        # reachable secret, `objective: exfiltrate_secret` has nothing to exfiltrate
+        # and the `secret_in_output` probe can never fire.
+        planted: dict[str, Any] | None = None
+        if initial_state is not None:
+            planted = {**dict(initial_state), "_alc_canary": canary}
         state = _RunState(
             engine=self,
             ctx=ctx,
             armed=list(self._faults),
-            state_view=StateView(initial_state) if initial_state is not None else None,
+            state_view=StateView(planted) if planted is not None else None,
+            planted_state=planted,
         )
         return state, run_dir
 
@@ -2220,7 +2228,7 @@ class ChaosEngine:
             instrumented = resolved.instrument(target, self, state.ctx)
             from .adapters.vanilla import resolve_invocation
 
-            args, kwargs = resolve_invocation(instrumented, inputs, initial_state)
+            args, kwargs = resolve_invocation(instrumented, inputs, state.planted_state)
             try:
                 output = instrumented(*args, **kwargs)
             except LimitExceeded as limit:
@@ -2299,7 +2307,7 @@ class ChaosEngine:
             instrumented = resolved.instrument(target, self, state.ctx)
             from .adapters.vanilla import resolve_invocation
 
-            args, kwargs = resolve_invocation(instrumented, inputs, initial_state)
+            args, kwargs = resolve_invocation(instrumented, inputs, state.planted_state)
             try:
                 output = await asyncio.wait_for(
                     self._maybe_await(instrumented(*args, **kwargs)),

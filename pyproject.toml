@@ -105,6 +105,12 @@ extend-exclude = ["*.md"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
 
+[[tool.mypy.overrides]]
+# Optional and imported locally with a silent fallback; there are no stubs, and
+# requiring them would make an optional dependency effectively mandatory.
+module = ["tiktoken"]
+ignore_missing_imports = true
+
 [tool.mypy]
 strict = true
 files = "src/agent_loop_chaos"

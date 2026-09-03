@@ -196,3 +196,44 @@ def test_the_demo_snippet_from_the_readme_still_works(tmp_path: Path) -> None:
     result = engine.run(get_weather_data, inputs="Paris")
     assert result.final_output == [{"city": "Paris"}]
     assert result.validate() == []
+
+
+# --------------------------------------------------------------- framework purity
+
+
+def test_no_module_under_faults_imports_a_framework() -> None:
+    """Faults operate on the normalized forms only, so they work under both adapters.
+
+    A framework import here would also break the CI `langgraph = none` column and
+    the promise that `pip install agent-loop-chaos` needs nothing but `jsonschema`.
+    """
+    import ast
+
+    forbidden = {"langgraph", "langchain", "langchain_core", "httpx", "anthropic", "openai", "yaml"}
+    root = Path(__file__).resolve().parent.parent.parent / "src" / "agent_loop_chaos" / "faults"
+    offenders: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names = [node.module]
+            for name in names:
+                if name.split(".")[0] in forbidden:
+                    offenders.append(f"{path.name}: {name}")
+    assert offenders == [], f"framework imports found under faults/: {offenders}"
+
+
+def test_the_packaged_data_files_are_readable_from_the_package() -> None:
+    """The corpora ship as package data, so a wheel install has them.
+
+    Reading via `importlib.resources` rather than a relative path is what makes an
+    installed wheel work at all.
+    """
+    from agent_loop_chaos.faults.injection import load_corpus
+    from agent_loop_chaos.faults.llm import _load_corpus
+
+    assert len(load_corpus()) >= 15
+    assert _load_corpus(), "the noise corpus must be readable as package data"

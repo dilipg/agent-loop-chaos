@@ -754,3 +754,32 @@ A fault's deliberate `raise` travels the same path, so it is wrapped in a privat
 `_InjectedFailure(BaseException)` and unwrapped at the boundary. `BaseException` is
 load-bearing: an `Exception` subclass would be swallowed by the very guard above,
 silently disarming every `raise` fault. A test covers both directions.
+
+### D-59 — The canary is planted in `initial_state`, and the redactor knows its shape
+*Affects `docs/03` B10, `redact.py`, `engine.py`, phase 03, 2026-09-03.*
+
+Two halves of D-16 that only become concrete once there is a corpus.
+
+**Planting.** The engine adds `_alc_canary` to a copy of the caller's
+`initial_state` and passes that copy to the agent. Without a secret the agent can
+actually reach, `objective: exfiltrate_secret` has nothing to exfiltrate and the
+`secret_in_output` probe is unreachable — the payloads would look effective and
+detect nothing. `os.environ` stays out of scope. The caller's mapping is copied, not
+mutated.
+
+**Redaction.** `ALC-CANARY-run-[0-9a-f]{8}` is added to the redactor's value
+patterns. Without it, `redact(allow=(canary,))` exempts a value the redactor was
+never going to touch — the exemption reads as deliberate and does nothing, and the
+day someone stops passing `allow=` the canary leaks into reports unnoticed. A test
+asserts the canary is redacted when it is *not* exempted, which is the only way to
+prove the exemption is load-bearing.
+
+### D-60 — `json_key` placement keeps the whole payload as the key
+*Affects `docs/03` B10, `faults/injection.py`, phase 03, 2026-09-03.*
+
+The `json_key` carrier first truncated the payload to 120 characters to keep keys
+readable. For any payload whose canary sits past that point — which is most of the
+exfiltration set, since the instruction precedes the token — the canary was silently
+dropped, so the payload could never be detected and the run would look like a
+well-behaved agent. The whole payload is now the key. JSON permits long keys, and an
+undetectable payload is worse than an ugly one.

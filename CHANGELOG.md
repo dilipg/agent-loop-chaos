@@ -11,6 +11,32 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ### Added
 
+- **M3 — LLM/prompt faults and the injection corpus (phase 03).** Built
+  red-green-refactor, with every `pre` fault's effect asserted on the messages the
+  model actually received.
+- `faults/_messages.py` — the normalized message form and its helpers, with a
+  lossless `denormalize(normalize(x)) == x` round trip via `_extra`, so a fault
+  never silently discards a field the provider needed.
+- All ten section-B faults: `ContextShrinkFault`, `ContextNoiseFault`,
+  `GoalDriftFault`, `LLMMalformedOutputFault`, `LLMRefusalFault`, `LLMEmptyFault`,
+  `LLMTruncationFault`, `MalformedToolCallFault`, `HallucinationSeedFault`,
+  `PromptInjectionFault`.
+- A 17-payload injection corpus covering all five objectives and all five
+  placements, with every `detect` regex asserted against a real canary (D-16) and
+  every `check` mechanically decidable — a semantic constraint is a judge
+  hypothesis, never a probe.
+- The canary is planted in `initial_state["_alc_canary"]`, exempt from redaction,
+  and the redactor now recognises its shape so the exemption is not a no-op (D-59).
+- `alc list-faults` shows 21 kinds: 10 tool/loop, 10 LLM/prompt, and `NoopFault`.
+
+### Fixed in M3 development
+
+- The `json_key` injection placement truncated the payload to 120 characters, which
+  dropped the canary out of every longer exfiltration payload and made them
+  permanently undetectable (D-60).
+
+### Added
+
 - **M2 — tool-execution faults and the mutation library (phase 02).** Built
   red-green-refactor throughout: every test written first and watched failing for
   the expected reason before any implementation.
