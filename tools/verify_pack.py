@@ -5,8 +5,18 @@ Run it any time you edit the docs, schemas, or prompts:
     python3 tools/verify_pack.py
 
 It validates the JSON Schemas and their example instances, and checks that the
-names shared across docs/schemas/prompts have not drifted apart. Requires
-`jsonschema>=4.18` and `pyyaml`. Exit code 1 means something is inconsistent.
+names shared across docs/schemas/prompts have not drifted apart.
+
+Dependencies are optional and the script degrades instead of dying: the cross-file
+drift checks are pure stdlib and always run. `jsonschema>=4.18` + `referencing`
+add instance validation; `pyyaml` adds the three checks that read
+`schemas/examples/suite_demo.yaml`. Whatever is missing is listed under SKIPPED.
+
+    python3 tools/verify_pack.py              # run whatever is possible here
+    python3 tools/verify_pack.py --strict     # a skip is a failure (use this in CI)
+
+Exit code 1 means something is inconsistent, or --strict was given and something
+was skipped.
 """
 from __future__ import annotations
 
@@ -15,9 +25,21 @@ import re
 import sys
 from pathlib import Path
 
-import yaml
-from jsonschema import Draft202012Validator
-from referencing import Registry, Resource
+try:
+    import yaml
+except ModuleNotFoundError:
+    yaml = None  # type: ignore[assignment]  # optional: gates the suite_demo.yaml checks
+
+try:
+    from jsonschema import Draft202012Validator
+    from referencing import Registry, Resource
+except ModuleNotFoundError:
+    Draft202012Validator = None  # type: ignore[assignment]  # optional: gates validation
+    Registry = Resource = None  # type: ignore[assignment]
+
+HAVE_YAML = yaml is not None
+HAVE_JSONSCHEMA = Draft202012Validator is not None
+STRICT = "--strict" in sys.argv
 
 ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_DIR = ROOT / "schemas"
@@ -25,6 +47,8 @@ EX = SCHEMA_DIR / "examples"
 
 errors: list[str] = []
 notes: list[str] = []
+skipped: list[str] = []
+unvalidated: list[str] = []
 
 # ---------------------------------------------------------------- load schemas
 resources = {}
@@ -36,22 +60,32 @@ for p in sorted(SCHEMA_DIR.glob("*.json")):
         continue
     resources[p.name] = doc
 
-registry = Registry()
-for name, doc in resources.items():
-    # register under both the $id and the bare filename so relative refs resolve
-    res = Resource.from_contents(doc)
-    registry = registry.with_resource(uri=name, resource=res)
-    if "$id" in doc:
-        registry = registry.with_resource(uri=doc["$id"], resource=res)
+registry = None
+if HAVE_JSONSCHEMA:
+    registry = Registry()
+    for name, doc in resources.items():
+        # register under both the $id and the bare filename so relative refs resolve
+        res = Resource.from_contents(doc)
+        registry = registry.with_resource(uri=name, resource=res)
+        if "$id" in doc:
+            registry = registry.with_resource(uri=doc["$id"], resource=res)
 
-for name, doc in resources.items():
-    try:
-        Draft202012Validator.check_schema(doc)
-    except Exception as e:  # noqa: BLE001
-        errors.append(f"{name}: not a valid Draft 2020-12 schema: {e}")
+    for name, doc in resources.items():
+        try:
+            Draft202012Validator.check_schema(doc)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{name}: not a valid Draft 2020-12 schema: {e}")
+else:
+    skipped.append(
+        f"Draft 2020-12 schema check on {len(resources)} schema file(s) "
+        "— needs `jsonschema>=4.18` + `referencing`"
+    )
 
 # ------------------------------------------------------- validate the examples
 def validate(instance, schema_name, label):
+    if not HAVE_JSONSCHEMA:
+        unvalidated.append(label)
+        return
     v = Draft202012Validator(resources[schema_name], registry=registry)
     found = sorted(v.iter_errors(instance), key=lambda e: list(e.absolute_path))
     for err in found:
@@ -74,8 +108,15 @@ for i, line in enumerate((EX / "trace_excerpt.jsonl").read_text().splitlines(), 
         continue
     validate(ev, "trace_event.schema.json", f"trace_excerpt.jsonl:{i}")
 
-suite = yaml.safe_load((EX / "suite_demo.yaml").read_text())
-validate(suite, "scenario.schema.json", "suite_demo.yaml")
+if HAVE_YAML:
+    suite = yaml.safe_load((EX / "suite_demo.yaml").read_text())
+    validate(suite, "scenario.schema.json", "suite_demo.yaml")
+else:
+    suite = None
+    skipped.append(
+        "3 checks that read schemas/examples/suite_demo.yaml (schema validity, fault "
+        "types vs the catalog, must_not codes vs the probe table) — needs `pyyaml`"
+    )
 
 # ------------------------------------------- cross-file consistency of enums
 report_schema = resources["chaos_report.schema.json"]
@@ -114,12 +155,13 @@ if missing_in_api:
 else:
     notes.append(f"all {len(catalog_faults)} catalog faults appear in docs/02-API.md")
 
-suite_faults = {f["type"] for s in suite["scenarios"] for f in s.get("faults", [])}
-unknown = suite_faults - catalog_faults
-if unknown:
-    errors.append(f"suite_demo.yaml uses faults absent from the catalog: {sorted(unknown)}")
-else:
-    notes.append(f"suite uses {len(suite_faults)} fault types, all in the catalog")
+if suite is not None:
+    suite_faults = {f["type"] for s in suite["scenarios"] for f in s.get("faults", [])}
+    unknown = suite_faults - catalog_faults
+    if unknown:
+        errors.append(f"suite_demo.yaml uses faults absent from the catalog: {sorted(unknown)}")
+    else:
+        notes.append(f"suite uses {len(suite_faults)} fault types, all in the catalog")
 
 # presets referenced by the suite exist in the scenario schema enum
 preset_enum = set(
@@ -222,13 +264,14 @@ for a in report.get("assertions", []):
         errors.append(f"report example uses assertion check not in the expect schema: {a['check']}")
 if report.get("assertions"):
     notes.append(f"report example: {len(report['assertions'])} assertions, all valid checks")
-suite_must_not = {c for sc in suite["scenarios"] for c in sc.get("must_not", [])}
-suite_must_not |= set(suite.get("defaults", {}).get("must_not", []))
-bad = suite_must_not - probe_codes
-if bad:
-    errors.append(f"suite must_not uses codes that are not probe codes: {sorted(bad)}")
-else:
-    notes.append(f"all {len(suite_must_not)} must_not codes are real probe codes")
+if suite is not None:
+    suite_must_not = {c for sc in suite["scenarios"] for c in sc.get("must_not", [])}
+    suite_must_not |= set(suite.get("defaults", {}).get("must_not", []))
+    bad = suite_must_not - probe_codes
+    if bad:
+        errors.append(f"suite must_not uses codes that are not probe codes: {sorted(bad)}")
+    else:
+        notes.append(f"all {len(suite_must_not)} must_not codes are real probe codes")
 
 for sy in report["symptoms"]:
     if sy["code"] not in probe_codes:
@@ -279,14 +322,28 @@ for p in sorted((ROOT / "prompts").glob("[0-9]*.md")):
         errors.append(f"README.md: phase prompt not listed: {p.name}")
 
 # ------------------------------------------------------------------- report
+if unvalidated:
+    skipped.append(
+        f"instance validation of {len(unvalidated)} example(s) against the JSON Schemas "
+        "— needs `jsonschema>=4.18` + `referencing`"
+    )
+
 print("=" * 72)
 for n in notes:
     print("  ok   ", n)
+if skipped:
+    print("=" * 72)
+    for sk in skipped:
+        print("  SKIP ", sk)
+    print("  ->    pip install 'jsonschema>=4.18' referencing pyyaml   # to run everything")
 print("=" * 72)
 if errors:
     print(f"{len(errors)} PROBLEM(S):")
     for e in errors:
         print("  FAIL ", e)
     sys.exit(1)
-print("ALL CHECKS PASSED")
+if skipped and STRICT:
+    print(f"{len(skipped)} CHECK GROUP(S) SKIPPED and --strict was given.")
+    sys.exit(1)
+print("ALL AVAILABLE CHECKS PASSED" if skipped else "ALL CHECKS PASSED")
 print(f"files: {len(pack_files)}")

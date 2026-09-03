@@ -14,6 +14,15 @@ git --version
 claude --version
 ```
 
+`tools/verify_pack.py` runs on a bare interpreter — the cross-file drift checks are
+pure stdlib. To also get schema validation and the `suite_demo.yaml` checks (three
+extra check groups; the script lists what it skipped and how to enable it):
+
+```bash
+python3 -m venv .venv && . .venv/bin/activate
+pip install 'jsonschema>=4.18' referencing pyyaml
+```
+
 Optional, only for the SLM judge in phase 06 — the whole build works without it via
 `--judge rules`:
 
@@ -203,6 +212,8 @@ claude --resume                   # pick from saved sessions
 python3 tools/verify_pack.py      # re-check spec consistency after editing docs
                                   # (schemas, probe/precedence parity, judge output
                                   #  fields, canary regex, fencing, decision ids)
+                                  # runs dep-free; SKIPPED lists what needs installing
+python3 tools/verify_pack.py --strict   # a skip is a failure — use this in CI
 git diff spec-v1 --stat -- docs/  # what the agent changed in the spec
 ```
 

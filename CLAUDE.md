@@ -1,6 +1,177 @@
-# CLAUDE.md — build conventions for `agent-loop-chaos`
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 You are implementing the library specified in `docs/`. This file is binding.
+
+## Repository status: a spec pack, not yet a codebase
+
+There is **no code in this repository yet** — no `src/`, no `pyproject.toml`, no
+`Makefile`, no `tests/`. What exists is a complete, normative specification plus the
+eleven prompts that build it. Do not be surprised by missing modules; create them in
+the phase that owns them.
+
+The build is **phase-driven and sequential**. `prompts/NN-*.md` are the work orders,
+`docs/08-ROADMAP.md` maps each to a milestone (M0–M10) and a checkable gate, and
+`RUNBOOK.md` §4 lists the exact gate commands. One phase per context window; a phase
+is not started before the previous gate passes. If you were handed a phase prompt,
+implement **only** that phase.
+
+### Where truth lives (precedence order)
+
+When two documents disagree, higher wins:
+
+1. `docs/DECISIONS.md` — 47 pre-seeded errata (D-01…D-47) from an adversarial review
+   done *before* any code existed. Binding, and it overrides the prose of any doc it
+   names. Read it in full first. Never edit an entry in place: supersede it with a
+   new dated `D-nn` and mark the old one `SUPERSEDED BY D-nn`. **The next id you
+   write is D-48.**
+2. `docs/11-OUTCOMES-AND-ASSERTIONS.md` — the **sole** pass/fail authority. Nothing
+   may compute `success`, `observed_behavior`, `failure_mode`, or `severity` by any
+   other route.
+3. `schemas/*.json` — the schemas are the product; code serves them.
+4. `docs/02-API.md` — every public name is frozen. Additions allowed, renames never.
+5. `SAFETY.md` — gates that must exist in code, not just in prose.
+6. Everything else in `docs/`.
+
+`README.md` describes the *pack*, not the library's users — it is a build handover
+document. `docs/00-VISION.md` holds positioning and the v0.1 non-goals.
+
+## Commands
+
+These land in phase 00 (`prompts/00-bootstrap.md`) and are the contract thereafter.
+
+```bash
+python3 -m venv .venv && . .venv/bin/activate
+pip install -e ".[dev]"              # add ,langgraph and/or ,slm for those phases
+
+make check                           # lint + types + tests + schema parity (docs/07 §8 jobs 1-3)
+make golden-update                   # ONLY way to refresh tests/golden/*.json; review the diff
+python3 tools/verify_pack.py         # re-check spec self-consistency after editing docs/
+python3 tools/verify_pack.py --strict   # a skipped check group is a failure (CI)
+```
+
+Tests:
+
+```bash
+pytest -q                            # default run: no network, excludes -m live
+pytest tests/faults -q               # one layer (see docs/07-TESTING.md §1 for the layer map)
+pytest tests/faults/test_tool.py::test_drop_key -q      # one test
+pytest -m slow -q                    # demo-suite tests
+pytest -m live -q                    # opt-in; needs a real model endpoint
+pytest tests -q -k "not langgraph and not readme"       # prove the core has no framework dep
+```
+
+An autouse fixture monkeypatches `socket.socket` to raise, so any accidental
+outbound call in the default run fails loudly. Coverage gate: 85% on
+`src/agent_loop_chaos`.
+
+CLI (`alc`, full surface in `docs/02-API.md` §10):
+
+```bash
+alc run <suite.yaml|scenario.yaml|module:attr> --judge rules --out .chaos
+alc replay <run_dir>                 # re-run from plan.json; refuses if it cannot verify (D-31)
+alc judge <run_dir>                  # re-judge without re-running the agent
+alc explain <run_dir>                # narrative to stdout
+alc report <run_dir> --format md|json|html
+alc validate <report.json|suite.yaml>
+alc list-faults [--json]
+```
+
+Exit codes: `0` all passed, `1` a scenario failed, `2` config/usage error, `3`
+internal error. `--json` prints exactly one JSON object and nothing else.
+
+## Architecture — the big picture
+
+Read `docs/01-ARCHITECTURE.md` for the module map. The parts that only make sense
+across several files:
+
+### `Crossing` is the keystone
+
+One dataclass unifies every interception point, which is why tool, LLM, node, edge,
+state and checkpoint faults share a single engine instead of needing six. A crossing
+carries `(layer, phase, name, step, call_index, args, kwargs, result, exception,
+state, span_id)` where `layer` ∈ tool/llm/state/node/edge/checkpoint and `phase` ∈
+pre/post/error. Each `Fault` declares the `(layer, phase)` pairs it accepts, and the
+engine refuses a bad registration with `ConfigError` **at register time, not run
+time**. Adapters (`adapters/vanilla.py`, `adapters/langgraph.py`) exist only to turn
+their framework's hooks into crossings; the core never knows which one is in play.
+
+### The pipeline
+
+`Scenario → ChaosEngine.run → adapter → Crossing → targeting (Target × Trigger ×
+seeded RNG) → Fault.apply on a deep copy → trace event with payload_before /
+payload_after / json_patch → probes → metrics → assertions → judge → bundle`.
+
+Two rules make the middle of that chain work:
+
+- Metrics are computed **before** probes, and probes take `(trace, ctx)` (D-11).
+- Probes and assertions are pure over the trace; the judge only ever reads their
+  output.
+
+### Three layers of authority (`docs/11` §1)
+
+| Layer | Decides | Authority |
+|---|---|---|
+| `probes.py` (20 probes) | structural failures visible in the trace | authoritative |
+| `assertions.py` (`Expect`) | did the agent meet the scenario's declared expectation | authoritative |
+| `judges/` | narration, root cause, hints, ranked fixes | **advisory only** |
+
+Probe false negatives are acceptable; false positives are bugs. If judge and probes
+disagree, probes win and the disagreement is recorded in `verdict.judge_disagreement`.
+
+### `HarnessFacts` — why `good_agent` can pass
+
+The engine knows exactly what it injected and passes that to every probe and
+assertion as `HarnessFacts`. Four attribution rules (`docs/11` §2, R1–R4) forbid
+firing on the harness's own injection: event attribution, value attribution, budget
+attribution (subtract `tokens_injected` / `delay_injected_ms` before any threshold),
+and removal attribution (a dropped key's absence is expected afterwards; the finding
+is a consumer reading it without a precondition check). This is the structural reason
+`tests/fakes/good_agent` and `examples/trip_planner_fixed` — the two negative
+controls, one per suite, not interchangeable — can pass every scenario. A probe that
+fires on either has a false positive and the probe is wrong until proven otherwise.
+
+### Identity and determinism
+
+- `fault_key = sha256(canonical_json({type, params, target, trigger}))[:6]` keys RNG
+  streams; `fault_id` (`f1`, `f2`, …) is a display label only (D-03). Reordering YAML
+  must not re-key another fault's stream.
+- `run_id = "run-" + sha256(f"{seed}|{scenario_id}|{plan_hash}|{attempt}")[:8]`;
+  `attempt` is an explicit parameter, never derived from the filesystem (D-04).
+- `seeding.rng(seed, purpose)` is a pure factory with **no module-level memo**; the
+  only cache is `RunContext.rng_registry` (D-02).
+- "Step" = one agent iteration in both adapters — node entry under LangGraph, one LLM
+  call under vanilla. Tool calls increment `tool_calls`, not `steps` (D-05).
+- `LimitExceeded` derives from `BaseException` so the agent's `except Exception`
+  cannot swallow it; only the engine's outermost frame catches it (D-06).
+- Determinism has a stated boundary (D-07): harness determinism is unconditional; a
+  byte-identical `report.json` additionally needs a deterministic agent, a scripted
+  or temperature-0 model, `--judge rules`, and a single-threaded graph.
+  `tests/normalize.py` owns the strip list and nothing else may add to it.
+
+### Output bundle
+
+```
+.chaos/
+├── suite.json                      # what CI, an optimizer, or the dashboard polls
+└── <scenario_id>/<run_id>/
+    ├── report.json  trace.jsonl  plan.json  judge.json  baseline.diff
+    └── AGENT_TASK.md               # failures only — this file is the product
+```
+
+`AGENT_TASK.md` is the whole pitch: if it isn't good enough for a coding agent to act
+on without asking a question, phase 04 is not done.
+
+### Safety gates that must exist in code
+
+`ArgumentTamperFault`, `DuplicateSideEffectFault`, and `CheckpointRollbackFault`
+perform real actions. Per `SAFETY.md` §1 / D-23, enforced at `register_fault` time:
+they refuse a `side_effecting=True` tool without explicit `allow_side_effects:` opt-in;
+glob targets never match a side-effecting tool; `--preset full` refuses to start if
+any tool leaves `side_effecting` undeclared; and
+`PromptInjectionFault(objective="call_forbidden_tool")` blocks and stubs the call —
+the attempt is the finding.
 
 ## Before you write any code
 
@@ -26,6 +197,11 @@ You are implementing the library specified in `docs/`. This file is binding.
   `agent_loop_chaos` must never import them. Guard with local imports inside the
   adapter/judge that needs them, and raise a clear
   `MissingExtraError("install agent-loop-chaos[langgraph]")`.
+- **`pyyaml` is a special case (D-27).** It is an optional *runtime* extra (`[yaml]`)
+  **and** a member of `[dev]`. Consequence: YAML suite loading may not be treated as
+  a feature the user opts into — every gate command in `RUNBOOK.md` and phases
+  04/06/07/08 runs a `.yaml` suite after installing only `[dev]`, so `load_suite`
+  must work there. JSON suite loading has no extra and must never require one.
 - **Never mutate the user's objects in place.** Faults operate on deep copies and
   return new values. A fault that cannot copy an object must record
   `mutation_skipped_uncopyable` and pass the original through.
@@ -91,10 +267,16 @@ agent-loop-chaos/
 ├── tests/
 ├── examples/
 ├── schemas/                      (copied verbatim from this pack; also packaged as data files)
-└── docs/
+├── docs/
+├── prompts/                      the eleven phase work orders + PROMPTING-GUIDE.md
+├── assets/prompts/               judge_system.md, judge_user.md, narrator.md, refiner.md
+│                                 (packaged into src/agent_loop_chaos/judges/prompts/)
+└── tools/verify_pack.py          spec self-consistency checker; run after editing docs/
 ```
 
 Never place code outside `src/`. Never import from `tests/` in library code.
+`prompts/`, `assets/`, and `tools/` are pack infrastructure: read them, and do not
+ship them as library code.
 
 ## Testing rules
 
@@ -120,8 +302,12 @@ Never place code outside `src/`. Never import from `tests/` in library code.
 
 Nothing is complete until all of these hold:
 
-1. `make check` passes (`ruff check`, `ruff format --check`, `mypy --strict`,
-   `pytest -q`).
+1. `make check` passes. It is exactly `docs/07-TESTING.md` §8 jobs 1–3:
+   `ruff check`, `ruff format --check`, `mypy --strict`, `pytest -q`, **and** the
+   schema job — validate every file in `schemas/examples/` and every golden report
+   against the schemas, then assert dataclass↔schema field parity. That last check is
+   the only thing enforcing "no report field outside the schema, no schema field
+   nothing writes"; a `make check` without it is not `make check`.
 2. New public API appears in `docs/02-API.md` — if you deviated from the spec,
    update the doc in the same commit and say so in the summary.
 3. Any new report field is in `schemas/chaos_report.schema.json` **and** in a
@@ -135,7 +321,6 @@ Nothing is complete until all of these hold:
 - Renaming anything defined in `docs/02-API.md` or a JSON Schema.
 - Adding a required dependency.
 - Making the engine raise into the agent under test on an internal error.
-- Using an LLM to decide `success`.
 - Weakening or deleting a failing test to make the suite green. If a test is wrong,
   say so explicitly and explain why before changing it.
 - Writing a report field that is not in the schema, or a schema field that no code
