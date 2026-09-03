@@ -529,3 +529,95 @@ through `metrics.injected_delay_ms` and `loop.limit_hit` rather than a probe, an
 `metrics.wall_ms` excludes judge time. Enforce it with a test that monkeypatches
 `time.time` and `time.perf_counter` to raise during `run_probes` and assertion
 evaluation.
+
+### D-48 — Phase 00 does **not** reset `docs/DECISIONS.md`
+*Affects `prompts/00-bootstrap.md` (Create list), 2026-09-03.*
+
+The phase 00 Create list ends with `docs/DECISIONS.md  empty with a header`. That
+line predates the pre-seeding of this file on 2026-08-25 and, followed literally,
+would delete D-01…D-47 — the pack's highest-precedence document. It would also break
+`tools/verify_pack.py`, which asserts the ids are contiguous from D-01.
+
+Resolution: phase 00 leaves this file alone and appends to it. The Create-list line
+is read as "ensure `docs/DECISIONS.md` exists", which it already does. Nothing else
+in phase 00 depends on the file being empty.
+
+### D-49 — `README.md` is the library's; the build pack moves to `PACK.md`
+*Affects `README.md`, `prompts/00-bootstrap.md`, `tools/verify_pack.py`, 2026-09-03.*
+
+Phase 00 specifies `README.md` as the library readme (pitch, install, the two
+quickstart snippets, output example, pre-alpha status). The file currently holds the
+build handover pack and opens with "This folder is **not the library**". Both cannot
+occupy one path, and `README.md` is what PyPI and GitHub render, so the library's
+copy wins.
+
+The handover pack moves to `PACK.md` **verbatim**. `tools/verify_pack.py`'s
+"every phase prompt is listed" check retargets to `PACK.md`, so it keeps working.
+`RUNBOOK.md`, `CLAUDE.md` and the prompts are unaffected — none of them link to
+`README.md` for pack content.
+
+### D-50 — `OWNER` = `dilipgdt`; names confirmed free
+*Affects `schemas/*.json` `$id`, closes the D-39 action item, 2026-09-03.*
+
+Checked before substituting:
+
+- PyPI `agent-loop-chaos` — **free** (JSON API 404; `pip index versions` finds no
+  distribution).
+- PyPI `agent-loop-detector` — **taken at 0.1.0**. The adjacent-name warning in
+  phase 00 was accurate; do not reuse that name.
+- GitHub user `dilipgdt` — exists (type `User`). `dilipgdt/agent-loop-chaos` — free.
+- GitHub org `delightree` — does not exist, so no org candidate.
+
+`OWNER` → `dilipgdt`, giving
+`https://github.com/dilipgdt/agent-loop-chaos/schemas/<name>.schema.json`.
+Chosen because it is the configured `git config user.name`, the account exists, and
+the repo name is free. D-39 warns that changing an `$id` later breaks stored
+reports' provenance — that risk is nil today because no report has been produced
+yet, so this is correctable with one `sed` until the first release. If the library
+should live under a different account or an org, change it **before** tagging 0.1.0.
+
+### D-51 — Where phase 00's stubs live, and two modules the map was missing
+*Affects `docs/01-ARCHITECTURE.md` §2, `prompts/00-bootstrap.md` (Notes), 2026-09-03.*
+
+Phase 00 must make every name in `docs/02-API.md` §1 importable — `test_import.py`
+compares `__all__` to that list exactly — while its Notes say `faults/`, `judges/`
+and `adapters/` get "empty `__init__.py` files with a docstring". Taken together
+those are unsatisfiable: `__all__` contains `Fault`, `Judge`, `Verdict`,
+`RuleJudge`, `SLMJudge` and `EnsembleJudge`.
+
+Resolution, chosen because it keeps the JSON output and the module map stable:
+
+1. Each stub lives in the module `docs/01` §2 already assigns it — `ChaosEngine` in
+   `engine.py`, `ChaosResult` in `report.py`, `Target`/`Trigger` in `targeting.py`,
+   `Crossing`/`Limits` in `context.py`, the scenario objects in `scenarios.py`,
+   `RefinementLoop`/`LoopReport` in `loop.py`.
+2. For `faults/` and `judges/` the required names are declared **in the package
+   `__init__.py`**, so no submodule bodies (`faults/tool.py`, `judges/rules.py`, …)
+   exist yet. That honours the Notes' intent — do not build out the families — while
+   keeping the import surface whole. M2/M3/M6 move them into their real modules and
+   re-export, which does not change any import path a user writes.
+3. `docs/01` §2 gains two modules it never listed but which other docs already
+   require: **`enums.py`** (`Severity`, `ExpectedBehavior`, `FailureMode`,
+   `ObservedBehavior` as `Literal` aliases mirroring the schema enums) and
+   **`assertions.py`** (`Expect`, `AssertionResult`, `HarnessFacts`), the latter
+   named throughout `docs/11` and `CLAUDE.md`.
+
+The enums are `Literal` aliases, not `enum.Enum`, because `docs/02-API.md` assigns
+them bare strings (`expected_behavior: ExpectedBehavior = "graceful_degradation"`)
+and the report is JSON. Their members are generated from the schemas, and a test
+asserts they still match, so the enum cannot drift from `chaos_report.schema.json`.
+
+### D-52 — `cli.py` is the one module allowed to `print`
+*Affects `CLAUDE.md` (code style), `src/agent_loop_chaos/cli.py`, phases 00 and 09,
+2026-09-03.*
+
+`CLAUDE.md` says "No `print()` in library code. Use the `logging` logger named
+`agent_loop_chaos`." That rule is right for every module that runs inside the
+agent's process, and wrong for the CLI, whose stdout *is* its contract:
+`docs/02-API.md` §10 requires `--json` to print exactly one JSON object to stdout
+and nothing else, so a CI job can pipe it. Routing that through `logging` would add
+level prefixes and send it to stderr, breaking the documented interface.
+
+So: `cli.py` may write to stdout and stderr directly. Every other module under
+`src/agent_loop_chaos/` uses the `agent_loop_chaos` logger and a test may assert
+that. The engine, faults, probes, judges and adapters have no exception.

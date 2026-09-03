@@ -1,181 +1,199 @@
-# agent-loop-chaos — Build Handover Pack
+# agent-loop-chaos
 
-This folder is **not the library**. It is the complete build specification for the
-library, written so that a coding agent (Claude Code) can implement it end to end
-with minimal extra instruction from you.
+> **Breaks your agent on purpose and hands the bug report to your coding agent.**
+> Chaos engineering for agent loops, with output designed for machines, not dashboards.
 
-You are the product owner. Claude Code is the builder. This pack is the contract
-between you.
+**Status: pre-alpha.** The specification is complete and the repository skeleton is
+in place; the engine, faults, probes and judges are being implemented milestone by
+milestone. Nothing here does anything useful yet. See
+[docs/08-ROADMAP.md](docs/08-ROADMAP.md).
 
----
+## Why
 
-## What is being built
+Agent frameworks give you a happy path. Production gives you a corrupted tool
+payload, a 3k-token context window, a model that returns prose where JSON was
+promised, and a tool result carrying an instruction that says *ignore your previous
+instructions*.
 
-`agent-loop-chaos` — a lightweight Python library that injects **semantic and
-execution chaos** into agent loops (LangGraph first, plain Python second) and emits
-**strictly-schema'd, machine-readable failure reports** that a coding agent can
-consume directly to fix the agent under test.
+Infra chaos tools kill pods; they cannot see a corrupted JSON key. Eval and
+observability tools score answers and draw traces for a human. Red-teaming targets
+the model, not the loop — state, retries, tool contracts, iteration caps.
 
-Three things make it different from existing chaos / eval tooling:
+The thesis:
 
-1. **Faults are semantic, not network-level.** It corrupts tool payloads, shrinks
-   context windows, drifts goals, seeds hallucinations, traps loops, and smuggles
-   prompt injections. Not "drop 5% of packets".
-2. **A small language model narrates and judges the run.** Every run produces a
-   plain-language account of *what randomness was introduced* and *how the system
-   behaved*, plus a classified `failure_mode` and a `refinement_hint`. Runs
-   offline against a local SLM, and degrades to deterministic rules with no model
-   at all.
-3. **The output is an agent work order.** Every failing run writes an
-   `AGENT_TASK.md` containing the repro command, the exact fault diff, the exact
-   LLM prompt and response, stack frames with file:line code pointers, and the
-   rule that the test must not be weakened. You paste it into Claude Code and it
-   starts fixing.
+> If a failure is reproducible, classified, and accompanied by the exact prompt, the
+> exact payload diff, and a file:line pointer, then fixing it is a mechanical task a
+> coding agent can do unattended.
 
----
+This library manufactures those artifacts: a schema-valid `report.json`, a
+`trace.jsonl`, and — on failure — an `AGENT_TASK.md` work order.
 
-## How to use this pack
+## Install
 
-**`RUNBOOK.md` has the exact commands, in order** — prerequisites, putting the spec
-under version control before the agent touches anything, the per-phase loop, and the
-gate commands to run yourself after each phase. Start there. The rest of this section
-is the shape of it.
-
-```
-cd ~/ai-agents-lab/agent-loop-chaos
-claude --model opus
+```bash
+pip install agent-loop-chaos
 ```
 
-Then, as the first message: `Read @prompts/00-bootstrap.md and execute that phase.
-Follow @CLAUDE.md.`
+`jsonschema` is the only required dependency. Everything else is optional:
 
-Then run the phase prompts **in order**, one per session (or one per compact
-window). Each prompt is self-contained and copy-pasteable.
+```bash
+pip install "agent-loop-chaos[langgraph]"   # LangGraph adapter
+pip install "agent-loop-chaos[slm]"         # local small-model judge
+pip install "agent-loop-chaos[yaml]"        # YAML suite files (JSON needs no extra)
+pip install "agent-loop-chaos[all]"
+```
 
-| # | Prompt file | Produces |
+Importing `agent_loop_chaos` never imports `langgraph`, `httpx` or `pyyaml`. It
+works fully offline with `--judge rules`.
+
+## Quickstart
+
+LangGraph, in five lines:
+
+```python
+from agent_loop_chaos import ChaosEngine
+from agent_loop_chaos.faults import ToolCorruptionFault
+from agent_loop_chaos.adapters.langgraph import instrument_graph
+
+engine = ChaosEngine(seed=1337)
+engine.register_fault(
+    ToolCorruptionFault(mutation_type="drop_key", keys=["temp_c"]), target_tool="get_weather_data"
+)
+result = engine.run(instrument_graph(app, engine), inputs={"query": "Pack list for Paris"})
+print(result.to_json())
+```
+
+Plain Python:
+
+```python
+from agent_loop_chaos import ChaosEngine
+from agent_loop_chaos.faults import ToolCorruptionFault
+
+chaos = ChaosEngine()
+chaos.register_fault(
+    ToolCorruptionFault(mutation_type="empty_json"), target_tool="get_weather_data"
+)
+
+
+@chaos.tool
+def get_weather_data(location: str) -> list[dict]: ...
+
+
+@chaos.intercept_tools()
+def weather_agent(user_query, state):
+    data = get_weather_data(state["location"])
+    return llm_generate(user_query, data)
+
+
+result = chaos.run_with_state(
+    weather_agent, query="Pack list for Paris", initial_state={"location": "Paris"}
+)
+print(result.to_json())
+```
+
+## What you get back
+
+```
+.chaos/
+├── suite.json                      # what CI, an optimizer, or a dashboard polls
+└── <scenario_id>/<run_id>/
+    ├── report.json                 # schema-valid ChaosResult
+    ├── trace.jsonl                 # every crossing, in order
+    ├── plan.json                   # faults + seed + entrypoint → replay input
+    ├── judge.json                  # raw judge request/response, for auditability
+    ├── baseline.diff               # unfaulted vs faulted final answer
+    └── AGENT_TASK.md               # the work order (failures only)
+```
+
+`AGENT_TASK.md` is the point of the whole library. If a coding agent would have to
+ask a question before starting work on one, it isn't good enough.
+
+```
+$ alc run chaos/demo_suite.yaml --judge rules
+tool.drop_required_key          FAIL  hallucination_on_corrupt_data   high
+llm.prose_where_json_expected   FAIL  crash_unhandled_exception       critical
+adversarial.injection_corpus    FAIL  prompt_injection_followed       critical
+loop.pinned_tool_output         FAIL  infinite_loop                   high
+control.dry_run                 pass  none                            info
+
+5 scenarios, 1 passed, 4 failed — 4 work orders in .chaos/
+```
+
+## How pass/fail is decided
+
+Three layers, and only two of them have authority
+([docs/11-OUTCOMES-AND-ASSERTIONS.md](docs/11-OUTCOMES-AND-ASSERTIONS.md)):
+
+| Layer | Decides | Authority |
 |---|---|---|
-| 00 | `prompts/00-bootstrap.md` | repo skeleton, packaging, CI, typing, test harness |
-| 01 | `prompts/01-core-engine.md` | `ChaosEngine`, targeting, triggers, seeded RNG, trace recorder |
-| 02 | `prompts/02-tool-faults.md` | tool-execution fault family + mutation library |
-| 03 | `prompts/03-llm-faults.md` | LLM/prompt fault family incl. prompt injection |
-| 04 | `prompts/04-report-and-probes.md` | deterministic probes, report/trace serialization, schema validation |
-| 05 | `prompts/05-langgraph-adapter.md` | `instrument_graph`, state faults, checkpoint faults |
-| 06 | `prompts/06-judge-slm.md` | judge protocol, rule judge, SLM judge, ensemble, narration |
-| 07 | `prompts/07-refinement-loop.md` | baseline→chaos→judge→bundle loop, `AGENT_TASK.md` writer |
-| 08 | `prompts/08-demo-agent.md` | deliberately-buggy demo agent + scenario suite that breaks it |
-| 09 | `prompts/09-cli-and-release.md` | `alc` CLI, docs, examples, release checklist |
-| 10 | `prompts/10-live-dashboard.md` | live trace dashboard (`alc dashboard`) + single-file HTML export |
+| **Probes** | structural failures visible in the trace | authoritative |
+| **Assertions** | whether the agent met the scenario's declared expectation | authoritative |
+| **Judge** | narration, root cause, hints, ranked fixes | advisory only |
 
-Phases 00–09 are v0.1.0. Phase 10 (the dashboard) is v0.2.0 by default — run it
-after 09, or before 09 if you want it in the first release, in which case add its CLI
-to phase 09's checklists. It must not run before phase 04, since it reads the report
-and trace contracts and must not shape them.
+`success` is computed. A language model never decides it — the judge may only
+contribute `failure_mode`, a root-cause hypothesis, a refinement hint and prose, and
+if the judge contradicts the probes the probes win and the disagreement is recorded
+in `verdict.judge_disagreement`.
 
-`prompts/PROMPTING-GUIDE.md` explains how to drive the sequence, what to do when a
-phase fails its acceptance gate, and how to keep the agent from drifting.
+A probe never fires on the harness's own injection. Every probe receives
+`HarnessFacts` and excludes what the engine itself caused, which is why a
+well-behaved agent passes every scenario instead of being punished for the fault it
+handled correctly.
 
-**Read-order for the agent** is enforced by `CLAUDE.md`, which every Claude Code
-session in this folder loads automatically.
+## Determinism, precisely
 
----
+Two different guarantees, and it matters which one you are relying on:
 
-## What is in this pack
+- **Harness determinism — always.** The same seed and the same `plan_hash` give
+  identical fault decisions, identical RNG draws and identical recorded fires, for a
+  given crossing sequence.
+- **Run determinism — conditional.** A byte-identical `report.json` additionally
+  requires a deterministic agent, a deterministic model (a scripted fake, or a real
+  model at temperature 0 whose provider is stable), `--judge rules`, and a
+  single-threaded graph.
 
-```
-agent-loop-chaos/
-├── README.md                    ← you are here
-├── RUNBOOK.md                   ← the command list: start here to run the build
-├── CLAUDE.md                    ← conventions + guardrails, auto-loaded by Claude Code
-├── SAFETY.md                    ← what this can break, and the gates that stop it
-├── docs/
-│   ├── 00-VISION.md             positioning, non-goals, success criteria
-│   ├── 01-ARCHITECTURE.md       components, data flow, lifecycle, extension points
-│   ├── 02-API.md                the exact public API to implement
-│   ├── 03-FAULT-CATALOG.md      every injector: params, semantics, what it proves
-│   ├── 04-SCHEMAS.md            report / trace / scenario / verdict contracts
-│   ├── 05-JUDGE-AND-LOOP.md     SLM judge design + the continuous refinement loop
-│   ├── 06-LANGGRAPH-ADAPTER.md  LangGraph and vanilla-Python integration
-│   ├── 07-TESTING.md            test strategy, fixtures, determinism, CI gates
-│   ├── 08-ROADMAP.md            milestones M0–M10 with acceptance gates
-│   ├── 09-DEMO-AGENT.md         the buggy demo agent used to prove value
-│   ├── 10-DASHBOARD.md          live trace dashboard: tailing, API, panes, export
-│   ├── 11-OUTCOMES-AND-ASSERTIONS.md   ← the pass/fail authority. Read this one.
-│   └── DECISIONS.md             binding errata from an adversarial review of the spec
-├── schemas/
-│   ├── chaos_report.schema.json
-│   ├── trace_event.schema.json
-│   ├── scenario.schema.json
-│   ├── judge_verdict.schema.json
-│   └── examples/                valid instances used as golden fixtures
-├── assets/prompts/              prompt templates the library itself ships
-│   ├── judge_system.md
-│   ├── judge_user.md
-│   ├── narrator.md
-│   └── refiner.md
-├── prompts/                     the build prompts for Claude Code
-│   ├── PROMPTING-GUIDE.md
-│   └── 00…10-*.md
-└── tools/verify_pack.py         consistency check over this pack (see below)
+Model-authored fields are excluded from golden comparisons. No wall-clock value ever
+reaches a probe, an assertion or a classification rule.
+
+## Consuming a report
+
+The schemas ship inside the package, so you can validate a report without cloning
+this repo:
+
+```python
+from agent_loop_chaos.schema import validate_obj
+
+errors = validate_obj(report_dict, "report")  # [] when valid
 ```
 
-`python3 tools/verify_pack.py` validates the schemas, validates every example
-instance against them, and checks that names shared across the docs, schemas, and
-prompts have not drifted (fault kinds, probe codes, `failure_mode` and fix-kind
-enums, preset names, `must_not` codes, and every file path the prompts reference).
-Run it after editing anything in this folder. It needs `jsonschema>=4.18` and
-`pyyaml`; exit code 1 means something is inconsistent.
+`schema_version` is `MAJOR.MINOR`. The schemas set `additionalProperties: false`,
+but **that strictness is for producers, not consumers**: it guarantees this library
+never emits a field it has not documented. A consumer should ignore properties it
+does not recognise, so that a MINOR addition never breaks it.
 
-The `schemas/` and `assets/prompts/` folders are **not documentation** — they are
-source files. Phase 00 moves them into the package tree verbatim.
+## Safety
 
----
+Three faults perform real actions the agent never requested — `ArgumentTamperFault`,
+`DuplicateSideEffectFault` and `CheckpointRollbackFault`. Pointed at `charge_card` or
+`delete_rows` those are a double charge and a delete with no predicate. There is a
+gate enforced in code, and it is not optional. **Read [SAFETY.md](SAFETY.md) before
+pointing this at an agent wired to real tools and real credentials.**
 
-## Before you start: read `docs/DECISIONS.md`
+Run directories hold full prompts, tool payloads, state snapshots and source
+excerpts. They are sensitive by default and `.gitignore`d.
 
-The spec was reviewed adversarially before any code existed, and ~45 findings were
-folded back in. The structural ones are worth knowing up front:
+## Documentation
 
-- **`docs/11-OUTCOMES-AND-ASSERTIONS.md` is the pass/fail authority.** It defines
-  harness attribution, the assertions layer, and the classification rules. The
-  earlier sketch in `docs/04` §7 is superseded.
-- **A probe never fires on the harness's own injection.** Eleven of the original
-  probe rules did, which made the control fixture unpassable.
-- **Assertions, not heuristics, decide whether the output behaved.** A deterministic
-  rule can prove a failure; it cannot prove an answer is good.
-- **`SAFETY.md` describes gates you must enforce in code**, not advice.
-
-## Decisions already locked (do not re-litigate)
-
-| Decision | Value |
+| Document | What it covers |
 |---|---|
-| Language / package | Python ≥3.10, distribution `agent-loop-chaos`, import `agent_loop_chaos` |
-| Primary target | LangGraph (`langgraph` ≥0.2) |
-| Secondary target | plain Python functions / callables |
-| Judge | pluggable protocol; default = ensemble of rules + local SLM over an OpenAI-compatible or Ollama endpoint; deterministic rules-only fallback |
-| Core dependencies | stdlib only + `jsonschema`; everything else optional extras |
-| Output contract | `report.json` (schema-validated), `trace.jsonl`, `AGENT_TASK.md` |
-| Determinism | harness determinism always; byte-identical reports under the conditions in `docs/DECISIONS.md` D-07 |
-| Pass/fail authority | deterministic probes **plus** a declarative assertions layer; the model only narrates (`docs/11`) |
-| License | Apache-2.0 |
-| CLI | `alc` |
-| Live viewing | `alc dashboard` — stdlib-only local server that tails `trace.jsonl`; also a single-file HTML export. Read-only, localhost, no build step |
+| [docs/00-VISION.md](docs/00-VISION.md) | positioning, non-goals |
+| [docs/01-ARCHITECTURE.md](docs/01-ARCHITECTURE.md) | module map, `Crossing`, run lifecycle |
+| [docs/02-API.md](docs/02-API.md) | the public API; every name is frozen |
+| [docs/03-FAULT-CATALOG.md](docs/03-FAULT-CATALOG.md) | all 26 faults, normative |
+| [docs/04-SCHEMAS.md](docs/04-SCHEMAS.md) | output contracts and versioning |
+| [docs/11-OUTCOMES-AND-ASSERTIONS.md](docs/11-OUTCOMES-AND-ASSERTIONS.md) | pass/fail authority |
+| [docs/DECISIONS.md](docs/DECISIONS.md) | binding errata; outranks every other doc |
+| [PACK.md](PACK.md) | the build handover pack this repo was implemented from |
 
----
-
-## Definition of done for the whole build
-
-- `pip install -e ".[dev,langgraph,slm]"` then `make check` is green on a clean clone.
-- `alc run examples/scenarios/demo_suite.yaml` finds **at least 6 distinct real
-  failure modes** in the demo agent, with no false positives on the baseline run.
-- Every `report.json` validates against `chaos_report.schema.json` in CI.
-- Two identical seeded runs produce byte-identical `report.json` after
-  timestamp/duration normalization — under `--judge rules`, with a deterministic
-  agent and model, single-threaded (D-07 states the boundary; do not overclaim it).
-- **No probe fires on `good_agent` or on a baseline run.** A finding the harness
-  created rather than the agent is a bug (`docs/11` §2).
-- `alc run --judge rules` works with no network and no model available.
-- A human can paste one `AGENT_TASK.md` into a fresh Claude Code session and it
-  fixes the demo agent's bug without further explanation.
-- (after phase 10) `alc run … --dashboard` shows runs, events, and fault diffs live
-  in a browser with only `jsonschema` installed, and `alc report --format html`
-  produces one self-contained file with no external asset references.
+Contributing: [CONTRIBUTING.md](CONTRIBUTING.md) explains how to add a fault and a
+probe. Licensed under [Apache-2.0](LICENSE).

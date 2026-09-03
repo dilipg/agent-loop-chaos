@@ -18,6 +18,7 @@ add instance validation; `pyyaml` adds the three checks that read
 Exit code 1 means something is inconsistent, or --strict was given and something
 was skipped.
 """
+
 from __future__ import annotations
 
 import json
@@ -55,7 +56,7 @@ resources = {}
 for p in sorted(SCHEMA_DIR.glob("*.json")):
     try:
         doc = json.loads(p.read_text())
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         errors.append(f"{p.name}: invalid JSON: {e}")
         continue
     resources[p.name] = doc
@@ -73,13 +74,14 @@ if HAVE_JSONSCHEMA:
     for name, doc in resources.items():
         try:
             Draft202012Validator.check_schema(doc)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             errors.append(f"{name}: not a valid Draft 2020-12 schema: {e}")
 else:
     skipped.append(
         f"Draft 2020-12 schema check on {len(resources)} schema file(s) "
         "— needs `jsonschema>=4.18` + `referencing`"
     )
+
 
 # ------------------------------------------------------- validate the examples
 def validate(instance, schema_name, label):
@@ -103,7 +105,7 @@ for i, line in enumerate((EX / "trace_excerpt.jsonl").read_text().splitlines(), 
         continue
     try:
         ev = json.loads(line)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         errors.append(f"trace_excerpt.jsonl:{i}: invalid JSON: {e}")
         continue
     validate(ev, "trace_event.schema.json", f"trace_excerpt.jsonl:{i}")
@@ -130,12 +132,14 @@ else:
     if fm_prompt != fm_report:
         errors.append(
             "failure_mode enum drift between chaos_report.schema.json and judge_system.md: "
-            f"only in schema={sorted(fm_report - fm_prompt)} only in prompt={sorted(fm_prompt - fm_report)}"
+            f"only in schema={sorted(fm_report - fm_prompt)} "
+            f"only in prompt={sorted(fm_prompt - fm_report)}"
         )
     else:
         notes.append(f"failure_mode enum consistent ({len(fm_report)} values)")
 
-fix_kinds = set(report_schema["properties"]["suggested_fixes"]["items"]["properties"]["kind"]["enum"])
+_fix_prop = report_schema["properties"]["suggested_fixes"]["items"]["properties"]["kind"]
+fix_kinds = set(_fix_prop["enum"])
 for f in ("judge_system.md", "refiner.md"):
     txt = (ROOT / "assets/prompts" / f).read_text()
     missing = [k for k in fix_kinds if k not in txt]
@@ -165,12 +169,16 @@ if suite is not None:
 
 # presets referenced by the suite exist in the scenario schema enum
 preset_enum = set(
-    resources["scenario.schema.json"]["$defs"]["scenarioBody"]["properties"]["preset"]["oneOf"][0]["enum"]
+    resources["scenario.schema.json"]["$defs"]["scenarioBody"]["properties"]["preset"]["oneOf"][0][
+        "enum"
+    ]
 )
 preset_section = catalog.split("## D. Fault-composition recipes")[1]
 catalog_presets = set(re.findall(r"^\| `(\w+)` \|", preset_section, re.M))
 if not catalog_presets <= preset_enum:
-    errors.append(f"presets in catalog missing from scenario schema: {sorted(catalog_presets - preset_enum)}")
+    errors.append(
+        f"presets in catalog missing from scenario schema: {sorted(catalog_presets - preset_enum)}"
+    )
 else:
     notes.append(f"all {len(catalog_presets)} presets in the schema enum")
 
@@ -187,9 +195,11 @@ else:
 # probes removed in the revision must not reappear
 outcomes = (ROOT / "docs/11-OUTCOMES-AND-ASSERTIONS.md").read_text()
 for gone in ("fabricated_value", "latency_budget_exceeded", "state_key_lost"):
-    if re.search(r"^\| `%s` \| " % gone, probe_section, re.M):
+    if re.search(rf"^\| `{gone}` \| ", probe_section, re.M):
         errors.append(f"removed probe {gone} is back in the docs/07 section 3 table")
-notes.append("removed probes (fabricated_value, latency_budget_exceeded, state_key_lost) stay removed")
+notes.append(
+    "removed probes (fabricated_value, latency_budget_exceeded, state_key_lost) stay removed"
+)
 
 # PROBE_PRECEDENCE in docs/11 section 8 must list exactly the same codes
 m_pp = re.search(r"PROBE_PRECEDENCE`? is an explicit list.*?```\n(.*?)```", outcomes, re.S)
@@ -198,8 +208,11 @@ if not m_pp:
 else:
     pp = {t.strip() for t in m_pp.group(1).replace("\n", " ").split(",") if t.strip()}
     if pp != probe_codes:
-        errors.append("PROBE_PRECEDENCE vs docs/07 section 3 drift: "
-                      f"only in precedence={sorted(pp - probe_codes)} only in table={sorted(probe_codes - pp)}")
+        errors.append(
+            "PROBE_PRECEDENCE vs docs/07 section 3 drift: "
+            f"only in precedence={sorted(pp - probe_codes)} "
+            f"only in table={sorted(probe_codes - pp)}"
+        )
     else:
         notes.append(f"PROBE_PRECEDENCE matches the probe table ({len(pp)} codes)")
 
@@ -211,12 +224,15 @@ if not m_out:
 else:
     asked = set(re.findall(r'^  "(\w+)":', m_out.group(1), re.M))
     if asked != set(jo):
-        errors.append("judge_system.md output block vs judge_output subschema drift: "
-                      f"only in prompt={sorted(asked - set(jo))} only in schema={sorted(set(jo) - asked)}")
+        errors.append(
+            "judge_system.md output block vs judge_output subschema drift: "
+            f"only in prompt={sorted(asked - set(jo))} "
+            f"only in schema={sorted(set(jo) - asked)}"
+        )
     else:
         notes.append(f"judge prompt asks for exactly the {len(jo)} judge_output fields")
 for banned in ("passed", "expected_behavior"):
-    if m_out and re.search(r'"%s"\s*:' % banned, m_out.group(1)):
+    if m_out and re.search(rf'"{banned}"\s*:', m_out.group(1)):
         errors.append(f"judge_system.md asks the model for `{banned}`, which the library owns")
 
 # the canary regex in the corpus spec must actually match the canary format
@@ -239,9 +255,15 @@ for rx in re.findall(r'"detect":\s*\{[^}]*"value":\s*"([^"]+)"', p03):
 
 # untrusted spans in the judge prompts must be fenced
 ju = (ROOT / "assets/prompts/judge_user.md").read_text()
-for var in ("{{injected}}", "{{final_output}}", "{{last_exchanges}}", "{{code_context}}", "{{tool_summary}}"):
+for var in (
+    "{{injected}}",
+    "{{final_output}}",
+    "{{last_exchanges}}",
+    "{{code_context}}",
+    "{{tool_summary}}",
+):
     idx = ju.find(var)
-    if idx == -1 or "UNTRUSTED_DATA" not in ju[max(0, idx - 120):idx]:
+    if idx == -1 or "UNTRUSTED_DATA" not in ju[max(0, idx - 120) : idx]:
         errors.append(f"judge_user.md: {var} is not inside an UNTRUSTED_DATA fence (D-21)")
 if all("UNTRUSTED_DATA fence" not in e for e in errors):
     notes.append("every untrusted span in judge_user.md is fenced")
@@ -258,7 +280,8 @@ else:
     notes.append(f"docs/DECISIONS.md: {len(ids)} contiguous decisions")
 
 # report example may only use real probe codes, and its assertions only real checks
-expect_props = set(resources["scenario.schema.json"]["$defs"]["scenarioBody"]["properties"]["expect"]["properties"])
+_scenario_body = resources["scenario.schema.json"]["$defs"]["scenarioBody"]["properties"]
+expect_props = set(_scenario_body["expect"]["properties"])
 for a in report.get("assertions", []):
     if a["check"] not in expect_props:
         errors.append(f"report example uses assertion check not in the expect schema: {a['check']}")
@@ -278,12 +301,31 @@ for sy in report["symptoms"]:
         errors.append(f"report example uses probe code not in docs/07 table: {sy['code']}")
 
 # ------------------------------------------- prompts reference existing files
-pack_files = {str(p.relative_to(ROOT)) for p in ROOT.rglob("*") if p.is_file()}
+# Only the pack itself. Without the prune, a local .venv/ or .git/ lands in here,
+# which makes the scan slow and the reported file count meaningless.
+_PRUNE = {
+    ".venv",
+    "venv",
+    ".git",
+    "__pycache__",
+    "node_modules",
+    "dist",
+    "build",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "htmlcov",
+}
+pack_files = {
+    str(p.relative_to(ROOT))
+    for p in ROOT.rglob("*")
+    if p.is_file() and not (_PRUNE & set(p.relative_to(ROOT).parts))
+}
 # Paths that legitimately do not exist in the pack: created by the build itself,
 # or section shorthands like `docs/04`.
 BUILT_BY_AGENT = {
     "docs/FAQ.md",
-    "schemas/suite.schema.json",   # written in phase 07 (D-25)
+    "schemas/suite.schema.json",  # written in phase 07 (D-25)
     "prompts/plan.md",
     "prompts/summarize.md",
     "prompts/respond.md",
@@ -295,9 +337,9 @@ def unresolvable(ref: str) -> bool:
         return False
     if ref.endswith("/") or "*" in ref:
         return False
-    if re.fullmatch(r"docs/\d\d", ref):  # section shorthand, e.g. `docs/04` §3
-        return False
-    return True
+    # section shorthand, e.g. `docs/04` §3
+    return not re.fullmatch(r"docs/\d\d", ref)
+
 
 for prompt in sorted((ROOT / "prompts").glob("*.md")):
     txt = prompt.read_text()
@@ -309,17 +351,25 @@ for prompt in sorted((ROOT / "prompts").glob("*.md")):
         if section not in txt and prompt.name != "PROMPTING-GUIDE.md":
             errors.append(f"{prompt.name}: missing section {section}")
 
-for doc in sorted((ROOT / "docs").glob("*.md")) + [ROOT / "README.md", ROOT / "CLAUDE.md"]:
+_scanned_docs = [
+    *sorted((ROOT / "docs").glob("*.md")),
+    ROOT / "README.md",
+    ROOT / "PACK.md",
+    ROOT / "CLAUDE.md",
+]
+for doc in _scanned_docs:
     txt = doc.read_text()
-    for ref in set(re.findall(r"`((?:docs|schemas|assets|prompts)/[\w./-]+\.(?:md|json|yaml|jsonl))`", txt)):
+    _doc_ref = r"`((?:docs|schemas|assets|prompts)/[\w./-]+\.(?:md|json|yaml|jsonl))`"
+    for ref in set(re.findall(_doc_ref, txt)):
         if unresolvable(ref):
             errors.append(f"{doc.name}: references missing pack file `{ref}`")
 
-# README's prompt table must list every phase prompt
-readme = (ROOT / "README.md").read_text()
+# the build pack's prompt table must list every phase prompt (D-49: moved off README.md,
+# which is now the library's own readme and rendered by PyPI)
+pack = (ROOT / "PACK.md").read_text()
 for p in sorted((ROOT / "prompts").glob("[0-9]*.md")):
-    if f"prompts/{p.name}" not in readme:
-        errors.append(f"README.md: phase prompt not listed: {p.name}")
+    if f"prompts/{p.name}" not in pack:
+        errors.append(f"PACK.md: phase prompt not listed: {p.name}")
 
 # ------------------------------------------------------------------- report
 if unvalidated:

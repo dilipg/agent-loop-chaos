@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  FORCE_COLOR: "1"
+
+jobs:
+  lint:
+    name: lint + types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy --strict src/agent_loop_chaos
+
+  test:
+    name: test py${{ matrix.python }} / langgraph=${{ matrix.langgraph }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+        langgraph: [pinned, none]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      # The `none` column installs only [dev]. It is what proves the core has no
+      # hard framework dependency, so test_no_hard_deps.py and every core test must
+      # pass there.
+      - name: install (core only)
+        if: matrix.langgraph == 'none'
+        run: pip install -e ".[dev]"
+      - name: install (with langgraph)
+        if: matrix.langgraph == 'pinned'
+        run: pip install -e ".[dev,langgraph]"
+
+      # Coverage is gated, not merely reported: fail_under = 85 lives in
+      # pyproject.toml's [tool.coverage.report], so this step enforces it.
+      - name: pytest with the coverage gate
+        run: pytest -q --cov --cov-report=term-missing
+
+  schema:
+    name: schema
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - name: validate the packaged schemas and every shipped example
+        run: pytest -q tests/test_schemas.py
+      - name: spec pack consistency
+        run: python tools/verify_pack.py --strict
