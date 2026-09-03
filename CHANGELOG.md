@@ -11,6 +11,43 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ### Added
 
+- **M2 — tool-execution faults and the mutation library (phase 02).** Built
+  red-green-refactor throughout: every test written first and watched failing for
+  the expected reason before any implementation.
+- The D-23 side-effect gate, built first as the phase requires: a real-action fault
+  refuses a `side_effecting=True` tool without an explicit per-tool opt-in, a
+  wildcard target never matches one, and `engine.require_declared_side_effects()`
+  refuses a broad preset while any tool is undeclared.
+- `mutations.py` — all 22 names from catalog A1, pure and deep-copying, with
+  deterministic `rng.sample(sorted(paths), count)` selection. `unit_swap` converts
+  the value and leaves the label intact; `nan_numbers` emits the D-09 encoding;
+  `drop_required_key` implements D-17's baseline heuristic with its documented
+  fallback.
+- All ten section-A faults: `ToolCorruptionFault`, `ToolErrorFault`,
+  `ToolLatencyFault`, `ToolTimeoutFault`, `ArgumentTamperFault`, `StaleDataFault`,
+  `NonDeterminismFault`, `DuplicateSideEffectFault`, `LoopTrapFault`,
+  `RateLimitFault`.
+- `errors.SimulatedToolError`, so a scenario can raise something unambiguously ours.
+  Exception classes come from an allow-list; a class name from a scenario file is
+  never evaluated.
+- `alc list-faults` is implemented, with `--json` for CI.
+- 530 tests, 89.9% coverage on `faults` and `mutations`.
+
+### Fixed in M2 development
+
+- A `(tool, pre)` fault could not substitute a return value, so
+  `ToolErrorFault(error_type="error_payload")` ran the real tool and discarded the
+  envelope. Its unit test passed throughout; the end-to-end test caught it (D-57).
+- `replace_args` could only deliver positional arguments, so `ArgumentTamperFault`
+  never reached a tool called by keyword (D-57).
+- `invoke_target` was unimplemented, so `DuplicateSideEffectFault` never duplicated
+  anything (D-57).
+- An exception in the engine's routing layer was reported as the agent's `error`,
+  because the tool wrapper runs inside the agent's call stack — a library bug
+  attributed to the agent under test, which `CLAUDE.md` forbids (D-58).
+
+### Added
+
 - **M1 — core engine (phase 01).** `Crossing` and the run-scoped context objects,
   seeded RNG and derived ids, secret redaction, the RFC 6902 subset, the trace
   recorder, targeting and triggering, the `Fault` base with `NoopFault`, the vanilla

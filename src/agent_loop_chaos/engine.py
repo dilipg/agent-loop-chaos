@@ -77,6 +77,27 @@ _SKIP_PRECEDENCE: tuple[str, ...] = (
     "superseded",
 )
 
+
+class _InjectedFailure(BaseException):
+    """Carries a fault's deliberate exception out through the routing layer.
+
+    Derives from `BaseException` on purpose. The routing layer wraps itself in
+    `except Exception` so a library bug cannot be reported as an agent failure, and
+    a fault's `raise` action travels through exactly that code path -- without this
+    marker the guard would swallow the injected error and call the real tool anyway,
+    silently disarming every `raise` fault.
+    """
+
+    def __init__(self, original: BaseException) -> None:
+        """Wrap the exception the fault asked for.
+
+        Args:
+            original: The exception to deliver to the agent.
+        """
+        self.original = original
+        super().__init__(repr(original))
+
+
 _PRE_EVENT = {"tool": "tool_call_requested", "llm": "llm_request"}
 _POST_EVENT = {"tool": "tool_call_returned", "llm": "llm_response"}
 _ERROR_EVENT = {"tool": "tool_call_failed", "llm": "llm_response"}
@@ -1096,7 +1117,15 @@ class ChaosEngine:
 
             if outcome.action in VALUE_ACTIONS:
                 value = outcome.value
-                self._rebind(crossing, value)
+                # `replace_result` at a `pre` crossing means "do not call the real
+                # thing, use this instead" -- the only way an in-band error envelope
+                # or a 429 body can reach the agent without the tool executing
+                # (D-57).
+                if outcome.action == "replace_result" and crossing.phase == "pre":
+                    crossing.has_substitute = True
+                    crossing.substitute_result = value
+                else:
+                    self._rebind(crossing, value)
                 state.faulted_seqs.add(seq)
             elif outcome.action in TERMINAL_ACTIONS:
                 terminal = (armed, outcome)
@@ -1121,6 +1150,10 @@ class ChaosEngine:
             crossing.messages = value
         elif isinstance(value, tuple):
             crossing.args = value
+        elif isinstance(value, dict):
+            # `ArgumentTamperFault` mutates keyword arguments, so a mapping here is
+            # the replaced kwargs rather than a substitute result.
+            crossing.kwargs = value
 
     def _resolve_terminal(
         self,
@@ -1149,15 +1182,19 @@ class ChaosEngine:
             if not isinstance(error, BaseException):
                 error = RuntimeError(str(error) if error is not None else armed.record.type)
             state.harness_raised_seqs.add(state.ctx.trace._seq)
-            raise error
+            raise _InjectedFailure(error)
         if outcome.action == "delay":
             delay_ms = min(outcome.delay_ms, state.ctx.limits.max_injected_delay_ms)
             state.ctx.counters.injected_delay_ms += delay_ms
             if delay_ms > 0:
                 time.sleep(delay_ms / 1000)
             return value
-        # invoke_target and resume_from_checkpoint are performed by the adapter that
-        # knows how to await, and land in M2/M5 (D-10).
+        if outcome.action == "invoke_target":
+            crossing.invoke_times = max(1, int(outcome.params.get("times", 2)))
+            crossing.invoke_return_from = str(outcome.params.get("return_from", "first"))
+            return value
+        # resume_from_checkpoint needs a checkpointer, so it lands with the LangGraph
+        # adapter in M5 (D-10).
         self._emit(
             Event(
                 kind="fault_skipped",
@@ -1333,9 +1370,8 @@ class ChaosEngine:
         if crossing.layer == "llm":
             payload = _denormalize(args[0] if args else None, routed)
             return ((payload, *args[1:]) if args else (payload,)), kwargs
-        if isinstance(routed, tuple):
-            return routed, kwargs
-        return args, kwargs
+        # `_rebind` has already written whichever half the fault replaced.
+        return crossing.args, crossing.kwargs
 
     def route_sync(
         self,
@@ -1363,16 +1399,52 @@ class ChaosEngine:
         """
         if not self._should_intercept(layer, name):
             return fn(*args, **kwargs)
-        pre = self._pre_phase(layer, name, args, kwargs)
-        call_args, call_kwargs, crossing = pre
+        # The wrapper runs inside the agent's own call stack, so an exception from the
+        # routing layer would otherwise be captured as the agent's `error` -- a
+        # library bug reported as an agent failure, which CLAUDE.md forbids.
+        try:
+            call_args, call_kwargs, crossing = self._pre_phase(layer, name, args, kwargs)
+        except _InjectedFailure as injected:
+            raise injected.original from None
+        except LimitExceeded:
+            raise
+        except Exception as exc:
+            self._internal_error(f"route_sync.pre[{layer}:{name}]", exc)
+            return fn(*args, **kwargs)
         started = time.perf_counter()
+        if crossing.has_substitute:
+            return self._post_phase(crossing, crossing.substitute_result, started)
+        if crossing.invoke_times > 1:
+            return self._invoke_repeatedly(fn, crossing, call_args, call_kwargs, started)
         try:
             result = fn(*call_args, **call_kwargs)
         except LimitExceeded:
             raise
         except BaseException as exc:
             return self._error_phase(crossing, exc, started)
-        return self._post_phase(crossing, result, started)
+        return self._guarded_post(crossing, result, started)
+
+    def _guarded_post(self, crossing: Crossing, result: Any, started: float) -> Any:
+        """Run the post phase, containing any failure inside the library.
+
+        Args:
+            crossing: The crossing.
+            result: What the real callable returned.
+            started: `perf_counter` at call start.
+
+        Returns:
+            The possibly-faulted result, or the untouched result when the post phase
+            itself failed.
+        """
+        try:
+            return self._post_phase(crossing, result, started)
+        except _InjectedFailure as injected:
+            raise injected.original from None
+        except LimitExceeded:
+            raise
+        except Exception as exc:
+            self._internal_error(f"post_phase[{crossing.layer}:{crossing.name}]", exc)
+            return result
 
     async def route_async(
         self,
@@ -1400,15 +1472,141 @@ class ChaosEngine:
         """
         if not self._should_intercept(layer, name):
             return await fn(*args, **kwargs)
-        call_args, call_kwargs, crossing = self._pre_phase(layer, name, args, kwargs)
+        # Same containment as the sync path: a library bug must not become the
+        # agent's error.
+        try:
+            call_args, call_kwargs, crossing = self._pre_phase(layer, name, args, kwargs)
+        except _InjectedFailure as injected:
+            raise injected.original from None
+        except LimitExceeded:
+            raise
+        except Exception as exc:
+            self._internal_error(f"route_async.pre[{layer}:{name}]", exc)
+            return await fn(*args, **kwargs)
         started = time.perf_counter()
+        if crossing.has_substitute:
+            return self._post_phase(crossing, crossing.substitute_result, started)
+        if crossing.invoke_times > 1:
+            return await self._ainvoke_repeatedly(fn, crossing, call_args, call_kwargs, started)
         try:
             result = await fn(*call_args, **call_kwargs)
         except LimitExceeded:
             raise
         except BaseException as exc:
             return self._error_phase(crossing, exc, started)
-        return self._post_phase(crossing, result, started)
+        return self._guarded_post(crossing, result, started)
+
+    def _record_harness_invocation(self, crossing: Crossing, repeat: int) -> None:
+        """Emit and attribute one invocation the harness made on its own initiative.
+
+        Every repeat lands in `HarnessFacts.harness_invocation_seqs` so the
+        `duplicate_side_effect` probe can exclude the harness's own calls (R1).
+        Without that the probe would fire on every run of the fault, including
+        against a perfectly idempotent agent, which would make the control
+        unpassable.
+
+        Args:
+            crossing: The crossing being repeated.
+            repeat: 1-based index of this invocation.
+        """
+        state = self._state()
+        event = self._emit(
+            Event(
+                kind="tool_call_requested",
+                level="standard",
+                layer=crossing.layer,
+                phase="pre",
+                name=crossing.name,
+                step=crossing.step,
+                call_index=crossing.call_index,
+                span_id=crossing.span_id,
+                payload={"harness_invocation": True, "repeat": repeat},
+            )
+        )
+        if event is not None and repeat > 1:
+            state.harness_invocation_seqs.add(int(event["seq"]))
+
+    def _pick_repeat_result(self, crossing: Crossing, results: list[Any]) -> Any:
+        """Choose which repeated response the agent receives.
+
+        Args:
+            crossing: The crossing, carrying `invoke_return_from`.
+            results: The responses, in invocation order.
+
+        Returns:
+            The first or the last response.
+        """
+        if not results:
+            return None
+        return results[0] if crossing.invoke_return_from == "first" else results[-1]
+
+    def _invoke_repeatedly(
+        self,
+        fn: Callable[..., Any],
+        crossing: Crossing,
+        call_args: tuple[Any, ...],
+        call_kwargs: dict[str, Any],
+        started: float,
+    ) -> Any:
+        """Call the real tool `invoke_times` times, synchronously.
+
+        Args:
+            fn: The real callable.
+            crossing: The crossing.
+            call_args: Positional arguments.
+            call_kwargs: Keyword arguments.
+            started: `perf_counter` at call start.
+
+        Returns:
+            The chosen response.
+
+        Raises:
+            BaseException: Whatever the real callable raised.
+        """
+        results: list[Any] = []
+        for repeat in range(1, crossing.invoke_times + 1):
+            self._record_harness_invocation(crossing, repeat)
+            try:
+                results.append(fn(*call_args, **call_kwargs))
+            except LimitExceeded:
+                raise
+            except BaseException as exc:
+                return self._error_phase(crossing, exc, started)
+        return self._post_phase(crossing, self._pick_repeat_result(crossing, results), started)
+
+    async def _ainvoke_repeatedly(
+        self,
+        fn: Callable[..., Any],
+        crossing: Crossing,
+        call_args: tuple[Any, ...],
+        call_kwargs: dict[str, Any],
+        started: float,
+    ) -> Any:
+        """Async twin of `_invoke_repeatedly`.
+
+        Args:
+            fn: The real coroutine function.
+            crossing: The crossing.
+            call_args: Positional arguments.
+            call_kwargs: Keyword arguments.
+            started: `perf_counter` at call start.
+
+        Returns:
+            The chosen response.
+
+        Raises:
+            BaseException: Whatever the real callable raised.
+        """
+        results: list[Any] = []
+        for repeat in range(1, crossing.invoke_times + 1):
+            self._record_harness_invocation(crossing, repeat)
+            try:
+                results.append(await fn(*call_args, **call_kwargs))
+            except LimitExceeded:
+                raise
+            except BaseException as exc:
+                return self._error_phase(crossing, exc, started)
+        return self._post_phase(crossing, self._pick_repeat_result(crossing, results), started)
 
     def _pre_phase(
         self, layer: str, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]

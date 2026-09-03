@@ -606,3 +606,30 @@ def test_markers_are_inert_outside_a_run(tmp_path: Path) -> None:
     eng.validated("x", name="check")
     eng.note("hello")
     assert eng.step() == 0
+
+
+def test_an_engine_bug_in_the_routing_layer_is_not_reported_as_an_agent_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CLAUDE.md: "An engine bug must never be reported as an agent failure."
+
+    Found while wiring `invoke_target`: a missing attribute in `route_sync` raised
+    inside the tool wrapper, which sits in the agent's own call stack, so the engine
+    captured it as `error` and the report blamed the agent for a library bug. The
+    routing layer has to contain its own failures the same way `apply()` does.
+    """
+    eng = engine(tmp_path)
+
+    @eng.tool
+    def fetch() -> str:
+        return "real value"
+
+    def exploding_pre(*args: Any, **kwargs: Any) -> Any:
+        raise AttributeError("deliberate engine bug")
+
+    monkeypatch.setattr(eng, "_pre_phase", exploding_pre)
+
+    result = eng.run(lambda: fetch())
+    assert result.error is None, "a library bug must not be attributed to the agent"
+    assert result.final_output == "real value", "the call must pass through untouched"
+    assert "internal_error" in {e["kind"] for e in eng_events(tmp_path, result)}

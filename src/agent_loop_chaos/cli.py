@@ -11,6 +11,7 @@ scenario failed, 2 configuration or usage error, 3 internal error.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from collections.abc import Sequence
@@ -109,6 +110,41 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _list_faults(*, as_json: bool) -> int:
+    """Print the registered fault catalog.
+
+    Args:
+        as_json: Emit one JSON document and nothing else, so CI can pipe it.
+
+    Returns:
+        `EXIT_OK`.
+    """
+    # Imported here so `alc --version` does not pay for building the registry.
+    from .faults import list_faults
+
+    infos = list_faults()
+    if as_json:
+        payload = [
+            {
+                "kind": info.kind,
+                "accepts": list(info.layer_phases),
+                "severity_hint": info.severity_hint,
+                "summary": info.summary,
+            }
+            for info in infos
+        ]
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return EXIT_OK
+
+    width = max((len(info.kind) for info in infos), default=0)
+    for info in infos:
+        accepts = ", ".join(info.layer_phases)
+        print(f"{info.kind:<{width}}  {accepts}")
+        print(f"{'':<{width}}  {info.severity_hint}: {info.summary}")
+    print(f"\n{len(infos)} fault kinds registered.")
+    return EXIT_OK
+
+
 def _configure_logging(verbosity: int) -> None:
     """Set the library logger's level from a repeat-count flag.
 
@@ -141,8 +177,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.print_help()
         return EXIT_USAGE
 
-    # M0 ships the parser only. Each command lands with the phase that owns it, and
-    # `alc` is complete in M9 (prompts/09-cli-and-release.md).
+    if args.command == "list-faults":
+        return _list_faults(as_json=bool(args.json))
+
+    # Each remaining command lands with the phase that owns it, and `alc` is
+    # complete in M9 (prompts/09-cli-and-release.md).
     print(f"alc {args.command}: not implemented", file=sys.stderr)
     return EXIT_USAGE
 

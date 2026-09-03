@@ -709,3 +709,48 @@ passes the scenario's list through when it constructs the engine.
 `side_effecting_tool_not_named`, inserted into D-36's `skipped_reason` precedence
 directly after `dry_run`: it is a gate decision, so it outranks any trigger miss
 that might also apply.
+
+### D-57 — `pre`-phase faults can substitute a result, replace kwargs, or repeat a call
+*Affects `docs/01-ARCHITECTURE.md` §4, `docs/03` A2/A5/A8/A10, phase 02, 2026-09-03.*
+
+M1's engine could route a `pre` crossing but not act on three of the outcomes the
+catalog requires. All three were found by end-to-end tests whose unit-level
+counterparts passed, which is the case for writing both.
+
+**1. `replace_result` at a `pre` crossing short-circuits the call.** Catalog A2's
+`error_type="error_payload"` and A10's 429 body *return* rather than raise, and the
+real tool must not run. The engine now sets `Crossing.has_substitute` and skips the
+callable. Without this, `ToolErrorFault(error_type="error_payload")` called the real
+tool and discarded the envelope — its `apply()` test passed throughout.
+
+**2. `replace_args` may carry a mapping.** `ArgumentTamperFault` mutates keyword
+arguments, so the replacement value is a `dict`. `_rebind` writes a tuple to
+`Crossing.args` and a mapping to `Crossing.kwargs`, and the call is rebuilt from the
+crossing rather than inferred from the returned value.
+
+**3. `invoke_target` is performed by the routing layer, not by `apply()`.** Per D-10
+only the adapter knows whether to `await`. `Crossing.invoke_times` /
+`invoke_return_from` carry the request, and every repeat emits its own
+`tool_call_requested` and lands in `HarnessFacts.harness_invocation_seqs` (R1) — so
+the `duplicate_side_effect` probe can exclude the harness's own calls. Without that
+attribution the probe would fire on every run of the fault, including against a
+perfectly idempotent agent, making the control unpassable.
+
+### D-58 — The routing layer contains its own failures
+*Affects `CLAUDE.md` (non-negotiable rules), `engine.py`, phase 02, 2026-09-03.*
+
+`CLAUDE.md` says an engine bug must never be reported as an agent failure, and M1
+honoured that for `Fault.apply` but not for the routing layer itself. Because the
+tool wrapper executes inside the agent's own call stack, an exception in
+`_pre_phase` or `_post_phase` was captured as the agent's `error` — a library bug
+attributed to the agent under test. Observed for real while wiring D-57: a missing
+`Crossing` attribute produced a report blaming the agent for an `AttributeError` in
+`engine.py`.
+
+`route_sync`, `route_async` and `_guarded_post` now catch `Exception`, record an
+`internal_error` event, and pass the original call or value through untouched.
+
+A fault's deliberate `raise` travels the same path, so it is wrapped in a private
+`_InjectedFailure(BaseException)` and unwrapped at the boundary. `BaseException` is
+load-bearing: an `Exception` subclass would be swallowed by the very guard above,
+silently disarming every `raise` fault. A test covers both directions.

@@ -168,6 +168,16 @@ class Crossing:
         messages_unavailable: True when an LLM payload could not be normalized, which
             disables `pre`-phase LLM faults for that call with reason
             ``unnormalizable_payload`` (`docs/06` §2.1).
+        has_substitute: Set when a `pre`-phase fault supplied a result instead of
+            letting the real callable run, so the engine short-circuits the call
+            (D-57). This is how `ToolErrorFault(error_type="error_payload")` and
+            `RateLimitFault` return an error envelope without the tool executing.
+        substitute_result: The value to return in place of the call.
+        invoke_times: How many times the adapter should invoke the real callable.
+            `DuplicateSideEffectFault` sets this via the `invoke_target` action
+            (D-10): only the adapter knows whether to `await`, so `apply()` cannot
+            perform the repeat itself.
+        invoke_return_from: Which of the repeated responses the agent receives.
     """
 
     layer: Layer
@@ -184,6 +194,10 @@ class Crossing:
     parent_span_id: str | None = None
     messages: list[dict[str, Any]] | None = None
     messages_unavailable: bool = False
+    has_substitute: bool = False
+    substitute_result: Any = None
+    invoke_times: int = 1
+    invoke_return_from: str = "first"
 
 
 class StateView:

@@ -102,8 +102,11 @@ def test_fault_from_dict_requires_a_type() -> None:
 
 def test_fault_from_dict_lists_the_known_kinds_on_a_typo() -> None:
     """The error should be enough to fix the scenario file without reading source."""
-    with pytest.raises(ConfigError, match="registered kinds: NoopFault"):
+    with pytest.raises(ConfigError) as exc:
         fault_from_dict({"type": "ToolCorruptionFualt"})
+    message = str(exc.value)
+    assert "registered kinds:" in message
+    assert "ToolCorruptionFault" in message, "the near-miss must be visible in the list"
 
 
 def test_register_fault_rejects_a_missing_kind() -> None:

@@ -52,17 +52,26 @@ def test_every_documented_subcommand_is_registered(command: str) -> None:
     assert command in registered
 
 
-def test_list_faults_exits_cleanly_without_a_traceback(
+def test_list_faults_is_implemented_and_exits_zero(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """`alc list-faults` returns a defined code and says why, rather than raising."""
-    assert main(["list-faults"]) == EXIT_USAGE
-    assert "not implemented" in capsys.readouterr().err
+    """M2 implemented it, so it now prints the catalog and succeeds.
+
+    This replaces the M0 assertion that it exited 2 as unimplemented -- the command
+    changed, not the standard.
+    """
+    assert main(["list-faults"]) == 0
+    assert "fault kinds registered" in capsys.readouterr().out
+
+
+IMPLEMENTED_COMMANDS = {"list-faults"}
 
 
 def test_an_unimplemented_command_never_raises() -> None:
     """No documented command may escape as an exception; the CLI owns its exit codes."""
     for command in DOCUMENTED_COMMANDS:
+        if command in IMPLEMENTED_COMMANDS:
+            continue
         argv = [command]
         if command in {"run", "replay", "judge", "explain", "report", "validate"}:
             argv.append("placeholder")

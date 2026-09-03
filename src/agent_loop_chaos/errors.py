@@ -17,6 +17,7 @@ __all__ = [
     "LimitExceeded",
     "MissingExtraError",
     "SchemaError",
+    "SimulatedToolError",
 ]
 
 
@@ -90,4 +91,13 @@ class ExplicitError(Exception):
     when a tool returns corrupt data has behaved correctly. The engine classifies it
     as `explicit_error_surfaced` rather than `crash_unhandled_exception`
     (`docs/11-OUTCOMES-AND-ASSERTIONS.md` §3.1).
+    """
+
+
+class SimulatedToolError(ChaosError):
+    """A tool failure the harness manufactured.
+
+    Exists so a scenario can raise something unambiguously ours: an agent's
+    ``except SimulatedToolError`` cannot be mistaken for real error handling, and a
+    reader of a traceback can tell at a glance that the failure was injected.
     """
