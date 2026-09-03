@@ -97,11 +97,6 @@ def test_chaos_engine_is_implemented_as_of_m1() -> None:
         pytest.param(lambda: agent_loop_chaos.RuleJudge(), id="RuleJudge (M6)"),
         pytest.param(lambda: agent_loop_chaos.SLMJudge(), id="SLMJudge (M6)"),
         pytest.param(lambda: agent_loop_chaos.EnsembleJudge(), id="EnsembleJudge (M6)"),
-        pytest.param(lambda: agent_loop_chaos.load_suite("nope.yaml"), id="load_suite (M4)"),
-        pytest.param(
-            lambda: agent_loop_chaos.Scenario(id="s", entrypoint="m:a"), id="Scenario (M4)"
-        ),
-        pytest.param(lambda: agent_loop_chaos.ChaosSuite([]), id="ChaosSuite (M4)"),
         pytest.param(
             lambda: agent_loop_chaos.ChaosEngine(write_bundle=False).replay("d"),
             id="replay (M7)",
@@ -113,6 +108,9 @@ def test_remaining_stubs_still_fail_loudly(call: object) -> None:
 
     Each of these lands in a later milestone; until then, calling one must say so
     rather than hand back a `None` that surfaces as a confusing error later.
+
+    `Scenario`, `ChaosSuite` and `load_suite` left this list in M4, which implemented
+    them.
     """
     with pytest.raises(NotImplementedError, match=r"M\d"):
         call()  # type: ignore[operator]
