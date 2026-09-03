@@ -1,0 +1,501 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/OWNER/agent-loop-chaos/schemas/scenario.schema.json",
+  "title": "ChaosSuiteFile",
+  "description": "A YAML or JSON file describing one or more chaos scenarios. Loaded by `alc run` and ChaosSuite.from_yaml.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "scenarios"
+  ],
+  "properties": {
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+$",
+      "default": "1.0"
+    },
+    "defaults": {
+      "description": "Merged into every scenario that does not override the key. Fault lists concatenate; everything else is replaced.",
+      "$ref": "#/$defs/scenarioBody"
+    },
+    "scenarios": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/scenarioBody"
+          },
+          {
+            "type": "object",
+            "required": [
+              "id"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "scenarioBody": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "description": "Stable, filesystem-safe. Used as the run directory name."
+        },
+        "description": {
+          "type": "string"
+        },
+        "entrypoint": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][\\w.]*:[A-Za-z_]\\w*$",
+          "examples": [
+            "examples.trip_planner.app:graph"
+          ]
+        },
+        "adapter": {
+          "enum": [
+            "auto",
+            "vanilla",
+            "langgraph"
+          ]
+        },
+        "inputs": {},
+        "initial_state": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "seed": {
+          "type": "integer"
+        },
+        "preset": {
+          "description": "Name(s) from agent_loop_chaos.scenarios.PRESETS, expanded before `faults` is appended.",
+          "oneOf": [
+            {
+              "enum": [
+                "smoke",
+                "tool_contract",
+                "transient_faults",
+                "long_horizon",
+                "structured_output",
+                "loop_safety",
+                "adversarial",
+                "state_integrity",
+                "resume_safety",
+                "full"
+              ]
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "faults": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/faultSpec"
+          }
+        },
+        "expected_behavior": {
+          "enum": [
+            "graceful_degradation",
+            "explicit_error",
+            "retry_then_succeed",
+            "abort_with_message",
+            "ignore_and_continue"
+          ]
+        },
+        "must_not": {
+          "type": "array",
+          "description": "Probe codes that fail the scenario unconditionally, regardless of expected_behavior. Validated against the registered probe codes at load time; an unknown code is a ConfigError, not a silent no-op. D-33.",
+          "items": {
+            "type": "string"
+          },
+          "examples": [
+            [
+              "secret_in_output",
+              "injection_followed"
+            ]
+          ]
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_steps": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_tool_calls": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_llm_calls": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "timeout_s": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "max_tokens": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "max_injected_delay_ms": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "judge": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "rules",
+                "slm",
+                "ensemble"
+              ]
+            },
+            "model": {
+              "type": "string"
+            },
+            "base_url": {
+              "type": "string"
+            },
+            "transport": {
+              "enum": [
+                "openai",
+                "ollama",
+                "anthropic"
+              ]
+            },
+            "temperature": {
+              "type": "number"
+            },
+            "offline_fallback": {
+              "type": "boolean"
+            }
+          }
+        },
+        "trace_level": {
+          "enum": [
+            "minimal",
+            "standard",
+            "verbose"
+          ]
+        },
+        "baseline": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run a fault-free baseline first and attach delta_vs_baseline."
+        },
+        "matrix": {
+          "type": "object",
+          "description": "Cartesian expansion. Keys are dotted paths into the scenario (e.g. `faults.0.params.mutation_type`, `seed`); values are lists. Expanded ids get a `[key=value]` suffix.",
+          "additionalProperties": {
+            "type": "array"
+          }
+        },
+        "tags": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "skip": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "true, or a reason string."
+        },
+        "dry_run": {
+          "type": "boolean",
+          "default": false,
+          "description": "Arm every fault but apply none. Proves the harness is inert. Required for the control scenario. D-12."
+        },
+        "expected_errors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Dotted exception class names that count as an explicit, intentional error rather than a crash (matched by MRO). docs/11 section 3.1.",
+          "examples": [
+            [
+              "myapp.DataUnavailable",
+              "ValueError"
+            ]
+          ]
+        },
+        "allow_side_effects": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tool names for which ArgumentTamperFault / DuplicateSideEffectFault / CheckpointRollbackFault may target a side_effecting=True tool. Without this, registration is refused. See SAFETY.md and D-23."
+        },
+        "objective_state_key": {
+          "type": "string",
+          "default": "query",
+          "description": "Where the durable objective lives, for the goal_token_loss probe and the objective auto-assertion."
+        },
+        "expect": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Declarative assertions over the finished run. Deterministic and authoritative. Absent means the engine synthesizes defaults from what the faults actually did. Full semantics: docs/11-OUTCOMES-AND-ASSERTIONS.md section 4.",
+          "properties": {
+            "auto": {
+              "type": "boolean",
+              "default": true,
+              "description": "Set false to suppress the auto-synthesized assertions."
+            },
+            "output_matches": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Regexes; all must match."
+            },
+            "output_not_matches": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Regexes; none may match."
+            },
+            "output_mentions_any": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "At least one must appear (case-insensitive substring)."
+            },
+            "output_is_json": {
+              "type": "boolean"
+            },
+            "output_json_schema": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "description": "Inline JSON Schema for the final output; implies output_is_json."
+            },
+            "output_non_empty": {
+              "type": "boolean",
+              "default": true
+            },
+            "no_unsourced_numbers": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "The anti-hallucination check. Numeric, unit-aware, tolerance-based. Replaces the removed fabricated_value probe. Section 4.3.",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": true
+                },
+                "units": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "tolerance": {
+                  "type": "number",
+                  "minimum": 0,
+                  "default": 0.01
+                },
+                "allow_derived": {
+                  "type": "boolean",
+                  "default": true
+                }
+              }
+            },
+            "no_claim_about": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Dotted field paths the answer must not assert a value for - normally the fields a fault destroyed."
+            },
+            "must_call_tools": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "must_not_call_tools": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "max_tool_calls": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "max_steps": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "tool_call_count": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "min": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "max": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              }
+            },
+            "final_state_has": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "final_state_lacks": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "faultSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "description": "A key in FAULT_REGISTRY, e.g. ToolCorruptionFault."
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "target": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "layer": {
+              "enum": [
+                "tool",
+                "llm",
+                "state",
+                "node",
+                "edge",
+                "checkpoint"
+              ]
+            },
+            "tool": {
+              "type": "string",
+              "description": "fnmatch glob."
+            },
+            "node": {
+              "type": "string"
+            },
+            "llm": {
+              "type": "string"
+            },
+            "state_key": {
+              "type": "string"
+            },
+            "phase": {
+              "enum": [
+                "pre",
+                "post",
+                "error"
+              ]
+            }
+          }
+        },
+        "trigger": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "on_call": {
+              "oneOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              ]
+            },
+            "on_step": {
+              "oneOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              ]
+            },
+            "after_step": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "probability": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "max_fires": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1
+            },
+            "cooldown_calls": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "stop_after_step": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    }
+  }
+}

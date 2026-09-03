@@ -1,0 +1,1236 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/OWNER/agent-loop-chaos/schemas/chaos_report.schema.json",
+  "title": "ChaosResult",
+  "description": "Machine-readable result of one chaos run against one agent. This document is the primary product of agent-loop-chaos and is designed to be consumed by a coding agent or an automated optimizer without human mediation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "scenario_id",
+    "library_version",
+    "seed",
+    "attempt",
+    "plan_hash",
+    "started_at",
+    "finished_at",
+    "duration_ms",
+    "target",
+    "dry_run",
+    "success",
+    "verdict",
+    "failure_mode",
+    "severity",
+    "symptoms",
+    "assertions",
+    "injected_faults",
+    "chaos_narrative",
+    "randomness",
+    "agent_state_pre_fault",
+    "agent_state_post_fault",
+    "llm_exchanges",
+    "tool_calls",
+    "final_output",
+    "error",
+    "baseline",
+    "delta_vs_baseline",
+    "metrics",
+    "loop",
+    "root_cause_hypothesis",
+    "refinement_hint",
+    "suggested_fixes",
+    "code_pointers",
+    "reproduce",
+    "artifacts",
+    "schema_errors"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+$",
+      "examples": [
+        "1.1"
+      ]
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Deterministic id derived from seed + scenario id."
+    },
+    "scenario_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "library_version": {
+      "type": "string"
+    },
+    "seed": {
+      "type": "integer"
+    },
+    "plan_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Hash of the canonicalized fault plan. Same plan_hash + same seed must reproduce the run."
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "finished_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "tags": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Free-form labels from the scenario or the engine."
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "framework",
+        "adapter_version"
+      ],
+      "properties": {
+        "framework": {
+          "enum": [
+            "langgraph",
+            "vanilla",
+            "unknown"
+          ]
+        },
+        "entrypoint": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "module:attr of the agent under test."
+        },
+        "adapter_version": {
+          "type": "string"
+        },
+        "graph": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "nodes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "edges": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 2,
+                "maxItems": 3
+              }
+            },
+            "state_keys": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "checkpointer": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "success": {
+      "type": "boolean",
+      "description": "Computed from probes + expected_behavior. Never set by a language model."
+    },
+    "verdict": {
+      "$ref": "judge_verdict.schema.json"
+    },
+    "failure_mode": {
+      "description": "Single dominant classification. The first three values are passing outcomes.",
+      "enum": [
+        "none",
+        "graceful_degradation",
+        "recovered_after_retry",
+        "explicit_error_surfaced",
+        "crash_unhandled_exception",
+        "hallucination_on_corrupt_data",
+        "silent_wrong_answer",
+        "unverified_claim_emitted",
+        "goal_drift",
+        "context_loss",
+        "instruction_precedence_violation",
+        "infinite_loop",
+        "max_iterations_exhausted",
+        "no_retry_on_transient_error",
+        "retry_storm",
+        "schema_violation_downstream",
+        "truncated_output_used",
+        "tool_dispatch_error",
+        "duplicate_side_effect",
+        "state_corruption_propagated",
+        "prompt_injection_followed",
+        "secret_leak",
+        "empty_final_answer",
+        "timeout",
+        "latency_budget_exceeded",
+        "harness_error",
+        "unknown"
+      ]
+    },
+    "severity": {
+      "enum": [
+        "critical",
+        "high",
+        "medium",
+        "low",
+        "info"
+      ]
+    },
+    "symptoms": {
+      "type": "array",
+      "description": "Deterministic probe findings. These, not the model, decide success.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "severity",
+          "detail"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "examples": [
+              "no_output_validation",
+              "loop_repeat_cycle"
+            ]
+          },
+          "severity": {
+            "enum": [
+              "critical",
+              "high",
+              "medium",
+              "low",
+              "info"
+            ]
+          },
+          "detail": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true,
+              "required": [
+                "seq"
+              ],
+              "properties": {
+                "seq": {
+                  "type": "integer",
+                  "description": "trace.jsonl event seq"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "excerpt": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "injected_faults": {
+      "type": "array",
+      "description": "Exactly what chaos was introduced, with before/after diffs. On a baseline or dry run every entry is present with fired=false and skipped_reason set (D-12) — never an empty list.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "fault_id",
+          "fault_key",
+          "type",
+          "params",
+          "target",
+          "trigger",
+          "fired",
+          "fire_count"
+        ],
+        "properties": {
+          "fault_id": {
+            "type": "string",
+            "examples": [
+              "f1"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "examples": [
+              "ToolCorruptionFault"
+            ]
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "target": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "layer": {
+                "enum": [
+                  "tool",
+                  "llm",
+                  "state",
+                  "node",
+                  "edge",
+                  "checkpoint",
+                  null
+                ]
+              },
+              "tool": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "node": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "llm": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "state_key": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "phase": {
+                "enum": [
+                  "pre",
+                  "post",
+                  "error",
+                  null
+                ]
+              },
+              "predicate": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "repr of a user predicate, informational only"
+              }
+            }
+          },
+          "trigger": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "on_call": {},
+              "on_step": {},
+              "after_step": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "probability": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "max_fires": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cooldown_calls": {
+                "type": "integer"
+              },
+              "stop_after_step": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            }
+          },
+          "fired": {
+            "type": "boolean"
+          },
+          "fire_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "skipped_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "examples": [
+              "dry_run",
+              "target_never_called",
+              "no_checkpointer",
+              "probability_not_met"
+            ],
+            "description": "Set only when fire_count == 0, holding the last non-acceptance reason under the precedence in D-36. Per-crossing skips live in the trace as fault_skipped events."
+          },
+          "fires": {
+            "type": "array",
+            "description": "One entry per firing. This is the audit trail of the randomness.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "seq",
+                "step",
+                "layer",
+                "phase",
+                "name"
+              ],
+              "properties": {
+                "seq": {
+                  "type": "integer"
+                },
+                "step": {
+                  "type": "integer"
+                },
+                "call_index": {
+                  "type": "integer"
+                },
+                "layer": {
+                  "type": "string"
+                },
+                "phase": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "action": {
+                  "enum": [
+                    "replace_result",
+                    "replace_args",
+                    "raise",
+                    "delay",
+                    "replace_state",
+                    "replace_messages",
+                    "invoke_target",
+                    "resume_from_checkpoint",
+                    "noop"
+                  ]
+                },
+                "note": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "payload_before": {},
+                "payload_after": {},
+                "json_patch": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                },
+                "unrepresentable": {
+                  "type": "boolean"
+                },
+                "delay_ms": {
+                  "type": "integer"
+                },
+                "rng_draws": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "fault_key": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{6}$",
+            "description": "sha256 of (type, canonical params, target, trigger), truncated. Keys the RNG streams so inserting or reordering faults does not re-key the others. See D-03."
+          }
+        }
+      }
+    },
+    "chaos_narrative": {
+      "type": "string",
+      "description": "Plain-language account of what randomness was introduced and how the agent reacted. SLM-written when a judge model is available, deterministic template otherwise."
+    },
+    "randomness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seed",
+        "streams"
+      ],
+      "properties": {
+        "seed": {
+          "type": "integer"
+        },
+        "streams": {
+          "type": "object",
+          "description": "purpose -> number of draws consumed, e.g. {\"f1:trigger\": 3, \"f1:key_choice\": 1}",
+          "additionalProperties": {
+            "type": "integer"
+          }
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "purpose",
+              "value"
+            ],
+            "properties": {
+              "purpose": {
+                "type": "string"
+              },
+              "value": {},
+              "seq": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      }
+    },
+    "agent_state_pre_fault": {},
+    "agent_state_post_fault": {},
+    "llm_exchanges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "step",
+          "llm",
+          "exact_prompt",
+          "raw_response"
+        ],
+        "properties": {
+          "step": {
+            "type": "integer"
+          },
+          "llm": {
+            "type": "string"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exact_prompt": {
+            "type": "string",
+            "description": "Flattened, human-readable rendering of the messages actually sent, after any fault."
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "raw_response": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tool_calls": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "finish_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tokens": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "in": {
+                "type": "integer"
+              },
+              "out": {
+                "type": "integer"
+              }
+            }
+          },
+          "faulted": {
+            "type": "boolean"
+          },
+          "prompt_estimated_tokens": {
+            "type": "integer"
+          },
+          "truncated_in_report": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "tool_calls": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "step",
+          "tool",
+          "call_index",
+          "ok"
+        ],
+        "properties": {
+          "step": {
+            "type": "integer"
+          },
+          "tool": {
+            "type": "string"
+          },
+          "call_index": {
+            "type": "integer"
+          },
+          "args": {},
+          "kwargs": {},
+          "result": {},
+          "ok": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "duration_ms": {
+            "type": "integer"
+          },
+          "faulted": {
+            "type": "boolean"
+          },
+          "signature": {
+            "type": "string",
+            "description": "Stable hash of (tool, args) used for loop detection."
+          }
+        }
+      }
+    },
+    "final_output": {},
+    "error": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "message"
+      ],
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "traceback": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "raised_in": {
+          "enum": [
+            "agent",
+            "tool",
+            "llm",
+            "harness",
+            "unknown"
+          ]
+        },
+        "frames": {
+          "type": "array",
+          "description": "Innermost-last. Frames inside agent_loop_chaos are stripped unless raised_in == harness.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "file",
+              "line"
+            ],
+            "properties": {
+              "file": {
+                "type": "string"
+              },
+              "line": {
+                "type": "integer"
+              },
+              "function": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "is_user_code": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    },
+    "baseline": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "type": "string"
+        },
+        "final_output": {},
+        "steps": {
+          "type": "integer"
+        },
+        "tool_calls": {
+          "type": "integer"
+        },
+        "llm_calls": {
+          "type": "integer"
+        },
+        "tokens_in": {
+          "type": "integer"
+        },
+        "tokens_out": {
+          "type": "integer"
+        },
+        "duration_ms": {
+          "type": "integer"
+        },
+        "report_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "delta_vs_baseline": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "steps": {
+          "type": "integer"
+        },
+        "tool_calls": {
+          "type": "integer"
+        },
+        "llm_calls": {
+          "type": "integer"
+        },
+        "tokens_in": {
+          "type": "integer"
+        },
+        "tokens_out": {
+          "type": "integer"
+        },
+        "duration_ms": {
+          "type": "integer"
+        },
+        "output_similarity": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Deterministic similarity (difflib ratio on normalized text) between baseline and chaos final answers."
+        },
+        "new_tool_calls": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "missing_tool_calls": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "diff_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "steps",
+        "tool_calls",
+        "llm_calls"
+      ],
+      "properties": {
+        "steps": {
+          "type": "integer"
+        },
+        "tool_calls": {
+          "type": "integer"
+        },
+        "llm_calls": {
+          "type": "integer"
+        },
+        "retries": {
+          "type": "integer"
+        },
+        "tokens_in": {
+          "type": "integer"
+        },
+        "tokens_out": {
+          "type": "integer"
+        },
+        "wall_ms": {
+          "type": "integer"
+        },
+        "injected_delay_ms": {
+          "type": "integer"
+        },
+        "cost_usd": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "faults_fired": {
+          "type": "integer"
+        },
+        "faults_armed": {
+          "type": "integer"
+        },
+        "injected_tokens": {
+          "type": "integer",
+          "description": "Tokens the harness added (ContextNoiseFault etc). Subtracted from every budget comparison. D-11 R3."
+        },
+        "tokens_estimated": {
+          "type": "boolean",
+          "description": "True when token counts came from the chars4 estimator rather than the provider. D-43."
+        }
+      }
+    },
+    "loop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "steps",
+        "max_steps",
+        "limit_hit"
+      ],
+      "properties": {
+        "steps": {
+          "type": "integer"
+        },
+        "max_steps": {
+          "type": "integer"
+        },
+        "limit_hit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "max_steps",
+            "max_tool_calls",
+            "max_llm_calls",
+            "timeout_s",
+            "max_tokens",
+            null
+          ]
+        },
+        "repeated_calls": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "signature",
+              "count"
+            ],
+            "properties": {
+              "signature": {
+                "type": "string"
+              },
+              "count": {
+                "type": "integer"
+              },
+              "first_seq": {
+                "type": "integer"
+              },
+              "cycle_length": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "node_visits": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          }
+        },
+        "progress_stalled_after_step": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      }
+    },
+    "root_cause_hypothesis": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Model-generated. Treat as a hypothesis, never as fact."
+    },
+    "refinement_hint": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "One actionable sentence aimed at the agent's author or a coding agent."
+    },
+    "suggested_fixes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "description"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "input_validation",
+              "output_validation",
+              "retry_policy",
+              "timeout",
+              "prompt_change",
+              "state_schema",
+              "loop_guard",
+              "idempotency",
+              "untrusted_content_handling",
+              "observability",
+              "test_only",
+              "other"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "target": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "examples": [
+              "app/agent.py:42",
+              "prompts/system.md"
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "patch_sketch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional illustrative snippet. Never applied automatically."
+          }
+        }
+      }
+    },
+    "code_pointers": {
+      "type": "array",
+      "description": "Where a coding agent should start reading. Derived from stack frames and from which user function produced the faulted crossing.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "file",
+          "why"
+        ],
+        "properties": {
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "symbol": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "why": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        }
+      }
+    },
+    "reproduce": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cmd",
+        "seed"
+      ],
+      "properties": {
+        "cmd": {
+          "type": "string",
+          "examples": [
+            "alc replay .chaos/weather.drop_key/run-0001"
+          ]
+        },
+        "seed": {
+          "type": "integer"
+        },
+        "plan_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scenario_yaml": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Inline YAML/JSON of the minimal scenario that reproduces this failure."
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Only non-secret, behaviour-relevant vars (python version, library version, model name)."
+        },
+        "suite_path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Suite file this scenario came from, so the work order can print a runnable alc run command. D-29."
+        },
+        "filter": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "divergence": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Set on replay when the observed crossing sequence differed from the recorded one. D-31."
+        }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "report",
+        "trace"
+      ],
+      "properties": {
+        "report": {
+          "type": "string"
+        },
+        "trace": {
+          "type": "string"
+        },
+        "plan": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agent_task": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "judge": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "baseline_diff": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run_dir": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "schema_errors": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 1,
+      "description": "Which attempt this is for (scenario_id, plan_hash). Threaded by RefinementLoop rounds and by replay. Part of run_id. See docs/DECISIONS.md D-04."
+    },
+    "dry_run": {
+      "type": "boolean",
+      "default": false,
+      "description": "True when faults were armed but never applied. A dry run must classify exactly as an unfaulted baseline. See D-12."
+    },
+    "assertions": {
+      "type": "array",
+      "description": "Declarative checks over the finished run. Authoritative for success alongside symptoms. See docs/11-OUTCOMES-AND-ASSERTIONS.md section 4.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "check",
+          "ok",
+          "detail"
+        ],
+        "properties": {
+          "check": {
+            "type": "string",
+            "examples": [
+              "no_unsourced_numbers",
+              "output_matches",
+              "must_not_call_tools"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "scenario",
+              "auto"
+            ],
+            "description": "auto = synthesized from what the faults actually did (section 4.4)."
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "harness_excluded": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Values or keys excluded from evaluation because the harness introduced or removed them."
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        }
+      }
+    }
+  }
+}

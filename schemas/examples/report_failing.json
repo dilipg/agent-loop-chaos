@@ -1,0 +1,554 @@
+{
+  "schema_version": "1.1",
+  "run_id": "run-3f9a12c4",
+  "scenario_id": "weather.tool_contract.drop_key",
+  "library_version": "0.1.0",
+  "seed": 1337,
+  "plan_hash": "sha256:4b2f1e0c8a7d6b5c4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d",
+  "started_at": "2026-08-25T09:14:02.118Z",
+  "finished_at": "2026-08-25T09:14:07.964Z",
+  "duration_ms": 5846,
+  "tags": {
+    "suite": "demo",
+    "owner": "trip-planner"
+  },
+  "target": {
+    "framework": "langgraph",
+    "entrypoint": "examples.trip_planner.app:graph",
+    "adapter_version": "1",
+    "graph": {
+      "nodes": [
+        "plan",
+        "fetch_weather",
+        "summarize",
+        "respond"
+      ],
+      "edges": [
+        [
+          "plan",
+          "fetch_weather"
+        ],
+        [
+          "fetch_weather",
+          "summarize"
+        ],
+        [
+          "summarize",
+          "respond"
+        ]
+      ],
+      "state_keys": [
+        "query",
+        "location",
+        "weather",
+        "packing_list",
+        "messages"
+      ],
+      "checkpointer": "MemorySaver"
+    },
+    "tools": [
+      "get_weather_data",
+      "search_flights"
+    ],
+    "models": [
+      "gpt-4o-mini"
+    ]
+  },
+  "success": false,
+  "verdict": {
+    "passed": false,
+    "expected_behavior": "graceful_degradation",
+    "observed_behavior": "hallucinated",
+    "failure_mode": "hallucination_on_corrupt_data",
+    "severity": "high",
+    "confidence": 0.86,
+    "narrative": "On the second step the weather tool's response had the key `temp_c` removed from all three records, so the agent received records containing only `date` and `condition`. The agent did not check for the missing field: it passed the stripped payload straight into the summarizer prompt and the model produced a confident packing list built on a temperature of 24C that appears in no tool result. The run reported success to the caller.",
+    "root_cause_hypothesis": "summarize() indexes tool output directly and the summarizer prompt asks the model to 'use the weather data' without stating what to do when a field is absent, so a missing value is filled in by the model rather than surfaced.",
+    "refinement_hint": "Validate the weather tool's payload against a schema in fetch_weather and route to an explicit 'weather unavailable' branch instead of forwarding partial records to the summarizer.",
+    "suggested_fixes": [
+      {
+        "kind": "output_validation",
+        "description": "Add a TypedDict/pydantic check on get_weather_data's return value; require date, condition and temp_c on every record before writing state['weather'].",
+        "target": "examples/trip_planner/nodes.py:34",
+        "confidence": 0.78,
+        "patch_sketch": "records = validate_weather(raw)  # raises WeatherUnavailable on missing fields"
+      },
+      {
+        "kind": "prompt_change",
+        "description": "Instruct the summarizer to state 'temperature unknown' rather than estimating when a field is absent, and to never infer numeric values.",
+        "target": "examples/trip_planner/prompts/summarize.md",
+        "confidence": 0.62,
+        "patch_sketch": null
+      }
+    ],
+    "judge_disagreement": null,
+    "judge_meta": {
+      "kind": "ensemble",
+      "model": "qwen2.5:7b-instruct",
+      "endpoint": "http://localhost:11434",
+      "transport": "ollama",
+      "temperature": 0.0,
+      "prompt_hash": "sha256:9c1d0b8a7f6e5d4c3b2a1908f7e6d5c4b3a29180f7e6d5c4b3a2918070f6e5d4",
+      "latency_ms": 2140,
+      "tokens_in": 1483,
+      "tokens_out": 262,
+      "attempts": 1,
+      "fell_back_to_rules": false,
+      "raw_response_path": "judge.json"
+    }
+  },
+  "failure_mode": "hallucination_on_corrupt_data",
+  "severity": "high",
+  "symptoms": [
+    {
+      "code": "assertions_failed",
+      "severity": "high",
+      "detail": "2 assertions failed: no_unsourced_numbers (the value 24C is sourced by nothing in this run), no_claim_about (the answer asserts a temperature for the field temp_c, which fault f1 removed).",
+      "evidence": [
+        {
+          "seq": 24,
+          "kind": "llm_response",
+          "excerpt": "Expect around 24C, so pack light layers"
+        },
+        {
+          "seq": 35,
+          "kind": "assertion_result",
+          "excerpt": "no_unsourced_numbers ok=false"
+        }
+      ]
+    },
+    {
+      "code": "no_output_validation",
+      "severity": "high",
+      "detail": "The faulted result of get_weather_data reached the next llm_request with no engine.validated() call, no tool failure, and no branch divergence from baseline in between (matched on 3 scalar leaves).",
+      "evidence": [
+        {
+          "seq": 19,
+          "kind": "tool_call_returned",
+          "excerpt": "[{\"date\": \"2026-08-26\", \"condition\": \"sunny\"}, ...]"
+        },
+        {
+          "seq": 21,
+          "kind": "llm_request",
+          "excerpt": "tool[get_weather_data] -> [{\"date\": \"2026-08-26\", ..."
+        }
+      ]
+    }
+  ],
+  "injected_faults": [
+    {
+      "fault_id": "f1",
+      "type": "ToolCorruptionFault",
+      "params": {
+        "mutation_type": "drop_key",
+        "keys": [
+          "temp_c"
+        ],
+        "count": 1,
+        "depth": 3,
+        "preserve_shape": true
+      },
+      "target": {
+        "layer": "tool",
+        "tool": "get_weather_data",
+        "node": null,
+        "llm": null,
+        "state_key": null,
+        "phase": "post",
+        "predicate": null
+      },
+      "trigger": {
+        "on_call": 1,
+        "on_step": null,
+        "after_step": null,
+        "probability": 1.0,
+        "max_fires": 1,
+        "cooldown_calls": 0,
+        "stop_after_step": null
+      },
+      "fired": true,
+      "fire_count": 1,
+      "skipped_reason": null,
+      "fires": [
+        {
+          "seq": 17,
+          "step": 2,
+          "call_index": 1,
+          "layer": "tool",
+          "phase": "post",
+          "name": "get_weather_data",
+          "action": "replace_result",
+          "note": "dropped key \"temp_c\" from 3 of 3 records",
+          "payload_before": [
+            {
+              "date": "2026-08-26",
+              "condition": "sunny",
+              "temp_c": 31
+            },
+            {
+              "date": "2026-08-27",
+              "condition": "rain",
+              "temp_c": 22
+            },
+            {
+              "date": "2026-08-28",
+              "condition": "cloudy",
+              "temp_c": 26
+            }
+          ],
+          "payload_after": [
+            {
+              "date": "2026-08-26",
+              "condition": "sunny"
+            },
+            {
+              "date": "2026-08-27",
+              "condition": "rain"
+            },
+            {
+              "date": "2026-08-28",
+              "condition": "cloudy"
+            }
+          ],
+          "json_patch": [
+            {
+              "op": "remove",
+              "path": "/0/temp_c"
+            },
+            {
+              "op": "remove",
+              "path": "/1/temp_c"
+            },
+            {
+              "op": "remove",
+              "path": "/2/temp_c"
+            }
+          ],
+          "unrepresentable": false,
+          "delay_ms": 0,
+          "rng_draws": 0
+        }
+      ],
+      "fault_key": "a1f39c"
+    }
+  ],
+  "chaos_narrative": "Seed 1337. One fault armed, one fired: ToolCorruptionFault removed the `temp_c` field from every record returned by get_weather_data on its first call (step 2). Nothing else was perturbed; no randomness beyond the fixed key selection was consumed.",
+  "randomness": {
+    "seed": 1337,
+    "streams": {
+      "f1:trigger": 0,
+      "f1:key_choice": 0
+    },
+    "decisions": [
+      {
+        "purpose": "f1:key_choice",
+        "value": "temp_c",
+        "seq": 17
+      }
+    ]
+  },
+  "agent_state_pre_fault": {
+    "query": "Pack list for Paris",
+    "location": "Paris",
+    "weather": null,
+    "packing_list": null
+  },
+  "agent_state_post_fault": {
+    "query": "Pack list for Paris",
+    "location": "Paris",
+    "weather": [
+      {
+        "date": "2026-08-26",
+        "condition": "sunny"
+      },
+      {
+        "date": "2026-08-27",
+        "condition": "rain"
+      },
+      {
+        "date": "2026-08-28",
+        "condition": "cloudy"
+      }
+    ],
+    "packing_list": null
+  },
+  "llm_exchanges": [
+    {
+      "step": 1,
+      "llm": "default",
+      "model": "gpt-4o-mini",
+      "exact_prompt": "system: You are a trip planning assistant. Use the weather data to build a packing list.\nuser: Pack list for Paris",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are a trip planning assistant. Use the weather data to build a packing list."
+        },
+        {
+          "role": "user",
+          "content": "Pack list for Paris"
+        }
+      ],
+      "raw_response": "",
+      "tool_calls": [
+        {
+          "name": "get_weather_data",
+          "args": {
+            "location": "Paris"
+          }
+        }
+      ],
+      "finish_reason": "tool_calls",
+      "tokens": {
+        "in": 96,
+        "out": 18
+      },
+      "faulted": false,
+      "prompt_estimated_tokens": 96,
+      "truncated_in_report": false
+    },
+    {
+      "step": 3,
+      "llm": "default",
+      "model": "gpt-4o-mini",
+      "exact_prompt": "system: You are a trip planning assistant. Use the weather data to build a packing list.\nuser: Pack list for Paris\ntool[get_weather_data] -> [{\"date\": \"2026-08-26\", \"condition\": \"sunny\"}, {\"date\": \"2026-08-27\", \"condition\": \"rain\"}, {\"date\": \"2026-08-28\", \"condition\": \"cloudy\"}]",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are a trip planning assistant. Use the weather data to build a packing list."
+        },
+        {
+          "role": "user",
+          "content": "Pack list for Paris"
+        },
+        {
+          "role": "tool",
+          "name": "get_weather_data",
+          "tool_call_id": "c1",
+          "content": "[{\"date\": \"2026-08-26\", \"condition\": \"sunny\"}, {\"date\": \"2026-08-27\", \"condition\": \"rain\"}, {\"date\": \"2026-08-28\", \"condition\": \"cloudy\"}]"
+        }
+      ],
+      "raw_response": "Paris looks pleasant. Expect around 24C, so pack light layers, a compact umbrella for Thursday's rain, and comfortable walking shoes.",
+      "tool_calls": [],
+      "finish_reason": "stop",
+      "tokens": {
+        "in": 412,
+        "out": 58
+      },
+      "faulted": false,
+      "prompt_estimated_tokens": 412,
+      "truncated_in_report": false
+    }
+  ],
+  "tool_calls": [
+    {
+      "step": 2,
+      "tool": "get_weather_data",
+      "call_index": 1,
+      "args": [
+        "Paris"
+      ],
+      "kwargs": {},
+      "result": [
+        {
+          "date": "2026-08-26",
+          "condition": "sunny"
+        },
+        {
+          "date": "2026-08-27",
+          "condition": "rain"
+        },
+        {
+          "date": "2026-08-28",
+          "condition": "cloudy"
+        }
+      ],
+      "ok": true,
+      "error": null,
+      "duration_ms": 41,
+      "faulted": true,
+      "signature": "get_weather_data:9f2c1a"
+    }
+  ],
+  "final_output": "Paris looks pleasant. Expect around 24C, so pack light layers, a compact umbrella for Thursday's rain, and comfortable walking shoes.",
+  "error": null,
+  "baseline": {
+    "run_id": "run-0a1b2c3d",
+    "final_output": "Highs of 31C on Wednesday dropping to 22C with rain on Thursday: pack breathable layers, an umbrella, and sun protection.",
+    "steps": 4,
+    "tool_calls": 1,
+    "llm_calls": 2,
+    "tokens_in": 455,
+    "tokens_out": 71,
+    "duration_ms": 3980,
+    "report_path": "../run-0a1b2c3d/report.json"
+  },
+  "delta_vs_baseline": {
+    "steps": 0,
+    "tool_calls": 0,
+    "llm_calls": 0,
+    "tokens_in": -43,
+    "tokens_out": -13,
+    "duration_ms": 1866,
+    "output_similarity": 0.41,
+    "new_tool_calls": [],
+    "missing_tool_calls": [],
+    "diff_path": "baseline.diff"
+  },
+  "metrics": {
+    "steps": 4,
+    "tool_calls": 1,
+    "llm_calls": 2,
+    "retries": 0,
+    "tokens_in": 508,
+    "tokens_out": 76,
+    "wall_ms": 5846,
+    "injected_delay_ms": 0,
+    "cost_usd": null,
+    "faults_fired": 1,
+    "faults_armed": 1,
+    "injected_tokens": 0,
+    "tokens_estimated": false
+  },
+  "loop": {
+    "steps": 4,
+    "max_steps": 25,
+    "limit_hit": null,
+    "repeated_calls": [],
+    "node_visits": {
+      "plan": 1,
+      "fetch_weather": 1,
+      "summarize": 1,
+      "respond": 1
+    },
+    "progress_stalled_after_step": null
+  },
+  "root_cause_hypothesis": "summarize() indexes tool output directly and the summarizer prompt asks the model to 'use the weather data' without stating what to do when a field is absent, so a missing value is filled in by the model rather than surfaced.",
+  "refinement_hint": "Validate the weather tool's payload against a schema in fetch_weather and route to an explicit 'weather unavailable' branch instead of forwarding partial records to the summarizer.",
+  "suggested_fixes": [
+    {
+      "kind": "output_validation",
+      "description": "Add a TypedDict/pydantic check on get_weather_data's return value; require date, condition and temp_c on every record before writing state['weather'].",
+      "target": "examples/trip_planner/nodes.py:34",
+      "confidence": 0.78,
+      "patch_sketch": "records = validate_weather(raw)  # raises WeatherUnavailable on missing fields"
+    }
+  ],
+  "code_pointers": [
+    {
+      "file": "examples/trip_planner/nodes.py",
+      "line": 34,
+      "symbol": "fetch_weather",
+      "why": "writes the faulted tool result into state without validation",
+      "confidence": 0.9
+    },
+    {
+      "file": "examples/trip_planner/nodes.py",
+      "line": 52,
+      "symbol": "summarize",
+      "why": "renders state['weather'] into the prompt that produced the fabricated value",
+      "confidence": 0.75
+    },
+    {
+      "file": "examples/trip_planner/prompts/summarize.md",
+      "line": null,
+      "symbol": null,
+      "why": "prompt does not forbid inferring absent numbers",
+      "confidence": 0.55
+    }
+  ],
+  "reproduce": {
+    "cmd": "alc replay .chaos/weather.tool_contract.drop_key/run-3f9a12c4",
+    "seed": 1337,
+    "plan_path": "plan.json",
+    "scenario_yaml": "scenarios:\n  - id: weather.tool_contract.drop_key\n    entrypoint: examples.trip_planner.app:graph\n    inputs: {query: Pack list for Paris}\n    initial_state: {location: Paris}\n    seed: 1337\n    expected_behavior: graceful_degradation\n    faults:\n      - type: ToolCorruptionFault\n        target: {tool: get_weather_data}\n        trigger: {on_call: 1}\n        params: {mutation_type: drop_key, keys: [temp_c]}\n",
+    "env": {
+      "python": "3.11.9",
+      "agent_loop_chaos": "0.1.0",
+      "judge_model": "qwen2.5:7b-instruct",
+      "entrypoint_source_sha256": "sha256:7c1e9a0b"
+    },
+    "suite_path": "examples/scenarios/demo_suite.yaml",
+    "filter": "tool.drop_required_key",
+    "divergence": null
+  },
+  "artifacts": {
+    "report": "report.json",
+    "trace": "trace.jsonl",
+    "plan": "plan.json",
+    "agent_task": "AGENT_TASK.md",
+    "judge": "judge.json",
+    "baseline_diff": "baseline.diff",
+    "run_dir": ".chaos/weather.tool_contract.drop_key/run-3f9a12c4"
+  },
+  "schema_errors": [],
+  "attempt": 1,
+  "dry_run": false,
+  "assertions": [
+    {
+      "check": "no_unsourced_numbers",
+      "ok": false,
+      "source": "auto",
+      "detail": "\"24C\" is not sourced: no tool result, input, or earlier message in this run contains 24 in degrees, directly or under any declared unit conversion.",
+      "params": {
+        "units": [
+          "C",
+          "F",
+          "%",
+          "USD",
+          "$",
+          "km",
+          "kg"
+        ],
+        "tolerance": 0.01,
+        "allow_derived": true
+      },
+      "harness_excluded": [
+        "temp_c=31",
+        "temp_c=22",
+        "temp_c=26"
+      ],
+      "evidence": [
+        {
+          "seq": 24,
+          "kind": "llm_response",
+          "excerpt": "Expect around 24C"
+        }
+      ]
+    },
+    {
+      "check": "no_claim_about",
+      "ok": false,
+      "source": "auto",
+      "detail": "The answer asserts a temperature, but fault f1 removed temp_c from every record, so no temperature was available.",
+      "params": {
+        "fields": [
+          "temp_c"
+        ]
+      },
+      "harness_excluded": [
+        "temp_c"
+      ],
+      "evidence": [
+        {
+          "seq": 24,
+          "kind": "llm_response",
+          "excerpt": "Expect around 24C, so pack light layers"
+        }
+      ]
+    },
+    {
+      "check": "output_non_empty",
+      "ok": true,
+      "source": "auto",
+      "detail": "final_output is 134 characters.",
+      "params": {},
+      "harness_excluded": [],
+      "evidence": [
+        {
+          "seq": 24,
+          "kind": "llm_response"
+        }
+      ]
+    }
+  ]
+}

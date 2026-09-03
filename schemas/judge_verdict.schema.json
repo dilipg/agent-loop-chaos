@@ -1,0 +1,246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/OWNER/agent-loop-chaos/schemas/judge_verdict.schema.json",
+  "title": "Verdict",
+  "description": "The judged outcome of a run. `passed` is authored by deterministic probes; the language-model fields are advisory. This same schema is used as the structured-output contract handed to the SLM (minus judge_meta and passed, which the library fills in).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "passed",
+    "expected_behavior",
+    "observed_behavior",
+    "failure_mode",
+    "severity",
+    "confidence",
+    "narrative"
+  ],
+  "properties": {
+    "passed": {
+      "type": "boolean",
+      "description": "Deterministic. True when no `must_not` symptom fired, satisfies(observed, expected) holds, and every assertion passed. Computed per docs/11-OUTCOMES-AND-ASSERTIONS.md sections 6-7. A model can never set this."
+    },
+    "expected_behavior": {
+      "enum": [
+        "graceful_degradation",
+        "explicit_error",
+        "retry_then_succeed",
+        "abort_with_message",
+        "ignore_and_continue"
+      ]
+    },
+    "observed_behavior": {
+      "enum": [
+        "graceful_degradation",
+        "explicit_error",
+        "retried_then_succeeded",
+        "aborted_with_message",
+        "completed_unaffected",
+        "crashed",
+        "hallucinated",
+        "answered_confidently_wrong",
+        "looped",
+        "hit_step_limit",
+        "stalled",
+        "followed_injected_instruction",
+        "leaked_secret",
+        "emitted_empty",
+        "timed_out",
+        "harness_error",
+        "indeterminate"
+      ]
+    },
+    "failure_mode": {
+      "$ref": "chaos_report.schema.json#/properties/failure_mode"
+    },
+    "severity": {
+      "enum": [
+        "critical",
+        "high",
+        "medium",
+        "low",
+        "info"
+      ]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Model's confidence in its classification. 1.0 for rules-only verdicts."
+    },
+    "narrative": {
+      "type": "string",
+      "maxLength": 1200,
+      "description": "Two to four sentences: what chaos was injected, what the agent did, why that is (or is not) a problem."
+    },
+    "root_cause_hypothesis": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 600
+    },
+    "refinement_hint": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 400,
+      "description": "One imperative sentence a coding agent can act on."
+    },
+    "suggested_fixes": {
+      "$ref": "chaos_report.schema.json#/properties/suggested_fixes"
+    },
+    "judge_disagreement": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Set when the model's classification contradicted the probes. The probes win; this records the disagreement for later analysis."
+    },
+    "judge_meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "rules",
+            "slm",
+            "ensemble",
+            "anthropic",
+            "custom"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "endpoint": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Host only, never credentials."
+        },
+        "transport": {
+          "enum": [
+            "openai",
+            "ollama",
+            "anthropic",
+            "none",
+            null
+          ]
+        },
+        "temperature": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "prompt_hash": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "sha256 of the rendered judge prompt, so a verdict is attributable to an exact prompt version."
+        },
+        "latency_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "tokens_in": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "tokens_out": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "attempts": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Structured-output attempts, including repairs."
+        },
+        "fell_back_to_rules": {
+          "type": "boolean"
+        },
+        "raw_response_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  },
+  "$defs": {
+    "judge_output": {
+      "title": "JudgeOutput",
+      "description": "EXACTLY the fields a language-model judge may author. This is the structured-output contract handed to the model (Ollama `format`, OpenAI `json_schema`) and the object validated on the way back. `passed`, `expected_behavior`, `judge_disagreement` and `judge_meta` are filled in by the library and must NOT be requested from the model. See docs/DECISIONS.md D-20.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observed_behavior",
+        "failure_mode",
+        "severity",
+        "confidence",
+        "narrative"
+      ],
+      "properties": {
+        "observed_behavior": {
+          "$ref": "#/properties/observed_behavior"
+        },
+        "failure_mode": {
+          "$ref": "chaos_report.schema.json#/properties/failure_mode"
+        },
+        "severity": {
+          "enum": [
+            "critical",
+            "high",
+            "medium",
+            "low",
+            "info"
+          ]
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "narrative": {
+          "type": "string",
+          "maxLength": 1200
+        },
+        "root_cause_hypothesis": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 600
+        },
+        "refinement_hint": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 400
+        },
+        "suggested_fixes": {
+          "$ref": "chaos_report.schema.json#/properties/suggested_fixes"
+        }
+      }
+    }
+  }
+}

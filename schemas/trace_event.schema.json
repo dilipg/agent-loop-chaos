@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/OWNER/agent-loop-chaos/schemas/trace_event.schema.json",
+  "title": "TraceEvent",
+  "description": "One line of trace.jsonl. Append-only, monotonic seq per run. Every event is independently parseable; a truncated file is still usable.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "seq",
+    "ts",
+    "kind"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+$"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Globally monotonic within a run. Referenced by symptom evidence and fault fires."
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "ts_mono_ms": {
+      "type": "number",
+      "description": "Milliseconds since run start. Use this for durations; ts is for humans."
+    },
+    "kind": {
+      "enum": [
+        "run_started",
+        "run_finished",
+        "internal_error",
+        "step_started",
+        "step_finished",
+        "tool_call_requested",
+        "tool_call_returned",
+        "tool_call_failed",
+        "llm_request",
+        "llm_response",
+        "node_entered",
+        "node_exited",
+        "edge_taken",
+        "state_snapshot",
+        "state_mutated",
+        "checkpoint_written",
+        "checkpoint_restored",
+        "fault_armed",
+        "fault_fired",
+        "fault_skipped",
+        "mutation_applied",
+        "probe_fired",
+        "metric",
+        "judge_request",
+        "judge_response",
+        "judge_verdict",
+        "assertion_result",
+        "limit_exceeded",
+        "log"
+      ]
+    },
+    "level": {
+      "enum": [
+        "minimal",
+        "standard",
+        "verbose"
+      ],
+      "description": "Lowest trace_level at which this event is emitted."
+    },
+    "step": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "layer": {
+      "enum": [
+        "tool",
+        "llm",
+        "state",
+        "node",
+        "edge",
+        "checkpoint",
+        "engine",
+        null
+      ]
+    },
+    "phase": {
+      "enum": [
+        "pre",
+        "post",
+        "error",
+        null
+      ]
+    },
+    "name": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Tool / node / llm alias / state key this event concerns."
+    },
+    "call_index": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "span_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "parent_span_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "fault_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "duration_ms": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "payload": {
+      "description": "Event-specific body. Large values are replaced by a truncation stub: {\"__truncated__\": true, \"bytes\": N, \"sha256\": \"…\", \"head\": \"…\"}. Redaction is applied before writing.",
+      "type": [
+        "object",
+        "array",
+        "string",
+        "number",
+        "boolean",
+        "null"
+      ]
+    },
+    "tags": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  },
+  "$comment": "Payload contracts per kind (enforced by tests, not by this schema): run_started {seed, plan_hash, scenario_id, limits, target}; tool_call_requested {args, kwargs}; tool_call_returned {result, ok}; tool_call_failed {error_type, message}; llm_request {messages, model, estimated_tokens}; llm_response {content, tool_calls, finish_reason, tokens}; fault_armed {type, params, target, trigger}; fault_fired {type, action, note, delay_ms}; fault_skipped {type, reason}; mutation_applied {payload_before, payload_after, json_patch, unrepresentable}; state_snapshot {state}; state_mutated {keys, json_patch}; edge_taken {from, to, forced}; probe_fired {code, severity, detail, evidence}; limit_exceeded {limit, value}; judge_request {prompt_hash, model, evidence_bytes}; judge_response {raw, latency_ms, tokens}; judge_verdict {verdict}; internal_error {where, type, message, traceback}; assertion_result {check, ok, detail, source, params, evidence} - also the event emitted by engine.validated(), with check=\"validation\"; log {message, kind?} - carries spec_gap, replay_divergence and engine.note() breadcrumbs. This enum is normative: the illustrative list in docs/01-ARCHITECTURE.md section 4 is not (D-35). A state_mutated patch carries a real RFC-6902 patch or the documented truncation stub, never a prose summary."
+}
