@@ -108,15 +108,19 @@ class ToolInfo:
     Attributes:
         name: The tool's registered name.
         schema: JSON Schema for its arguments, if supplied.
-        side_effecting: Whether it performs a real action. Declaring `False` is a
-            deliberate statement, and it is the opt-out the D-23 gate checks.
+        side_effecting: Whether it performs a real action. Tri-state on purpose:
+            `True` and `False` are both deliberate declarations, and `None` means
+            the user never said. `SAFETY.md` §1 item 3 needs that distinction --
+            a broad preset refuses to run while any tool is undeclared, because
+            silence is "unknown", not "safe". Undeclared is treated as not
+            side-effecting everywhere else, so the harness does not go quiet.
         idempotency_arg: Argument that makes a repeat call safe, if any.
         is_async: Whether the underlying callable is a coroutine function.
     """
 
     name: str
     schema: dict[str, Any] | None = None
-    side_effecting: bool = False
+    side_effecting: bool | None = None
     idempotency_arg: str | None = None
     is_async: bool = False
 

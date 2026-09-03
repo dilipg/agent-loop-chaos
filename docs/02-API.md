@@ -98,7 +98,7 @@ it is written; the test suite runs with it on.
 
 ```python
     def tool(self, fn: Callable | None = None, *, name: str | None = None,
-             side_effecting: bool = False, schema: dict | None = None) -> Callable: ...
+             side_effecting: bool | None = None, schema: dict | None = None) -> Callable: ...
     def llm(self, fn: Callable | None = None, *, name: str = "default") -> Callable: ...
     def wrap_tools(self, tools: Mapping[str, Callable]) -> dict[str, Callable]: ...
     def wrap_callable(self, fn: Callable, *, layer: Layer, name: str) -> Callable: ...
@@ -115,6 +115,13 @@ it is written; the test suite runs with it on.
 
 Both `tool` and `llm` work bare (`@engine.tool`) and parameterized
 (`@engine.tool(name="get_weather_data")`), sync and async.
+
+`side_effecting` is tri-state (D-56): `True` and `False` are both deliberate
+declarations, and omitting it leaves the tool **undeclared**.
+`engine.require_declared_side_effects()` raises `ConfigError` while any registered
+tool is undeclared, which is what `--preset full` calls before starting
+(`SAFETY.md` §1 item 3). Undeclared is treated as not side-effecting everywhere
+else.
 
 `intercept_tools()` decorates the *agent entrypoint*; inside its dynamic scope,
 module-level tool functions already registered by name are intercepted. It exists

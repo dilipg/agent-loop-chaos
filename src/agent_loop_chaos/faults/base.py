@@ -210,11 +210,16 @@ class Fault(ABC):
         accepts: The ``(layer, phase)`` pairs this fault handles. The engine refuses
             a mismatched registration with `ConfigError` at registration time.
         severity_hint: Default severity if this fault causes a failure.
+        performs_real_action: True when the fault performs an operation the agent
+            never requested -- a real tool call, a repeated call, a replayed node.
+            The D-23 gate refuses these against a `side_effecting=True` tool without
+            an explicit opt-in (`SAFETY.md` §1).
     """
 
     kind: ClassVar[str] = "Fault"
     accepts: ClassVar[frozenset[tuple[Layer, Phase]]] = frozenset()
     severity_hint: ClassVar[Severity] = "medium"
+    performs_real_action: ClassVar[bool] = False
 
     def __init__(self, **params: Any) -> None:
         """Initialise and validate parameters eagerly.

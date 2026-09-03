@@ -67,6 +67,7 @@ log = logging.getLogger("agent_loop_chaos")
 # Precedence for `injected_faults[].skipped_reason`, most significant first (D-36).
 _SKIP_PRECEDENCE: tuple[str, ...] = (
     "dry_run",
+    "side_effecting_tool_not_named",
     "target_never_called",
     "no_checkpointer",
     "max_fires_reached",
@@ -153,6 +154,7 @@ class ChaosEngine:
         write_bundle: bool = True,
         allow_remote_judge: bool = False,
         tags: Mapping[str, str] | None = None,
+        allow_side_effects: Sequence[str] = (),
         strict_trace: bool = False,
     ) -> None:
         """Initialise an engine.
@@ -172,6 +174,10 @@ class ChaosEngine:
             allow_remote_judge: Opt-in required before a non-loopback judge endpoint
                 may receive code context (D-22). Unused until M6.
             tags: Free-form labels recorded in the report.
+            allow_side_effects: Tools the D-23 gate may target with a real-action
+                fault. Per-tool and deliberate: naming one tool never permits
+                another (`SAFETY.md` §1). `run(allow_side_effects=…)` extends this
+                for one run.
             strict_trace: Validate every trace event against the schema as it is
                 written. Used throughout the test suite; off by default so a
                 production run is not slowed by it.
@@ -187,6 +193,7 @@ class ChaosEngine:
         self.write_bundle = write_bundle
         self.allow_remote_judge = allow_remote_judge
         self.tags: dict[str, str] = dict(tags or {})
+        self.allow_side_effects: set[str] = set(allow_side_effects)
         self.strict_trace = strict_trace
 
         self._faults: list[_ArmedFault] = []
@@ -253,6 +260,7 @@ class ChaosEngine:
         trigger = trigger or Trigger()
         self._validate_trigger(trigger)
         self._validate_accepts(fault, target)
+        self._validate_side_effect_gate(fault, target)
 
         self._fault_counter += 1
         assigned = fault_id or f"f{self._fault_counter}"
@@ -307,6 +315,29 @@ class ChaosEngine:
             value = getattr(trigger, name)
             if value is not None and value < 0:
                 raise ConfigError(f"Trigger.{name} must be >= 0; got {value!r}")
+
+    def _validate_side_effect_gate(self, fault: Fault, target: Target) -> None:
+        """Refuse a real-action fault against a side-effecting tool (D-23).
+
+        Args:
+            fault: The fault being registered.
+            target: Its target.
+
+        Raises:
+            ConfigError: When the fault performs real operations and the named tool
+                is declared `side_effecting=True` without an opt-in.
+        """
+        if not fault.performs_real_action or target.tool is None:
+            return
+        if target.tool in self.allow_side_effects:
+            return
+        info = self._tools.get(target.tool)
+        if info is not None and info.side_effecting:
+            raise ConfigError(
+                f"{fault.kind} performs operations the agent never requested and "
+                f"tool {target.tool!r} is declared side_effecting=True. Add it to "
+                f"allow_side_effects to opt in deliberately. See SAFETY.md §1."
+            )
 
     @staticmethod
     def _validate_accepts(fault: Fault, target: Target) -> None:
@@ -447,7 +478,7 @@ class ChaosEngine:
         fn: Callable[..., Any] | None = None,
         *,
         name: str | None = None,
-        side_effecting: bool = False,
+        side_effecting: bool | None = None,
         schema: dict[str, Any] | None = None,
     ) -> Callable[..., Any]:
         """Register and wrap a tool callable. Works bare or parameterized.
@@ -455,9 +486,11 @@ class ChaosEngine:
         Args:
             fn: The tool, when used bare as ``@engine.tool``.
             name: Tool name. Defaults to the function's name.
-            side_effecting: Declare that this tool performs a real action. Declaring
-                `False` is a deliberate statement and is the opt-out the D-23 gate
-                checks (`SAFETY.md` §1).
+            side_effecting: Declare whether this tool performs a real action.
+                `True` and `False` are both deliberate declarations; omitting it
+                leaves the tool *undeclared*, which a broad preset refuses to run
+                against (`SAFETY.md` §1 item 3). Undeclared is treated as not
+                side-effecting for every other purpose.
             schema: JSON Schema for the tool's arguments.
 
         Returns:
@@ -633,6 +666,26 @@ class ChaosEngine:
         return obj
 
     # ------------------------------------------------------------ run-time state
+
+    def require_declared_side_effects(self) -> None:
+        """Refuse to proceed while any registered tool is undeclared (D-23 item 3).
+
+        Called by broad presets and by `alc run --preset full`, which point faults
+        at everything and therefore cannot afford to guess which tools move money
+        or delete rows.
+
+        Raises:
+            ConfigError: Naming every undeclared tool, so the fix is mechanical.
+        """
+        undeclared = sorted(
+            name for name, info in self._tools.items() if info.side_effecting is None
+        )
+        if undeclared:
+            raise ConfigError(
+                "a broad preset cannot run while these tools leave `side_effecting` "
+                f"undeclared: {undeclared}. Declare it True or False on each -- "
+                "False is a deliberate statement, silence is not (SAFETY.md §1)."
+            )
 
     def is_active(self) -> bool:
         """Report whether a run of *this* engine is active in the current context.
@@ -816,6 +869,33 @@ class ChaosEngine:
         )
         raise LimitExceeded(breach)
 
+    def _blocked_by_gate(self, armed: _ArmedFault, crossing: Crossing) -> bool:
+        """Report whether the D-23 gate blocks this fault at this crossing.
+
+        A wildcard target must never reach a tool declared `side_effecting=True`;
+        hitting one requires naming it, or listing it in `allow_side_effects`
+        (`SAFETY.md` §1 item 2). This applies to every fault, not only the three
+        that perform real operations: a glob quietly reaching `delete_rows` is the
+        accident the rule exists to prevent.
+
+        Args:
+            armed: The fault under consideration.
+            crossing: The crossing it matched.
+
+        Returns:
+            True when the fault must be skipped here.
+        """
+        if crossing.layer != "tool":
+            return False
+        info = self._tools.get(crossing.name)
+        if info is None or not info.side_effecting:
+            return False
+        if crossing.name in self.allow_side_effects:
+            return False
+        pattern = armed.target.tool
+        # No tool constraint at all is broader than a glob, so it counts as one.
+        return pattern is None or any(ch in pattern for ch in "*?[")
+
     def _armed_for(self, crossing: Crossing) -> list[_ArmedFault]:
         """Select the faults whose target matches this crossing.
 
@@ -903,6 +983,27 @@ class ChaosEngine:
         terminal: tuple[_ArmedFault, FaultOutcome] | None = None
 
         for armed in self._armed_for(crossing):
+            if self._blocked_by_gate(armed, crossing):
+                self._note_skip(armed.record, "side_effecting_tool_not_named")
+                self._emit(
+                    Event(
+                        kind="fault_skipped",
+                        level="minimal",
+                        layer=crossing.layer,
+                        phase=crossing.phase,
+                        name=crossing.name,
+                        fault_id=armed.fault_id,
+                        payload={
+                            "reason": "side_effecting_tool_not_named",
+                            "detail": (
+                                f"{crossing.name!r} is declared side_effecting=True and this "
+                                "target is a wildcard; name the tool explicitly or list it in "
+                                "allow_side_effects (SAFETY.md §1)"
+                            ),
+                        },
+                    )
+                )
+                continue
             if terminal is not None:
                 self._note_skip(armed.record, "superseded")
                 self._emit(

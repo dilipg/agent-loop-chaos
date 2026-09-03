@@ -673,3 +673,39 @@ explicit phase the fault cannot accept, and `cross` offers a fault only crossing
 whose `(layer, phase)` pair is in `accepts`. A fault therefore never sees a crossing
 it did not declare, and `target_tool="x"` is always safe shorthand regardless of
 which phases the fault handles.
+
+### D-56 — The side-effect gate: tri-state declaration, glob scope, and its skip reason
+*Affects `docs/02-API.md` §2, `docs/04` §3 (D-36 precedence), `SAFETY.md` §1,
+phase 02, 2026-09-03.*
+
+Implementing the D-23 gate forced three sub-decisions.
+
+**1. `side_effecting` is tri-state.** `SAFETY.md` §1 item 3 requires refusing a broad
+preset while a tool leaves `side_effecting` *undeclared*, and item 1 says declaring
+`False` is "a deliberate statement". With the documented `side_effecting: bool =
+False`, silence and a deliberate `False` are indistinguishable, so item 3 is
+unimplementable. `ToolInfo.side_effecting` and `engine.tool(side_effecting=…)`
+therefore become `bool | None`, defaulting to `None` = undeclared. Undeclared is
+treated as *not* side-effecting everywhere else, so the harness does not go quiet on
+an unannotated codebase; it only blocks broad presets, via
+`engine.require_declared_side_effects()`. `docs/02-API.md` §2 updated.
+
+**2. The glob rule applies to every fault, not only the three.** `SAFETY.md` §1
+item 2 — "glob targets never match a `side_effecting=True` tool" — is written without
+restriction, unlike item 1 which names the three real-action faults. The broad
+reading is also the safe one: a wildcard quietly reaching `delete_rows` is the
+accident the rule exists to prevent, whatever the fault does when it gets there. A
+target with `tool=None` counts as a glob, being broader still. Naming the tool
+explicitly, or listing it in `allow_side_effects`, reaches it as before.
+
+**3. `allow_side_effects` is an engine parameter as well as a run parameter.** D-23
+enforces the gate at `register_fault` time, but the documented opt-in is a
+*scenario* field, which arrives at `run()` — by which point registration has already
+refused. `ChaosEngine(allow_side_effects=…)` is therefore added, and a suite runner
+passes the scenario's list through when it constructs the engine.
+`run(allow_side_effects=…)` remains and extends it for one run.
+
+**Skip reason.** A glob skipping a side-effecting tool records
+`side_effecting_tool_not_named`, inserted into D-36's `skipped_reason` precedence
+directly after `dry_run`: it is a gate decision, so it outranks any trigger miss
+that might also apply.
