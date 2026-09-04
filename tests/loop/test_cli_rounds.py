@@ -196,4 +196,9 @@ class TestOutput:
         printed = capsys.readouterr().out
         assert "| scenario |" not in printed
         document = json.loads((tmp_path / "out" / "suite.json").read_text())
-        assert document["schema_version"] == "1.0"
+        # 1.1 with no `rounds` key: the live-progress fields are written for every
+        # suite from M10 on (docs/10 section 2), but only a refinement loop adds the
+        # round history (D-112).
+        assert document["schema_version"] == "1.1"
+        assert document["status"] == "completed"
+        assert "rounds" not in document

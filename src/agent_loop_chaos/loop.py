@@ -286,6 +286,32 @@ def run_suite(
     # the cost of every suite for an answer that cannot have changed.
     baselines: dict[str, Any] = {}
 
+    planned = [s.id for s in scenarios]
+
+    def _publish(status: str, current: str | None) -> None:
+        """Write `suite.json` so a viewer can see the run in progress.
+
+        The engine does not know the dashboard exists and never will; this is a file
+        the suite writes for anyone who cares to read it (`docs/10` §1).
+
+        Args:
+            status: `running` or `completed`.
+            current: The scenario in flight, or `None`.
+        """
+        from .bundle import write_suite_json
+
+        try:
+            write_suite_json(
+                out_dir,
+                list(results),
+                seed=seed or 0,
+                status=status,
+                current=current,
+                planned=planned,
+            )
+        except Exception as exc:  # pragma: no cover - disk trouble only
+            log.debug("could not publish suite.json: %s", exc)
+
     def _one(scenario: Scenario) -> ChaosResult:
         """Run a single scenario in its own engine."""
         engine = ChaosEngine(
@@ -316,6 +342,8 @@ def run_suite(
             attempt=attempt,
         )
 
+    _publish("running", planned[0] if planned else None)
+
     if not no_baseline:
         # Serially, before anything runs in parallel: the cache is shared, and two
         # workers racing to fill the same key would run the baseline twice and give
@@ -335,15 +363,20 @@ def run_suite(
         for result in results:
             if on_result is not None:
                 on_result(result)
+        _publish("completed", None)
         return results
 
-    for scenario in scenarios:
+    for index, scenario in enumerate(scenarios):
+        _publish("running", scenario.id)
         result = _one(scenario)
         results.append(result)
+        remaining = planned[index + 1] if index + 1 < len(planned) else None
+        _publish("running" if remaining else "completed", remaining)
         if on_result is not None:
             on_result(result)
         if fail_fast and not result.success:
             break
+    _publish("completed", None)
     return results
 
 

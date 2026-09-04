@@ -1,0 +1,673 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent-loop-chaos</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #fbfbfa; --panel: #ffffff; --line: #e3e2df; --ink: #1b1b19; --dim: #6b6a66;
+  --accent: #b4530a; --accent-soft: #fdf1e6;
+  --pass: #1f7a4d; --fail: #b3261e; --warn: #9a6b00; --run: #1d63c9;
+  --tool: #1d63c9; --llm: #6b3fa0; --state: #1f7a4d; --fault: #b4530a; --err: #b3261e;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17171a; --panel: #1e1e22; --line: #34343a; --ink: #e9e8e4; --dim: #9b9a95;
+    --accent: #f0913f; --accent-soft: #33261a;
+    --pass: #56c98a; --fail: #ff6b60; --warn: #e0ac3a; --run: #6fa8ff;
+    --tool: #6fa8ff; --llm: #b48cf0; --state: #56c98a; --fault: #f0913f; --err: #ff6b60;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 13px/1.45 var(--sans); height: 100vh; display: flex; flex-direction: column;
+}
+header {
+  display: flex; align-items: center; gap: 14px; padding: 8px 12px;
+  border-bottom: 1px solid var(--line); background: var(--panel); flex: 0 0 auto;
+}
+header .brand { font-weight: 650; letter-spacing: -.01em; }
+header .counter { color: var(--dim); font-family: var(--mono); font-size: 12px; }
+header .spacer { flex: 1; }
+button, input[type=search], input[type=text] {
+  font: inherit; color: inherit; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px;
+}
+button { cursor: pointer; }
+button[aria-pressed=true] { background: var(--accent-soft); border-color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+main { flex: 1; display: flex; min-height: 0; }
+.pane { display: flex; flex-direction: column; min-width: 0; background: var(--panel); }
+#runs { flex: 0 0 260px; border-right: 1px solid var(--line); }
+#timeline { flex: 1; }
+#detail { flex: 0 0 400px; border-left: 1px solid var(--line); }
+.grip { flex: 0 0 5px; cursor: col-resize; background: transparent; }
+.grip:hover { background: var(--accent-soft); }
+.pane > .head {
+  padding: 6px 10px; border-bottom: 1px solid var(--line);
+  display: flex; gap: 6px; align-items: center; flex: 0 0 auto; flex-wrap: wrap;
+}
+.pane > .body { overflow: auto; flex: 1; }
+.empty { padding: 24px 14px; color: var(--dim); }
+.run { padding: 7px 10px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.run[aria-selected=true] { background: var(--accent-soft); }
+.run .id { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.run .meta { color: var(--dim); font-size: 11px; margin-top: 2px; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.dot.pass { background: var(--pass); } .dot.fail { background: var(--fail); }
+.dot.running { background: var(--run); } .dot.aborted { background: var(--warn); }
+.dot.stale { background: var(--dim); }
+#rows { position: relative; font-family: var(--mono); font-size: 12px; }
+.row {
+  display: flex; gap: 8px; padding: 2px 8px; height: 22px; align-items: center;
+  white-space: nowrap; cursor: pointer; border-left: 3px solid transparent;
+}
+.row[aria-selected=true] { background: var(--accent-soft); }
+.row .seq { color: var(--dim); width: 52px; text-align: right; flex: 0 0 auto; }
+.row .ms { color: var(--dim); width: 62px; text-align: right; flex: 0 0 auto; }
+.row .kind { width: 168px; flex: 0 0 auto; overflow: hidden; text-overflow: ellipsis; }
+.row .sum { flex: 1; overflow: hidden; text-overflow: ellipsis; color: var(--dim); }
+.row.c-tool .kind { color: var(--tool); } .row.c-llm .kind { color: var(--llm); }
+.row.c-state .kind { color: var(--state); } .row.c-error .kind { color: var(--err); }
+.row.c-fault {
+  border-left-color: var(--fault); background: var(--accent-soft); font-weight: 600;
+}
+.row.c-fault .kind, .row.c-fault .sum { color: var(--fault); }
+.tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+.tabs button { font-size: 12px; padding: 2px 7px; }
+#detailbody { padding: 10px; }
+h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim);
+     margin: 14px 0 6px; }
+h3:first-child { margin-top: 0; }
+pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap;
+      overflow-wrap: anywhere; margin: 0; }
+.chip {
+  display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 999px;
+  border: 1px solid var(--line); margin-right: 5px; font-family: var(--sans);
+}
+.chip.sev-high, .chip.sev-critical { border-color: var(--fail); color: var(--fail); }
+.chip.sev-medium { border-color: var(--warn); color: var(--warn); }
+.chip.sev-low { border-color: var(--dim); color: var(--dim); }
+.diff { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.diff .col { border: 1px solid var(--line); border-radius: 6px; padding: 6px; }
+.diff .col h4 { margin: 0 0 4px; font-size: 11px; color: var(--dim); }
+.patch li { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.patch li.op-remove { color: var(--fail); }
+.patch li.op-add { color: var(--pass); }
+.patch li.op-replace { color: var(--accent); }
+.msg { border: 1px solid var(--line); border-radius: 6px; padding: 6px; margin-bottom: 6px; }
+.msg.touched { border-color: var(--accent); background: var(--accent-soft); }
+.role { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
+.evlink { color: var(--run); cursor: pointer; text-decoration: underline; font-family: var(--mono); }
+.ph { color: var(--accent); background: var(--accent-soft); border-radius: 3px; padding: 0 2px; }
+dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+         color: var(--ink); max-width: 420px; }
+kbd { font-family: var(--mono); border: 1px solid var(--line); border-radius: 4px;
+      padding: 0 4px; }
+.banner { padding: 4px 12px; background: var(--accent-soft); color: var(--accent);
+          font-size: 12px; border-bottom: 1px solid var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">agent-loop-chaos</span>
+  <span class="counter" id="counter" aria-live="polite">loading…</span>
+  <span class="spacer"></span>
+  <button id="failonly" aria-pressed="false" title="Show failures only">failures only</button>
+  <button id="follow" aria-pressed="true" title="Follow new events">follow</button>
+  <button id="help" title="Keyboard shortcuts">?</button>
+</header>
+<div class="banner" id="banner" hidden></div>
+<main>
+  <section class="pane" id="runs" aria-label="Runs">
+    <div class="head"><input type="search" id="runfilter" placeholder="filter runs" aria-label="Filter runs"></div>
+    <div class="body" id="runlist"></div>
+  </section>
+  <div class="grip" id="grip1" role="separator" aria-orientation="vertical"></div>
+  <section class="pane" id="timeline" aria-label="Timeline">
+    <div class="head">
+      <input type="search" id="search" placeholder="search events  (/)" aria-label="Search events">
+      <button data-group="fault" aria-pressed="false">faults</button>
+      <button data-group="tool" aria-pressed="false">tool</button>
+      <button data-group="llm" aria-pressed="false">llm</button>
+      <button data-group="state" aria-pressed="false">state</button>
+      <button data-group="error" aria-pressed="false">errors</button>
+      <button id="jumplive" hidden>jump to live</button>
+    </div>
+    <div class="body" id="scroller"><div id="rows"></div></div>
+  </section>
+  <div class="grip" id="grip2" role="separator" aria-orientation="vertical"></div>
+  <section class="pane" id="detail" aria-label="Detail">
+    <div class="head tabs" id="tabs"></div>
+    <div class="body" id="detailbody"></div>
+  </section>
+</main>
+<dialog id="helpbox">
+  <h3>keyboard</h3>
+  <p><kbd>j</kbd>/<kbd>k</kbd> move · <kbd>f</kbd> next fault · <kbd>/</kbd> search ·
+     <kbd>g</kbd>/<kbd>G</kbd> top/bottom · <kbd>?</kbd> this box · <kbd>Esc</kbd> close</p>
+  <form method="dialog"><button>close</button></form>
+</dialog>
+<script>
+"use strict";
+// ---------------------------------------------------------------- rendering
+// Nothing derived from a trace is ever assigned as markup. The trace is guaranteed to
+// contain attacker-controlled markup -- ContextNoiseFault injects HTML boilerplate,
+// PromptInjectionFault can place a payload in an HTML comment -- so every payload
+// string goes through textContent, and invisible characters are made visible so a
+// bidi override cannot reorder what a human reads (D-38).
+const INVISIBLE = /[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff\u00ad]/g;
+const NAMES = {
+  "\u200b": "ZWSP", "\u200c": "ZWNJ", "\u200d": "ZWJ", "\u200e": "LRM", "\u200f": "RLM",
+  "\u202a": "LRE", "\u202b": "RLE", "\u202c": "PDF", "\u202d": "LRO", "\u202e": "RLO",
+  "\u2066": "LRI", "\u2067": "RLI", "\u2068": "FSI", "\u2069": "PDI",
+  "\ufeff": "BOM", "\u00ad": "SHY"
+};
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined && text !== null) put(node, String(text));
+  return node;
+}
+function put(node, text) {
+  // Split on invisible characters and render each as a visible chip, so a payload
+  // cannot hide or reverse the text around it.
+  let last = 0;
+  INVISIBLE.lastIndex = 0;
+  let m;
+  while ((m = INVISIBLE.exec(text)) !== null) {
+    node.appendChild(document.createTextNode(text.slice(last, m.index)));
+    node.appendChild(el("span", "ph", NAMES[m[0]] || "U+" + m[0].codePointAt(0).toString(16)));
+    last = m.index + m[0].length;
+  }
+  node.appendChild(document.createTextNode(text.slice(last)));
+}
+function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+function pretty(value) { try { return JSON.stringify(value, null, 2); } catch (e) { return String(value); } }
+
+// ---------------------------------------------------------------- data source
+// Live mode talks to the local server. Export mode reads an inlined blob and never
+// makes a request of any kind -- the exported file works from a file path, offline.
+const BLOB = window.__ALC__ || null;
+const LIVE = !BLOB;
+async function get(path) {
+  const res = await fetch(path, { cache: "no-store" });
+  if (!res.ok) throw new Error(res.status + " " + path);
+  return res.json();
+}
+const src = LIVE ? {
+  suite: () => get("/api/suite"),
+  runs: () => get("/api/runs"),
+  run: (id) => get("/api/run/" + encodeURIComponent(id)),
+  events: (id, from) =>
+    get("/api/run/" + encodeURIComponent(id) + "/events?from=" + from + "&limit=2000"),
+  task: (id) =>
+    fetch("/api/run/" + encodeURIComponent(id) + "/artifact/AGENT_TASK.md")
+      .then((r) => (r.ok ? r.text() : ""))
+} : {
+  suite: async () => BLOB.suite,
+  runs: async () => BLOB.runs.map((r) => r.row),
+  run: async (id) => ({ partial: false, report: find(id).report, status: find(id).row.status }),
+  events: async (id, from) => {
+    const all = find(id).events.filter((e) => (e.seq || 0) >= from);
+    return { events: all, next_from: from + all.length, has_more: false };
+  },
+  task: async (id) => find(id).task || ""
+};
+function find(id) { return BLOB.runs.find((r) => r.row.run_id === id) || { row: {}, events: [] }; }
+
+// ---------------------------------------------------------------- state
+const S = {
+  suite: null, runs: [], sel: null, events: [], next: 0, ev: null,
+  tab: "Event", groups: new Set(), q: "", runq: "", failonly: false, follow: true,
+  report: null, task: "", t0: null
+};
+const GROUP = {
+  fault: (e) => /^(fault_fired|mutation_applied)$/.test(e.kind || ""),
+  tool: (e) => e.layer === "tool",
+  llm: (e) => e.layer === "llm",
+  state: (e) => ["state", "node", "edge", "checkpoint"].indexOf(e.layer) >= 0,
+  error: (e) => /error|exception|unparseable/.test(e.kind || "")
+};
+function cls(e) {
+  if (GROUP.fault(e)) return "c-fault";
+  if (GROUP.error(e)) return "c-error";
+  if (GROUP.tool(e)) return "c-tool";
+  if (GROUP.llm(e)) return "c-llm";
+  if (GROUP.state(e)) return "c-state";
+  return "";
+}
+function relMs(e) {
+  if (S.t0 == null || e.ts_mono_ms == null) return "";
+  return "+" + Math.round(e.ts_mono_ms - S.t0);
+}
+function summary(e) {
+  const p = e.payload || {};
+  if (e.kind === "truncated_head") return "older events dropped: " + e.dropped;
+  if (e.kind === "__unparseable__") return "unparseable line";
+  return p.note || p.summary || e.name || p.tool || p.reason || p.message || e.fault_id || "";
+}
+function shown() {
+  const q = S.q.toLowerCase();
+  return S.events.filter((e) => {
+    if (S.groups.size) {
+      let hit = false;
+      S.groups.forEach((g) => { if (GROUP[g](e)) hit = true; });
+      if (!hit) return false;
+    }
+    if (!q) return true;
+    return ((e.kind || "") + " " + (e.name || "") + " " + summary(e)).toLowerCase().includes(q);
+  });
+}
+
+// ---------------------------------------------------------------- run list
+function drawRuns() {
+  const list = document.getElementById("runlist");
+  clear(list);
+  const rows = S.runs.filter((r) => {
+    if (S.failonly && r.success !== false) return false;
+    if (!S.runq) return true;
+    return (r.scenario_id + " " + r.run_id).toLowerCase().includes(S.runq.toLowerCase());
+  });
+  if (!rows.length) {
+    list.appendChild(el("div", "empty",
+      LIVE ? "no runs yet — start one with: alc run <suite.yaml> --dashboard"
+           : "this export contains no runs"));
+    return;
+  }
+  for (const r of rows) {
+    const node = el("div", "run");
+    node.setAttribute("role", "option");
+    node.setAttribute("aria-selected", String(r.run_id === S.sel));
+    const id = el("div", "id");
+    id.appendChild(el("span", "dot " + dotOf(r)));
+    put(id, r.scenario_id || r.run_id);
+    node.appendChild(id);
+    const bits = [statusText(r)];
+    if (r.failure_mode) bits.push(r.failure_mode);
+    if (r.severity) bits.push(r.severity);
+    bits.push(r.events + " events");
+    if (r.faults_fired) bits.push(r.faults_fired + " fired");
+    if (r.duration_ms != null) bits.push(r.duration_ms + " ms");
+    node.appendChild(el("div", "meta", bits.join(" · ")));
+    node.onclick = () => select(r.run_id);
+    list.appendChild(node);
+  }
+}
+function dotOf(r) {
+  if (r.status === "running") return "running";
+  if (r.status === "stale") return "stale";
+  if (r.success === true) return "pass";
+  if (r.success === false) return "fail";
+  return "aborted";
+}
+function statusText(r) {
+  if (r.status === "running") return "running";
+  if (r.success === true) return "passed";
+  if (r.success === false) return "failed";
+  return r.status || "unknown";
+}
+function drawCounter() {
+  const s = S.suite || {};
+  const total = (s.planned || []).length || S.runs.length;
+  const running = S.runs.filter((r) => r.status === "running").length;
+  const passed = S.runs.filter((r) => r.success === true).length;
+  const failed = S.runs.filter((r) => r.success === false).length;
+  const text = (passed + failed) + "/" + total + " · " + passed + " passed · " +
+               failed + " failed · " + running + " running";
+  const node = document.getElementById("counter");
+  clear(node); put(node, text);
+}
+
+// ---------------------------------------------------------------- timeline
+// Windowed: only the rows in view are in the DOM, so a 20 000-event trace scrolls
+// without building 20 000 nodes.
+const ROW_H = 22;
+const scroller = document.getElementById("scroller");
+const rowsBox = document.getElementById("rows");
+let visible = [];
+function drawRows() {
+  visible = shown();
+  rowsBox.style.height = visible.length * ROW_H + "px";
+  paint();
+}
+function paint() {
+  const top = scroller.scrollTop;
+  const first = Math.max(0, Math.floor(top / ROW_H) - 10);
+  const last = Math.min(visible.length, Math.ceil((top + scroller.clientHeight) / ROW_H) + 10);
+  clear(rowsBox);
+  const pad = el("div");
+  pad.style.height = first * ROW_H + "px";
+  rowsBox.appendChild(pad);
+  for (let i = first; i < last; i++) {
+    const e = visible[i];
+    const row = el("div", "row " + cls(e));
+    row.setAttribute("aria-selected", String(S.ev === e.seq));
+    row.appendChild(el("span", "seq", e.seq == null ? "" : e.seq));
+    row.appendChild(el("span", "ms", relMs(e)));
+    row.appendChild(el("span", "kind", (e.kind || "?") + (e.layer ? " · " + e.layer : "")));
+    row.appendChild(el("span", "sum", summary(e)));
+    row.onclick = () => { S.ev = e.seq; drawRows(); drawDetail(); };
+    rowsBox.appendChild(row);
+  }
+  const tail = el("div");
+  tail.style.height = Math.max(0, (visible.length - last)) * ROW_H + "px";
+  rowsBox.appendChild(tail);
+}
+scroller.addEventListener("scroll", () => {
+  const atEnd = scroller.scrollTop + scroller.clientHeight >= rowsBox.offsetHeight - 4;
+  if (!atEnd && S.follow) setFollow(false);
+  paint();
+});
+function setFollow(on) {
+  S.follow = on;
+  document.getElementById("follow").setAttribute("aria-pressed", String(on));
+  document.getElementById("jumplive").hidden = on;
+  if (on) scroller.scrollTop = rowsBox.offsetHeight;
+}
+
+// ---------------------------------------------------------------- detail
+const TABS = ["Event", "Diff", "Prompt", "State", "Verdict", "Task"];
+function drawTabs() {
+  const box = document.getElementById("tabs");
+  clear(box);
+  for (const name of TABS) {
+    const b = el("button", null, name);
+    b.setAttribute("aria-pressed", String(S.tab === name));
+    b.onclick = () => { S.tab = name; drawTabs(); drawDetail(); };
+    box.appendChild(b);
+  }
+}
+function current() { return S.events.find((e) => e.seq === S.ev) || null; }
+function drawDetail() {
+  const box = document.getElementById("detailbody");
+  clear(box);
+  const e = current();
+  if (S.tab === "Task") return drawTask(box);
+  if (S.tab === "Verdict") return drawVerdict(box);
+  if (!e) { box.appendChild(el("div", "empty", "select an event")); return; }
+  if (S.tab === "Event") { box.appendChild(el("h3", null, e.kind || "event"));
+                           box.appendChild(el("pre", null, pretty(e))); return; }
+  if (S.tab === "Diff") return drawDiff(box, e);
+  if (S.tab === "Prompt") return drawPrompt(box, e);
+  if (S.tab === "State") return drawState(box);
+}
+function drawDiff(box, e) {
+  const p = e.payload || {};
+  if (p.payload_before === undefined && p.payload_after === undefined) {
+    box.appendChild(el("div", "empty", "no mutation on this event"));
+    return;
+  }
+  const grid = el("div", "diff");
+  for (const [title, value] of [["before", p.payload_before], ["after", p.payload_after]]) {
+    const col = el("div", "col");
+    col.appendChild(el("h4", null, title));
+    col.appendChild(el("pre", null, pretty(value)));
+    grid.appendChild(col);
+  }
+  box.appendChild(grid);
+  const patch = p.json_patch || [];
+  if (patch.length) {
+    box.appendChild(el("h3", null, "json patch"));
+    const ul = el("ul", "patch");
+    for (const op of patch) {
+      const li = el("li", "op-" + (op.op || ""));
+      put(li, op.op + " " + op.path +
+              (op.value === undefined ? "" : " = " + pretty(op.value)));
+      ul.appendChild(li);
+    }
+    box.appendChild(ul);
+  }
+}
+function drawPrompt(box, e) {
+  const p = e.payload || {};
+  const msgs = p.messages || p.prompt || null;
+  if (!Array.isArray(msgs)) { box.appendChild(el("div", "empty", "no conversation on this event")); return; }
+  for (const m of msgs) {
+    const node = el("div", "msg" + (m.touched_by_fault ? " touched" : ""));
+    node.appendChild(el("div", "role", m.role || "?"));
+    node.appendChild(el("pre", null, typeof m.content === "string" ? m.content : pretty(m.content)));
+    box.appendChild(node);
+  }
+  const foot = [];
+  if (p.finish_reason) foot.push("finish_reason: " + p.finish_reason);
+  if (p.tokens_in != null) foot.push("in: " + p.tokens_in);
+  if (p.tokens_out != null) foot.push("out: " + p.tokens_out);
+  if (foot.length) box.appendChild(el("div", "meta", foot.join(" · ")));
+}
+function drawState(box) {
+  const snaps = S.events.filter((x) =>
+    /^state_(snapshot|mutated)$/.test(x.kind) && x.seq <= (S.ev || 1e9));
+  const last = snaps[snaps.length - 1];
+  if (!last) { box.appendChild(el("div", "empty", "no state snapshot yet")); return; }
+  const by = (last.payload || {}).by || "agent";
+  box.appendChild(el("h3", null, "snapshot · by " + by));
+  box.appendChild(el("pre", null, pretty((last.payload || {}).state)));
+  const prev = snaps[snaps.length - 2];
+  if (prev) {
+    box.appendChild(el("h3", null, "previous · by " + ((prev.payload || {}).by || "agent")));
+    box.appendChild(el("pre", null, pretty((prev.payload || {}).state)));
+  }
+}
+function drawVerdict(box) {
+  const r = S.report;
+  if (!r) { box.appendChild(el("div", "empty", "no report yet — the run is still going")); return; }
+  const v = r.verdict || {};
+  box.appendChild(el("h3", null, "verdict"));
+  const head = el("div");
+  head.appendChild(el("span", "chip sev-" + (r.severity || "low"),
+                      (r.success ? "passed" : "failed") + " · " + (r.severity || "low")));
+  put(head, r.failure_mode || "");
+  box.appendChild(head);
+  if (v.observed_behavior) box.appendChild(el("div", "meta",
+    "expected " + (v.expected_behavior || "?") + " · observed " + v.observed_behavior));
+
+  const symptoms = r.symptoms || [];
+  if (symptoms.length) box.appendChild(el("h3", null, "symptoms"));
+  for (const sym of symptoms) {
+    const node = el("div", "msg");
+    node.appendChild(el("span", "chip sev-" + (sym.severity || "low"), sym.severity || "low"));
+    put(node, sym.code + ": " + (sym.detail || ""));
+    for (const ev of sym.evidence || []) {
+      // Evidence is a record, not a bare number: `{seq, kind, check}`.
+      const seq = typeof ev === "number" ? ev : ev.seq;
+      if (seq == null) continue;
+      const link = el("span", "evlink", " #" + seq);
+      link.onclick = () => { S.ev = seq; drawRows(); jumpTo(seq); drawDetail(); };
+      node.appendChild(link);
+    }
+    box.appendChild(node);
+  }
+
+  for (const [title, value] of [
+    ["narrative", r.chaos_narrative || v.narrative],
+    ["root cause", r.root_cause_hypothesis || v.root_cause_hypothesis],
+    ["refinement hint", r.refinement_hint || v.refinement_hint],
+    ["judge disagreement", v.judge_disagreement]
+  ]) {
+    if (!value) continue;
+    box.appendChild(el("h3", null, title));
+    box.appendChild(el("pre", null, typeof value === "string" ? value : pretty(value)));
+  }
+
+  const fixes = r.suggested_fixes || v.suggested_fixes || [];
+  if (fixes.length) {
+    box.appendChild(el("h3", null, "ranked fixes"));
+    for (const f of fixes) {
+      const node = el("div", "msg");
+      node.appendChild(el("span", "chip", (f.kind || "fix") +
+        (f.confidence == null ? "" : " · " + f.confidence)));
+      put(node, f.description || pretty(f));
+      box.appendChild(node);
+    }
+  }
+
+  const pointers = r.code_pointers || [];
+  if (pointers.length) {
+    box.appendChild(el("h3", null, "code pointers"));
+    for (const c of pointers) {
+      box.appendChild(el("div", "msg",
+        c.file + ":" + c.line + (c.symbol ? " · " + c.symbol : "") + (c.why ? " — " + c.why : "")));
+    }
+  }
+}
+function drawTask(box) {
+  if (!S.task) { box.appendChild(el("div", "empty", "no AGENT_TASK.md — this run passed")); return; }
+  const bar = el("div");
+  const copy = el("button", null, "copy task");
+  copy.onclick = () => navigator.clipboard && navigator.clipboard.writeText(S.task);
+  const cmd = el("button", null, "copy replay command");
+  const replay = (S.report && S.report.reproduce && S.report.reproduce.cmd) ||
+                 ("alc replay " + S.sel);
+  cmd.onclick = () => navigator.clipboard && navigator.clipboard.writeText(replay);
+  bar.appendChild(copy); bar.appendChild(cmd);
+  box.appendChild(bar);
+  box.appendChild(el("pre", null, S.task));
+}
+function jumpTo(seq) {
+  const i = visible.findIndex((e) => e.seq === seq);
+  if (i >= 0) { setFollow(false); scroller.scrollTop = Math.max(0, i * ROW_H - 80); paint(); }
+}
+
+// ---------------------------------------------------------------- loading
+async function select(id) {
+  S.sel = id; S.events = []; S.next = 0; S.ev = null; S.report = null; S.task = ""; S.t0 = null;
+  drawRuns(); drawRows(); drawDetail();
+  const detail = await src.run(id).catch(() => null);
+  if (detail && detail.report) S.report = detail.report;
+  S.task = await src.task(id).catch(() => "");
+  await pull();
+  setFollow(true);
+  drawDetail();
+}
+async function pull() {
+  if (!S.sel) return;
+  let guard = 0;
+  while (guard++ < 50) {
+    const page = await src.events(S.sel, S.next).catch(() => null);
+    if (!page) return;
+    S.events = S.events.concat(page.events);
+    S.next = page.next_from;
+    if (!page.has_more) break;
+  }
+  if (S.t0 == null && S.events.length) {
+    const first = S.events.find((e) => e.ts_mono_ms != null);
+    if (first) S.t0 = first.ts_mono_ms;
+  }
+  drawRows();
+  if (S.follow) scroller.scrollTop = rowsBox.offsetHeight;
+}
+async function refresh() {
+  S.suite = await src.suite().catch(() => S.suite);
+  S.runs = await src.runs().catch(() => S.runs);
+  drawCounter(); drawRuns();
+  if (!S.sel && S.runs.length) await select(S.runs[0].run_id);
+}
+
+// ---------------------------------------------------------------- live updates
+let failures = 0;
+function stream() {
+  if (!LIVE || !window.EventSource) return poll();
+  const es = new EventSource("/api/stream");
+  const onFrame = (msg) => {
+    let frame;
+    try { frame = JSON.parse(msg.data); } catch (e) { return; }
+    if (frame.kind === "desync" || frame.kind === "reset") { es.close(); S.next = 0; S.events = []; pull(); refresh(); stream(); return; }
+    if (frame.kind === "trace" && frame.run_id === S.sel) {
+      S.events.push(frame.event); S.next = (frame.event.seq || S.next) + 1;
+      drawRows();
+      if (S.follow) scroller.scrollTop = rowsBox.offsetHeight;
+      return;
+    }
+    if (frame.kind === "run_started" || frame.kind === "run_finished" || frame.kind === "suite") {
+      refresh();
+      if (frame.kind === "run_finished" && frame.run_id === S.sel) select(S.sel);
+    }
+  };
+  for (const kind of ["hello", "trace", "run_started", "run_finished", "suite", "reset", "desync"]) {
+    es.addEventListener(kind, onFrame);
+  }
+  es.onerror = () => {
+    es.close();
+    if (++failures >= 2) { banner("live stream unavailable — polling instead"); poll(); }
+    else setTimeout(stream, 1000);
+  };
+}
+function poll() {
+  if (!LIVE) return;
+  setInterval(() => { refresh(); pull(); }, 1000);
+}
+function banner(text) {
+  const node = document.getElementById("banner");
+  clear(node); put(node, text); node.hidden = false;
+}
+
+// ---------------------------------------------------------------- chrome
+function wire() {
+  document.getElementById("runfilter").oninput = (e) => { S.runq = e.target.value; drawRuns(); };
+  document.getElementById("search").oninput = (e) => { S.q = e.target.value; drawRows(); };
+  document.getElementById("failonly").onclick = (e) => {
+    S.failonly = !S.failonly; e.target.setAttribute("aria-pressed", String(S.failonly)); drawRuns();
+  };
+  document.getElementById("follow").onclick = () => setFollow(!S.follow);
+  document.getElementById("jumplive").onclick = () => setFollow(true);
+  document.getElementById("help").onclick = () => document.getElementById("helpbox").showModal();
+  for (const b of document.querySelectorAll("[data-group]")) {
+    b.onclick = () => {
+      const g = b.dataset.group;
+      if (S.groups.has(g)) S.groups.delete(g); else S.groups.add(g);
+      b.setAttribute("aria-pressed", String(S.groups.has(g)));
+      drawRows();
+    };
+  }
+  for (const [id, key] of [["grip1", "runs"], ["grip2", "detail"]]) {
+    const grip = document.getElementById(id);
+    const pane = document.getElementById(key);
+    const stored = Number(localStorage.getItem("alc." + key) || 0);
+    if (stored > 120) pane.style.flexBasis = stored + "px";
+    grip.onmousedown = (down) => {
+      const start = pane.getBoundingClientRect().width;
+      const sign = key === "runs" ? 1 : -1;
+      const move = (m) => {
+        const w = Math.max(160, start + sign * (m.clientX - down.clientX));
+        pane.style.flexBasis = w + "px";
+        try { localStorage.setItem("alc." + key, String(w)); } catch (e) { /* private window */ }
+      };
+      const up = () => { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); };
+      document.addEventListener("mousemove", move); document.addEventListener("mouseup", up);
+    };
+  }
+  document.addEventListener("keydown", (e) => {
+    if (/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) {
+      if (e.key === "Escape") document.activeElement.blur();
+      return;
+    }
+    if (e.key === "/") { e.preventDefault(); document.getElementById("search").focus(); return; }
+    if (e.key === "?") { document.getElementById("helpbox").showModal(); return; }
+    if (e.key === "j" || e.key === "k") { step(e.key === "j" ? 1 : -1); return; }
+    if (e.key === "g") { setFollow(false); scroller.scrollTop = 0; paint(); return; }
+    if (e.key === "G") { setFollow(true); return; }
+    if (e.key === "f") { nextFault(); return; }
+  });
+}
+function step(delta) {
+  const i = visible.findIndex((e) => e.seq === S.ev);
+  const next = visible[Math.min(visible.length - 1, Math.max(0, (i < 0 ? 0 : i + delta)))];
+  if (next) { S.ev = next.seq; drawRows(); jumpTo(next.seq); drawDetail(); }
+}
+function nextFault() {
+  const i = visible.findIndex((e) => e.seq === S.ev);
+  const found = visible.slice(i + 1).find(GROUP.fault) || visible.find(GROUP.fault);
+  if (found) { S.ev = found.seq; drawRows(); jumpTo(found.seq); drawDetail(); }
+}
+
+drawTabs(); wire();
+refresh().then(() => { if (LIVE) stream(); });
+</script>
+</body>
+</html>

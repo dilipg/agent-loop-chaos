@@ -11,10 +11,12 @@ scenario failed, 2 configuration or usage error, 3 internal error.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 import os
 import sys
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -203,7 +205,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--format",
         choices=("md", "json", "html"),
         default="md",
-        help="output format; html arrives in M10 (default: md)",
+        help="output format (default: md)",
     )
     report.add_argument("-o", "--output", help="write to a file instead of stdout")
     report.add_argument(
@@ -327,7 +329,6 @@ def _run(args: argparse.Namespace) -> int:
         `EXIT_OK` when every scenario passed, `EXIT_FAILED` otherwise, `EXIT_TAMPERED`
         when the loop detected that the harness itself was altered.
     """
-    from .bundle import write_suite_json
     from .loop import run_suite
     from .scenarios import ChaosSuite, load_suite
 
@@ -340,6 +341,8 @@ def _run(args: argparse.Namespace) -> int:
 
     if args.rounds:
         return _run_loop(args, ChaosSuite(scenarios), out_dir)
+
+    server = _serve(args, out_dir) if getattr(args, "dashboard", False) else None
 
     colour = use_colour() and not args.json
     quiet = getattr(args, "quiet", False)
@@ -373,7 +376,16 @@ def _run(args: argparse.Namespace) -> int:
         on_result=report,
     )
 
-    write_suite_json(out_dir, results, seed=args.seed or 0)
+    # `run_suite` already published `suite.json` -- live during the run and once more
+    # as `completed` at the end (`docs/10` §2). Writing it again here would clobber
+    # the 1.1 live document with a 1.0 one.
+    if server is not None:
+        linger = float(getattr(args, "linger", 0.0) or 0.0)
+        if linger:
+            print(f"dashboard: serving for {linger:g}s more — ctrl-c to stop", file=sys.stderr)
+            with contextlib.suppress(KeyboardInterrupt):
+                time.sleep(linger)
+        server.stop()
     if not args.json and not quiet:
         _print_summary(results, out_dir, colour=colour)
     if args.json:
@@ -607,12 +619,106 @@ def _report(args: argparse.Namespace) -> int:
     from .bundle import render_agent_task
     from .report import ChaosResult
 
+    if args.format == "html":
+        from .dashboard.export import export_html
+
+        path = Path(args.path)
+        # A run directory exports as itself; anything else exports the whole suite,
+        # so `alc report .chaos --format html` is the common case.
+        root = path.parent.parent if (path / "report.json").is_file() else path
+        page = export_html(root, max_trace_events=args.max_trace_events or 5_000)
+        if args.output:
+            Path(args.output).write_text(page, encoding="utf-8")
+            print(f"wrote {args.output}", file=sys.stderr)
+        else:
+            print(page)
+        return EXIT_OK
+
     report, _path = _load_report(Path(args.path))
     if args.format == "json":
         print(json.dumps(report, indent=2, sort_keys=True))
         return EXIT_OK
     rendered = render_agent_task(ChaosResult.from_dict(report))
     print(rendered or f"# {report.get('scenario_id')}\n\nThis run passed; no work order.")
+    return EXIT_OK
+
+
+def _serve(args: argparse.Namespace, out_dir: Path) -> Any:
+    """Start the dashboard, or explain why it could not start.
+
+    Args:
+        args: Parsed arguments.
+        out_dir: The directory to serve.
+
+    Returns:
+        The started server, or `None` when the port was unavailable. A dashboard is
+        never a reason for a suite to fail (`docs/10` §1), so a bind failure is a
+        message on stderr and nothing more.
+    """
+    from .dashboard.server import DashboardServer
+
+    server = DashboardServer(
+        out_dir,
+        host=args.host if getattr(args, "host", None) else "127.0.0.1",
+        port=args.port,
+        poll_ms=getattr(args, "poll_ms", 250) or 250,
+        max_events=getattr(args, "max_events", None) or 20_000,
+        sse=not getattr(args, "no_sse", False),
+        strict_port="--port" in sys.argv,
+    )
+    if server.host not in ("127.0.0.1", "localhost", "::1"):
+        print(
+            f"alc dashboard: binding {server.host} exposes every run under {out_dir} "
+            "to anything that can reach this machine",
+            file=sys.stderr,
+        )
+    try:
+        server.start()
+    except OSError as exc:
+        print(f"alc dashboard: could not bind port {args.port}: {exc}", file=sys.stderr)
+        return None
+    print(f"dashboard: {server.url}", file=sys.stderr)
+    if getattr(args, "open", False) and not (
+        os.environ.get("SSH_CONNECTION") or os.environ.get("CI")
+    ):
+        import webbrowser
+
+        webbrowser.open(server.url)
+    return server
+
+
+def _dashboard(args: argparse.Namespace) -> int:
+    """Serve a `.chaos` directory, read-only.
+
+    Args:
+        args: Parsed arguments.
+
+    Returns:
+        `EXIT_OK`.
+    """
+    out_dir = Path(args.out or ".chaos")
+    if not out_dir.is_dir():
+        raise ConfigError(f"no such directory: {out_dir}")
+
+    if args.once:
+        from .dashboard import api
+        from .dashboard.watcher import RunDirWatcher
+
+        watcher = RunDirWatcher(out_dir, max_events=getattr(args, "max_events", None) or 20_000)
+        watcher.poll()
+        print(json.dumps({"suite": api.suite(watcher), "runs": api.runs(watcher)}, indent=2))
+        return EXIT_OK
+
+    server = _serve(args, out_dir)
+    if server is None:
+        return EXIT_USAGE
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        print("", file=sys.stderr)
+    finally:
+        server.stop()
     return EXIT_OK
 
 
@@ -1052,6 +1158,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "judge": _judge,
         "replay": _replay,
         "init": _init,
+        "dashboard": _dashboard,
     }
     handler = handlers.get(args.command)
     if handler is not None:
