@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/dilipgdt/agent-loop-chaos/schemas/scenario.schema.json",
+  "$id": "https://github.com/dilipg/agent-loop-chaos/schemas/scenario.schema.json",
   "title": "ChaosSuiteFile",
   "description": "A YAML or JSON file describing one or more chaos scenarios. Loaded by `alc run` and ChaosSuite.from_yaml.",
   "type": "object",

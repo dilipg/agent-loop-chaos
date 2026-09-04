@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/dilipgdt/agent-loop-chaos/schemas/chaos_report.schema.json",
+  "$id": "https://github.com/dilipg/agent-loop-chaos/schemas/chaos_report.schema.json",
   "title": "ChaosResult",
   "description": "Machine-readable result of one chaos run against one agent. This document is the primary product of agent-loop-chaos and is designed to be consumed by a coding agent or an automated optimizer without human mediation.",
   "type": "object",

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/dilipgdt/agent-loop-chaos/schemas/judge_verdict.schema.json",
+  "$id": "https://github.com/dilipg/agent-loop-chaos/schemas/judge_verdict.schema.json",
   "title": "Verdict",
   "description": "The judged outcome of a run. `passed` is authored by deterministic probes; the language-model fields are advisory. This same schema is used as the structured-output contract handed to the SLM (minus judge_meta and passed, which the library fills in).",
   "type": "object",

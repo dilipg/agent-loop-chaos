@@ -59,11 +59,11 @@ dev = [
 alc = "agent_loop_chaos.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/dilipgdt/agent-loop-chaos"
-Documentation = "https://github.com/dilipgdt/agent-loop-chaos/tree/main/docs"
-Source = "https://github.com/dilipgdt/agent-loop-chaos"
-Changelog = "https://github.com/dilipgdt/agent-loop-chaos/blob/main/CHANGELOG.md"
-Issues = "https://github.com/dilipgdt/agent-loop-chaos/issues"
+Homepage = "https://github.com/dilipg/agent-loop-chaos"
+Documentation = "https://github.com/dilipg/agent-loop-chaos/tree/main/docs"
+Source = "https://github.com/dilipg/agent-loop-chaos"
+Changelog = "https://github.com/dilipg/agent-loop-chaos/blob/main/CHANGELOG.md"
+Issues = "https://github.com/dilipg/agent-loop-chaos/issues"
 
 [tool.hatch.version]
 path = "src/agent_loop_chaos/version.py"

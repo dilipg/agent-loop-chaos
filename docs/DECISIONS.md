@@ -556,7 +556,7 @@ The handover pack moves to `PACK.md` **verbatim**. `tools/verify_pack.py`'s
 `RUNBOOK.md`, `CLAUDE.md` and the prompts are unaffected — none of them link to
 `README.md` for pack content.
 
-### D-50 — `OWNER` = `dilipgdt`; names confirmed free
+### D-50 — `OWNER` = `dilipgdt`; names confirmed free  **SUPERSEDED BY D-69**
 *Affects `schemas/*.json` `$id`, closes the D-39 action item, 2026-09-03.*
 
 Checked before substituting:
@@ -904,3 +904,24 @@ The engine never learns what a `HumanMessage` is.
 Related: `wrap_langchain_tools` wraps exactly one sync and one async slot. A
 LangChain tool exposes `func` *and* `_run` routing to the same callable, so wrapping
 every match counted one invocation twice and every call-count probe read double.
+
+### D-69 — `OWNER` is `dilipg`, superseding D-50
+*Affects `schemas/*.json` `$id`, `pyproject.toml`, `NOTICE`, 2026-09-04.*
+
+D-50 chose `dilipgdt` from `git config user.name`, which is a display name and not a
+GitHub account. The account linked to the project's email is **`dilipg`**, confirmed
+by GitHub's own SSH greeting rather than by inference.
+
+All four `$id`s become
+`https://github.com/dilipg/agent-loop-chaos/schemas/<name>.schema.json`, in
+`schemas/` and in the vendored copies together, which remain byte-identical. The
+five `pyproject.toml` URLs and `NOTICE` follow.
+
+D-39 warns that changing an `$id` breaks every stored report's provenance. That cost
+is zero here and only here: nothing has been published, no report outside this
+working tree carries the old id, and this is the last moment before the first push.
+After 0.1.0 is tagged the same change would be a MAJOR schema bump.
+
+The commit author name stays `dilipgdt`. It is a display name on existing commits,
+it identifies the right person, and rewriting history to change it would trade a real
+cost -- every commit hash -- for a cosmetic one.

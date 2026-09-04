@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/dilipgdt/agent-loop-chaos/schemas/trace_event.schema.json",
+  "$id": "https://github.com/dilipg/agent-loop-chaos/schemas/trace_event.schema.json",
   "title": "TraceEvent",
   "description": "One line of trace.jsonl. Append-only, monotonic seq per run. Every event is independently parseable; a truncated file is still usable.",
   "type": "object",
