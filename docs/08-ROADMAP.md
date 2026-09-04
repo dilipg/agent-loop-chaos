@@ -60,6 +60,14 @@ phase.
   chaos findings and production traces share one schema.
 - `must_not` policy files shared across repos (an org-wide "never leak a secret"
   baseline).
+- **Validation against real agents (accepted 2026-09-04).** The `AGENT_TASK.md`
+  format passed its `RUNBOOK.md` §5 read on a generated finding, but a fixture is a
+  weak test of actionability: the work order was produced against an agent this
+  project also wrote. Clone several real agentic repositories from GitHub, run the
+  suite against them unmodified, and judge the resulting work orders on findings
+  nobody designed the fixture to produce. Do this after M9, when `pip install` plus
+  `alc run` works from a clean checkout, so the exercise measures the tool rather
+  than the build tree.
 
 ## Release checklist (M9)
 
