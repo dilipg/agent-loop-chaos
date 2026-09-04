@@ -1,0 +1,209 @@
+{
+  "agent_state_post_fault": null,
+  "agent_state_pre_fault": null,
+  "artifacts": {
+    "agent_task": "<path>",
+    "plan": "<path>",
+    "report": "<path>",
+    "run_dir": "<path>",
+    "trace": "<path>"
+  },
+  "assertions": [
+    {
+      "check": "output_non_empty",
+      "detail": "the output is non-empty",
+      "ok": true,
+      "source": "auto"
+    },
+    {
+      "check": "no_unsourced_numbers",
+      "detail": "the output asserts '87.8C' with nothing in the tool results, inputs or state to source it; 1 harness-injected value(s) were excluded",
+      "evidence": [
+        {
+          "position": 6,
+          "token": "87.8C",
+          "unit": "c",
+          "value": 87.8
+        }
+      ],
+      "harness_excluded": [
+        "87.8"
+      ],
+      "ok": false,
+      "params": {
+        "allow_derived": true,
+        "tolerance": 0.01
+      },
+      "source": "auto"
+    }
+  ],
+  "attempt": 1,
+  "baseline": null,
+  "code_pointers": [
+    {
+      "file": "<caller of get_weather_data>",
+      "line": null,
+      "symbol": "get_weather_data",
+      "why": "the fault changed what 'get_weather_data' returned; the caller that consumes it is where the missing validation belongs"
+    }
+  ],
+  "delta_vs_baseline": null,
+  "dry_run": false,
+  "error": null,
+  "failure_mode": "hallucination_on_corrupt_data",
+  "final_output": "It is 87.8C in Paris.",
+  "injected_faults": [
+    {
+      "fault_id": "f1",
+      "fault_key": "fd11e9",
+      "fire_count": 1,
+      "fired": true,
+      "fires": [
+        {
+          "action": "replace_result",
+          "call_index": 1,
+          "json_patch": [
+            {
+              "op": "replace",
+              "path": "/data/0/temp_c",
+              "value": 87.8
+            }
+          ],
+          "layer": "tool",
+          "name": "get_weather_data",
+          "note": "unit-swapped \"temp_c\"",
+          "payload_after": {
+            "data": [
+              {
+                "condition": "sunny",
+                "date": "2026-08-26",
+                "temp_c": 87.8
+              }
+            ]
+          },
+          "payload_before": {
+            "data": [
+              {
+                "condition": "sunny",
+                "date": "2026-08-26",
+                "temp_c": 31
+              }
+            ]
+          },
+          "phase": "post",
+          "seq": 5,
+          "step": 0,
+          "unrepresentable": false
+        }
+      ],
+      "params": {
+        "keys": [
+          "temp_c"
+        ],
+        "mutation_type": "unit_swap"
+      },
+      "target": {
+        "phase": "post",
+        "tool": "get_weather_data"
+      },
+      "trigger": {
+        "max_fires": 1,
+        "on_call": [
+          1
+        ],
+        "probability": 1.0
+      },
+      "type": "ToolCorruptionFault"
+    }
+  ],
+  "llm_exchanges": [],
+  "loop": {
+    "limit_hit": null,
+    "max_steps": 25,
+    "steps": 0
+  },
+  "metrics": {
+    "faults_armed": 1,
+    "faults_fired": 1,
+    "injected_delay_ms": 0,
+    "injected_tokens": 0,
+    "llm_calls": 0,
+    "retries": 0,
+    "steps": 0,
+    "tokens_estimated": true,
+    "tokens_in": 0,
+    "tokens_out": 0,
+    "tool_calls": 1
+  },
+  "plan_hash": "sha256:2f35171bdce14387e5706ece69711a153a92cf8d442030fb9ec7bcf7e40b71b8",
+  "randomness": {
+    "decisions": [],
+    "seed": 1337,
+    "streams": {
+      "fd11e9:unit_swap": 1
+    }
+  },
+  "reproduce": {
+    "cmd": "<path>",
+    "plan_path": "<path>",
+    "seed": 1337
+  },
+  "scenario_id": "weather.tool_contract.unit_swap",
+  "schema_errors": [],
+  "schema_version": "1.1",
+  "seed": 1337,
+  "severity": "high",
+  "success": false,
+  "symptoms": [
+    {
+      "code": "assertions_failed",
+      "detail": "assertion(s) failed: no_unsourced_numbers",
+      "evidence": [
+        {
+          "check": "no_unsourced_numbers",
+          "position": 6,
+          "seq": 7,
+          "token": "87.8C",
+          "unit": "c",
+          "value": 87.8
+        }
+      ],
+      "severity": "high"
+    }
+  ],
+  "target": {
+    "entrypoint": "golden_run.<locals>.agent",
+    "framework": "vanilla",
+    "tools": [
+      "get_weather_data"
+    ]
+  },
+  "tool_calls": [
+    {
+      "args": [],
+      "call_index": 1,
+      "error": null,
+      "faulted": true,
+      "kwargs": {},
+      "ok": true,
+      "result": {
+        "data": [
+          {
+            "condition": "sunny",
+            "date": "2026-08-26",
+            "temp_c": 87.8
+          }
+        ]
+      },
+      "step": 0,
+      "tool": "get_weather_data"
+    }
+  ],
+  "verdict": {
+    "expected_behavior": "graceful_degradation",
+    "failure_mode": "hallucination_on_corrupt_data",
+    "observed_behavior": "hallucinated",
+    "passed": false,
+    "severity": "high"
+  }
+}

@@ -261,3 +261,75 @@ def test_explain_shows_each_faults_fired_state(
     text = capsys.readouterr().out
     assert "ToolCorruptionFault" in text
     assert "never fired" in text
+
+
+BASELINE_SUITE: dict[str, Any] = {
+    "scenarios": [
+        {
+            "id": "b1",
+            "entrypoint": "tests.fakes.apps:build_naive",
+            "faults": [
+                {
+                    "type": "ToolCorruptionFault",
+                    "params": {"mutation_type": "drop_key", "keys": ["temp_c"]},
+                    "target": {"tool": "fetch_weather", "phase": "post"},
+                    "trigger": {"on_call": 1},
+                }
+            ],
+        },
+        {
+            "id": "b2",
+            "entrypoint": "tests.fakes.apps:build_naive",
+            "faults": [
+                {
+                    "type": "ToolCorruptionFault",
+                    "params": {"mutation_type": "empty_json"},
+                    "target": {"tool": "fetch_weather", "phase": "post"},
+                    "trigger": {"on_call": 1},
+                }
+            ],
+        },
+    ]
+}
+
+
+def test_a_baseline_is_computed_and_lands_in_the_report(tmp_path: Path) -> None:
+    """Without a baseline there is no delta, and `token_blowup` can never fire."""
+    out = tmp_path / ".chaos"
+    main(["run", str(write(tmp_path, BASELINE_SUITE)), "--out", str(out)])
+    report = json.loads(next(out.glob("b1/*/report.json")).read_text(encoding="utf-8"))
+    assert report["baseline"] is not None
+    assert report["delta_vs_baseline"] is not None
+    assert "output_similarity" in report["delta_vs_baseline"]
+
+
+def test_the_baseline_is_shared_across_scenarios_with_the_same_entrypoint(
+    tmp_path: Path,
+) -> None:
+    """The baseline runs once per (entrypoint, inputs) tuple and is shared.
+
+    Recomputing it per scenario would double the cost of every suite for an answer
+    that cannot have changed.
+    """
+    out = tmp_path / ".chaos"
+    main(["run", str(write(tmp_path, BASELINE_SUITE)), "--out", str(out)])
+    ids = {
+        json.loads(p.read_text(encoding="utf-8"))["baseline"]["run_id"]
+        for p in out.glob("b*/*/report.json")
+    }
+    assert len(ids) == 1, f"the baseline was recomputed per scenario: {ids}"
+
+
+def test_baseline_diff_is_written_for_a_failing_run(tmp_path: Path) -> None:
+    """The unified diff of the two answers, per `docs/04` §9."""
+    out = tmp_path / ".chaos"
+    main(["run", str(write(tmp_path, BASELINE_SUITE)), "--out", str(out)])
+    assert list(out.glob("b1/*/baseline.diff")), "baseline.diff was not written"
+
+
+def test_no_baseline_skips_it(tmp_path: Path) -> None:
+    """`--no-baseline` is the documented escape hatch for a slow entrypoint."""
+    out = tmp_path / ".chaos"
+    main(["run", str(write(tmp_path, BASELINE_SUITE)), "--out", str(out), "--no-baseline"])
+    report = json.loads(next(out.glob("b1/*/report.json")).read_text(encoding="utf-8"))
+    assert report["baseline"] is None

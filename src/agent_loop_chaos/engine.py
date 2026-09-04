@@ -55,7 +55,7 @@ from .faults.base import (
     MutationLog,
     fault_key_for,
 )
-from .metrics import compute_metrics
+from .metrics import compute_delta, compute_metrics
 from .probes import ProbeContext, run_probes
 from .report import ChaosResult, assemble
 from .seeding import canonical_json, sha256_of
@@ -153,6 +153,7 @@ class _RunState:
     objective: str | None = None
     objective_state_key: str = "query"
     plan: dict[str, Any] = field(default_factory=dict)
+    baseline_result: ChaosResult | None = None
     intercept_only: frozenset[str] | None = None
 
 
@@ -2267,6 +2268,7 @@ class ChaosEngine:
         state.expected_errors = tuple(expected_errors)
         state.objective = _objective_text(inputs, initial_state)
         state.plan = dict(_plan)
+        state.baseline_result = baseline
         token = _ACTIVE.set(state)
         started = time.perf_counter()
         output: Any = None
@@ -2357,6 +2359,7 @@ class ChaosEngine:
         state.expected_errors = tuple(expected_errors)
         state.objective = _objective_text(inputs, initial_state)
         state.plan = dict(_plan)
+        state.baseline_result = baseline
         token = _ACTIVE.set(state)
         started = time.perf_counter()
         output: Any = None
@@ -2667,6 +2670,7 @@ class ChaosEngine:
 
         # 11-12. classify and assemble
         destructive = any(f.get("json_patch") or f.get("action") == "raise" for f in fires)
+        baseline_block, delta = _baseline_blocks(state.baseline_result, metrics, output, evidence)
         result = assemble(
             trace=trace,
             plan=state.plan,
@@ -2684,6 +2688,8 @@ class ChaosEngine:
             must_not=state.must_not,
             injected_faults=[r.to_dict() for r in records],
             limit_hit=state.limit_hit,
+            baseline=baseline_block,
+            delta=delta,
             attempt=ctx.attempt,
             dry_run=ctx.dry_run,
             tags=ctx.tags,
@@ -2722,7 +2728,17 @@ class ChaosEngine:
 
         # 13. bundle
         if self.write_bundle:
-            written = write_bundle(result, run_dir, plan=state.plan, trace=trace)
+            written = write_bundle(
+                result,
+                run_dir,
+                plan=state.plan,
+                trace=trace,
+                baseline_output=(
+                    state.baseline_result.final_output if state.baseline_result else None
+                ),
+            )
+            if "baseline_diff" in written and result.delta_vs_baseline:
+                result.delta_vs_baseline["diff_path"] = written["baseline_diff"]
             if "agent_task" in written:
                 result.artifacts["agent_task"] = written["agent_task"]
                 (run_dir / "report.json").write_text(result.to_json(), encoding="utf-8")
@@ -2765,6 +2781,45 @@ def _denormalize(original: Any, messages: Any) -> Any:
     if isinstance(original, str) and isinstance(messages, list):
         return "\n".join(str(m.get("content", "")) for m in messages if isinstance(m, Mapping))
     return messages
+
+
+def _baseline_blocks(
+    baseline: ChaosResult | None,
+    metrics: Mapping[str, Any],
+    output: Any,
+    evidence: EvidenceContext,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Build the report's `baseline` and `delta_vs_baseline` blocks.
+
+    Args:
+        baseline: A prior unfaulted result, or `None`.
+        metrics: This run's metrics.
+        output: This run's final output.
+        evidence: This run's evidence, for the tool list.
+
+    Returns:
+        ``(baseline_block, delta)``, both `None` without a baseline. The report's
+        `baseline` block is counters plus a path -- not the internal `BaselineRef`,
+        which additionally carries `plan_hash`.
+    """
+    if baseline is None:
+        return None, None
+    block = {
+        "run_id": baseline.run_id,
+        "steps": int(baseline.metrics.get("steps", 0)),
+        "tool_calls": int(baseline.metrics.get("tool_calls", 0)),
+        "llm_calls": int(baseline.metrics.get("llm_calls", 0)),
+        "report_path": baseline.artifacts.get("report"),
+    }
+    delta = compute_delta(
+        dict(metrics),
+        baseline.metrics,
+        chaos_output=output,
+        baseline_output=baseline.final_output,
+        chaos_tools=evidence.tools_called,
+        baseline_tools=[str(c["tool"]) for c in baseline.tool_calls if c.get("tool")],
+    )
+    return block, delta
 
 
 def _scalars(value: Any) -> list[str]:

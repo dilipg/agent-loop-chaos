@@ -183,6 +183,9 @@ def _run(args: argparse.Namespace) -> int:
     scenarios = [s for s in suite.scenarios if _selected(s.id, args.filter)]
     out_dir = Path(args.out or ".chaos")
     results = []
+    # One baseline per (entrypoint, inputs). Recomputing it per scenario would double
+    # the cost of every suite for an answer that cannot have changed.
+    baselines: dict[str, Any] = {}
 
     for scenario in scenarios:
         engine = ChaosEngine(
@@ -195,6 +198,11 @@ def _run(args: argparse.Namespace) -> int:
         )
         for spec in scenario.faults:
             engine.register_fault(_build_fault(spec), **_target_kwargs(spec))
+
+        baseline = None
+        if not args.no_baseline and not scenario.dry_run:
+            baseline = _shared_baseline(baselines, scenario, out_dir)
+
         result = engine.run(
             _resolve_entrypoint(scenario.entrypoint, engine),
             inputs=scenario.inputs,
@@ -205,6 +213,7 @@ def _run(args: argparse.Namespace) -> int:
             expect=scenario.expect,
             expected_errors=scenario.expected_errors,
             allow_side_effects=scenario.allow_side_effects,
+            baseline=baseline,
         )
         results.append(result)
         if not args.json:
@@ -235,6 +244,46 @@ def _run(args: argparse.Namespace) -> int:
             )
         )
     return EXIT_OK if all(r.success for r in results) else EXIT_FAILED
+
+
+def _shared_baseline(cache: dict[str, Any], scenario: Any, out_dir: Path) -> Any:
+    """Run the scenario's entrypoint unfaulted once, and reuse it.
+
+    Args:
+        cache: The per-suite cache, keyed by entrypoint and inputs.
+        scenario: The scenario needing a baseline.
+        out_dir: Where run directories are written.
+
+    Returns:
+        The baseline `ChaosResult`, or `None` when it could not be produced. A
+        baseline is a convenience, not a requirement: failing to get one must not
+        fail the scenario it was meant to inform.
+    """
+    from .engine import ChaosEngine
+
+    key = json.dumps([str(scenario.entrypoint), scenario.inputs], sort_keys=True, default=str)
+    if key in cache:
+        return cache[key]
+    try:
+        engine = ChaosEngine(
+            seed=scenario.seed,
+            out_dir=out_dir,
+            limits=scenario.limits,
+            dry_run=True,
+            write_bundle=False,
+            strict_schema=False,
+        )
+        cache[key] = engine.run(
+            _resolve_entrypoint(scenario.entrypoint, engine),
+            inputs=scenario.inputs,
+            initial_state=dict(scenario.initial_state or {}) or None,
+            scenario_id=f"{scenario.id}.baseline",
+            expected_behavior="ignore_and_continue",
+        )
+    except Exception:
+        log.exception("baseline run failed for %s", scenario.id)
+        cache[key] = None
+    return cache[key]
 
 
 def _warn_if_nothing_fired(result: Any) -> None:
