@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import inspect
 import logging
 import time
@@ -31,7 +32,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .adapters.vanilla import VanillaAdapter, build_wrapper, make_crossing
-from .assertions import Expect, HarnessFacts
+from .assertions import EvidenceContext, Expect, HarnessFacts, evaluate, synthesize_auto_expect
+from .bundle import write_bundle
 from .context import (
     BaselineRef,
     Counters,
@@ -44,7 +46,7 @@ from .context import (
     ToolInfo,
 )
 from .enums import ExpectedBehavior
-from .errors import ConfigError, LimitExceeded, SchemaError
+from .errors import ConfigError, LimitExceeded
 from .faults.base import (
     TERMINAL_ACTIONS,
     VALUE_ACTIONS,
@@ -54,7 +56,9 @@ from .faults.base import (
     MutationLog,
     fault_key_for,
 )
-from .report import ChaosResult, empty_verdict
+from .metrics import compute_metrics
+from .probes import ProbeContext, run_probes
+from .report import ChaosResult, assemble
 from .seeding import canonical_json, sha256_of
 from .targeting import Target, Trigger, matches, should_fire
 from .trace import Event, JsonlSink, MemorySink, TraceLevel, TraceRecorder
@@ -144,6 +148,12 @@ class _RunState:
     limit_hit: str | None = None
     internal_errors: int = 0
     planted_state: dict[str, Any] | None = None
+    expect: Expect | None = None
+    must_not: tuple[str, ...] = ()
+    expected_errors: tuple[str, ...] = ()
+    objective: str | None = None
+    objective_state_key: str = "query"
+    plan: dict[str, Any] = field(default_factory=dict)
     intercept_only: frozenset[str] | None = None
 
 
@@ -1942,6 +1952,8 @@ class ChaosEngine:
             baseline=baseline,
             seed=seed,
             is_async=False,
+            expect=expect,
+            expected_errors=expected_errors,
         )
 
     async def arun(
@@ -1999,6 +2011,8 @@ class ChaosEngine:
             adapter=adapter,
             baseline=baseline,
             seed=seed,
+            expect=expect,
+            expected_errors=expected_errors,
         )
 
     def run_with_state(
@@ -2185,6 +2199,8 @@ class ChaosEngine:
         baseline: ChaosResult | None,
         seed: int | None,
         is_async: bool,
+        expect: Expect | Mapping[str, Any] | None = None,
+        expected_errors: Sequence[str] = (),
     ) -> ChaosResult:
         """Lifecycle steps 1-7 and 14, synchronously.
 
@@ -2219,6 +2235,15 @@ class ChaosEngine:
             baseline=baseline,
             entrypoint=entrypoint,
         )
+        state.expect = (
+            expect
+            if isinstance(expect, Expect)
+            else (Expect(**dict(expect)) if isinstance(expect, Mapping) else None)
+        )
+        state.must_not = tuple(must_not)
+        state.expected_errors = tuple(expected_errors)
+        state.objective = _objective_text(inputs, initial_state)
+        state.plan = dict(_plan)
         token = _ACTIVE.set(state)
         started = time.perf_counter()
         output: Any = None
@@ -2265,6 +2290,8 @@ class ChaosEngine:
         adapter: str,
         baseline: ChaosResult | None,
         seed: int | None,
+        expect: Expect | Mapping[str, Any] | None = None,
+        expected_errors: Sequence[str] = (),
     ) -> ChaosResult:
         """Lifecycle steps 1-7 and 14, asynchronously.
 
@@ -2298,6 +2325,15 @@ class ChaosEngine:
             baseline=baseline,
             entrypoint=entrypoint,
         )
+        state.expect = (
+            expect
+            if isinstance(expect, Expect)
+            else (Expect(**dict(expect)) if isinstance(expect, Mapping) else None)
+        )
+        state.must_not = tuple(must_not)
+        state.expected_errors = tuple(expected_errors)
+        state.objective = _objective_text(inputs, initial_state)
+        state.plan = dict(_plan)
         token = _ACTIVE.set(state)
         started = time.perf_counter()
         output: Any = None
@@ -2477,11 +2513,9 @@ class ChaosEngine:
         wall_ms: int,
         expected_behavior: ExpectedBehavior,
     ) -> ChaosResult:
-        """Assemble a minimal `ChaosResult`. The seam M4 extends.
+        """Lifecycle steps 8-13: metrics, assertions, probes, classify, assemble, write.
 
-        `success` is pinned `True` here on purpose: computing it requires the probes
-        and the assertions layer, and it must never be guessed at — least of all by a
-        model (`docs/11` §1).
+        Pure over the trace and the plan, so `alc judge` can re-run it from disk.
 
         Args:
             state: The run state.
@@ -2495,48 +2529,153 @@ class ChaosEngine:
             expected_behavior: The scenario's expectation.
 
         Returns:
-            The result, schema-validated.
-
-        Raises:
-            SchemaError: When `strict_schema` and the report does not validate.
+            The assembled result, with the bundle written when `write_bundle`.
         """
         ctx = state.ctx
-        counters = ctx.counters
-        streams = {k: v for k, v in sorted(ctx.draws.items()) if v > 0}
-        result = ChaosResult(
+        trace = list(ctx.trace.memory.events if ctx.trace.memory else [])
+        records = [a.record for a in state.armed]
+        fired = [r for r in records if r.fired]
+        facts = self.harness_facts()
+
+        # 8. metrics, before probes (D-11)
+        metrics = compute_metrics(
+            trace,
+            injected_tokens=ctx.counters.injected_tokens,
+            injected_delay_ms=ctx.counters.injected_delay_ms,
+            wall_ms=wall_ms,
+            retries=ctx.counters.retries,
+            counters={
+                "steps": ctx.counters.steps,
+                "tool_calls": ctx.counters.tool_calls,
+                "llm_calls": ctx.counters.llm_calls,
+            },
+        )
+
+        # 9. assertions: the author's, plus the ones synthesized from what fired
+        fires = [{**f, "type": r.type, "params": r.params} for r in fired for f in r.fires]
+        evidence = EvidenceContext(
+            final_output=output,
+            tool_results=list(state.pre_fault_history.values())
+            and [v for values in state.history.values() for v in values],
+            inputs=state.objective,
+            initial_state=dict(state.planted_state or {}),
+            tools_called=[
+                str(e.get("name"))
+                for e in trace
+                if e.get("kind") == "tool_call_requested" and e.get("name")
+            ],
+            values_injected=facts.values_injected,
+            steps=metrics["steps"],
+            tool_calls=metrics["tool_calls"],
+            final_state=_visible_state(state.state_view),
+            errors=[str(error.get("type"))] if error else [],
+            keys_removed=facts.keys_removed,
+        )
+        assertions = []
+        if state.expect is not None:
+            assertions.extend(evaluate(state.expect, evidence, source="scenario"))
+        # A harness-injected `raise` never reaches `_error_phase`, so there is no
+        # `tool_call_failed` event to key on. The fault's own fires are the record.
+        failed_tools = {
+            str(f.get("name")) for f in fires if f.get("action") == "raise" and f.get("name")
+        }
+        failed_tools |= {str(e.get("name")) for e in trace if e.get("kind") == "tool_call_failed"}
+        recovered = any(
+            e.get("kind") == "tool_call_returned" and str(e.get("name")) in failed_tools
+            for e in trace
+        )
+        auto = synthesize_auto_expect(fires, max_steps=ctx.limits.max_steps, recovered=recovered)
+        if any(getattr(auto, f.name) is not None for f in dataclasses.fields(auto)):
+            assertions.extend(evaluate(auto, evidence, source="auto"))
+        for assertion in assertions:
+            self._emit(
+                Event(
+                    kind="assertion_result",
+                    level="standard",
+                    payload={
+                        "check": assertion.check,
+                        "ok": assertion.ok,
+                        "detail": assertion.detail,
+                        "source": assertion.source,
+                    },
+                )
+            )
+
+        # 10. probes
+        injection_payloads = [
+            f.get("params", {})
+            for r in fired
+            if r.type == "PromptInjectionFault"
+            for f in [{"params": r.params}]
+        ] + [fire for r in fired if r.type == "PromptInjectionFault" for fire in r.fires]
+        probe_ctx = ProbeContext(
+            metrics=metrics,
+            limits=ctx.limits,
+            baseline=None,
+            assertions=assertions,
+            harness=facts,
+            final_output=output,
+            error=error,
+            limit_hit=state.limit_hit,
+            expected_behavior=expected_behavior,
+            tool_registry=dict(self._tools),
+            objective=state.objective,
+            objective_state_key=state.objective_state_key,
+            final_state=evidence.final_state,
+            injection_payloads=[p for p in injection_payloads if p],
+            expected_errors=list(state.expected_errors),
+        )
+        symptoms = run_probes(trace, probe_ctx)
+        for symptom in symptoms:
+            self._emit(
+                Event(
+                    kind="probe_fired",
+                    level="standard",
+                    payload={
+                        "code": symptom.code,
+                        "severity": symptom.severity,
+                        "detail": symptom.detail,
+                    },
+                )
+            )
+
+        # 11-12. classify and assemble
+        destructive = any(f.get("json_patch") or f.get("action") == "raise" for f in fires)
+        result = assemble(
+            trace=trace,
+            plan=state.plan,
+            plan_hash=plan_hash,
             run_id=ctx.run_id,
             scenario_id=ctx.scenario_id,
-            seed=ctx.seed,
-            plan_hash=plan_hash,
-            attempt=ctx.attempt,
-            dry_run=ctx.dry_run,
             started_at=ctx.started_at,
             finished_at=_utc_now(),
-            duration_ms=wall_ms,
+            wall_ms=wall_ms,
+            final_output=output,
+            error=error,
+            symptoms=symptoms,
+            assertions=assertions,
+            expected_behavior=expected_behavior,
+            must_not=state.must_not,
+            injected_faults=[r.to_dict() for r in records],
+            limit_hit=state.limit_hit,
+            attempt=ctx.attempt,
+            dry_run=ctx.dry_run,
+            tags=ctx.tags,
+            destructive_mutation=destructive,
+            internal_error=bool(state.internal_errors) and error is None and not output,
+            expected_errors=list(state.expected_errors),
+            fault_severity_hints=[a.fault.severity_hint for a in state.armed if a.record.fired],
             target={
                 "framework": adapter.name,
                 "entrypoint": entrypoint,
                 "adapter_version": adapter.version,
                 "tools": sorted(self._tools),
             },
-            metrics={
-                "steps": counters.steps,
-                "tool_calls": counters.tool_calls,
-                "llm_calls": counters.llm_calls,
-                "retries": counters.retries,
-                "wall_ms": wall_ms,
-                "injected_delay_ms": counters.injected_delay_ms,
-                "injected_tokens": counters.injected_tokens,
-                "faults_armed": len(state.armed),
-                "faults_fired": sum(1 for a in state.armed if a.record.fired),
-                "tokens_estimated": False,
+            randomness={
+                "seed": ctx.seed,
+                "streams": {k: v for k, v in sorted(ctx.draws.items()) if v > 0},
+                "decisions": ctx.decisions,
             },
-            loop={
-                "steps": counters.steps,
-                "max_steps": ctx.limits.max_steps,
-                "limit_hit": state.limit_hit,
-            },
-            randomness={"seed": ctx.seed, "streams": streams, "decisions": ctx.decisions},
             reproduce={
                 "cmd": f"alc replay {run_dir}",
                 "seed": ctx.seed,
@@ -2548,20 +2687,39 @@ class ChaosEngine:
                 "plan": str(run_dir / "plan.json") if self.write_bundle else None,
                 "run_dir": str(run_dir),
             },
-            verdict=empty_verdict(expected_behavior),
-            injected_faults=[a.record.to_dict() for a in state.armed],
-            tool_calls=state.tool_records,
-            llm_exchanges=state.llm_records,
-            final_output=output,
-            error=error,
-            tags=dict(ctx.tags),
+            strict_schema=self.strict_schema,
+            metrics=metrics,
         )
-        errors = result.validate()
-        if errors:
-            if self.strict_schema:
-                raise SchemaError(f"assembled report is not schema-valid: {errors[:5]}")
-            result.schema_errors = errors
+        result.tool_calls = state.tool_records
+        result.llm_exchanges = state.llm_records
+        result.chaos_narrative = _narrate(fired)
+
+        # 13. bundle
+        if self.write_bundle:
+            written = write_bundle(result, run_dir, plan=state.plan, trace=trace)
+            if "agent_task" in written:
+                result.artifacts["agent_task"] = written["agent_task"]
+                (run_dir / "report.json").write_text(result.to_json(), encoding="utf-8")
         return result
+
+
+def _narrate(fired: Sequence[FaultRecord]) -> str:
+    """Describe what the harness did, deterministically.
+
+    The rules-mode narrative. M6's SLM judge replaces it with prose; until then a
+    template is honest and a fabricated paragraph would not be.
+
+    Args:
+        fired: The faults that fired.
+
+    Returns:
+        One sentence.
+    """
+    if not fired:
+        return "No fault fired; the run proceeded unperturbed."
+    notes = [f["note"] for r in fired for f in r.fires if f.get("note")]
+    lead = f"{len(fired)} fault(s) fired: " if len(fired) > 1 else "One fault fired: "
+    return lead + "; ".join(notes[:4]) + "."
 
 
 def _denormalize(original: Any, messages: Any) -> Any:
@@ -2569,8 +2727,7 @@ def _denormalize(original: Any, messages: Any) -> Any:
 
     An LLM fault operates on normalized messages, but the wrapped callable was
     written against whatever the caller passes it. Returning a list to a function
-    that wanted a string would surface as the agent crashing on a harness artefact,
-    so the original shape is preserved.
+    that wanted a string would surface as the agent crashing on a harness artefact.
 
     Args:
         original: The callable's first argument before interception.
@@ -2582,6 +2739,44 @@ def _denormalize(original: Any, messages: Any) -> Any:
     if isinstance(original, str) and isinstance(messages, list):
         return "\n".join(str(m.get("content", "")) for m in messages if isinstance(m, Mapping))
     return messages
+
+
+def _visible_state(view: StateView | None) -> dict[str, Any]:
+    """The agent's visible state as a plain mapping.
+
+    Args:
+        view: The state view, or `None` when the agent keeps state the engine cannot
+            see (`docs/06` §2.4).
+
+    Returns:
+        A copy of the state, or an empty mapping when there is none observable.
+    """
+    if view is None or not isinstance(view.raw, dict):
+        return {}
+    return dict(view.raw)
+
+
+def _objective_text(inputs: Any, initial_state: Mapping[str, Any] | None) -> str | None:
+    """Render the scenario's inputs as the objective text.
+
+    Args:
+        inputs: The payload passed to the agent.
+        initial_state: The starting state.
+
+    Returns:
+        The objective, or `None` when there is nothing text-shaped to use.
+    """
+    if isinstance(inputs, str):
+        return inputs
+    if isinstance(inputs, Mapping):
+        for key in ("query", "objective", "task", "question"):
+            if isinstance(inputs.get(key), str):
+                return str(inputs[key])
+    if initial_state:
+        value = initial_state.get("query")
+        if isinstance(value, str):
+            return value
+    return None
 
 
 def _render_prompt(messages: Sequence[Mapping[str, Any]]) -> str:

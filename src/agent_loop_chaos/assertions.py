@@ -768,7 +768,10 @@ def evaluate(
 
 
 def synthesize_auto_expect(
-    fired: Sequence[Mapping[str, Any]], *, max_steps: int | None = None
+    fired: Sequence[Mapping[str, Any]],
+    *,
+    max_steps: int | None = None,
+    recovered: bool = False,
 ) -> Expect:
     """Build the default expectations from what the faults actually did (§4.4).
 
@@ -779,6 +782,9 @@ def synthesize_auto_expect(
         fired: One mapping per fire, carrying at least `action` and `json_patch`, and
             optionally `type` and `params`.
         max_steps: The run's step limit, seeded into a loop-trap scenario's budget.
+        recovered: Whether a later call to the failed tool succeeded. A bounded retry
+            that *succeeded* has nothing to acknowledge -- demanding it anyway is a
+            false positive, and it made the `good_agent` control unpassable.
 
     Returns:
         The synthesized `Expect`. Empty when no fault had a data effect.
@@ -813,7 +819,7 @@ def synthesize_auto_expect(
     expect = Expect(
         no_claim_about=sorted(set(removed)) or None,
         no_unsourced_numbers=bool(removed or numeric_touched) or None,
-        output_matches=[_ACKNOWLEDGEMENT] if raised else None,
+        output_matches=[_ACKNOWLEDGEMENT] if (raised and not recovered) else None,
         must_not_call_tools=sorted(set(forbidden_tools)) or None,
         max_steps=max_steps if loop_trap else None,
     )

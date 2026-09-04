@@ -353,7 +353,10 @@ def test_a_fault_that_raises_never_reaches_the_agent(tmp_path: Path) -> None:
     def t() -> dict[str, int]:
         return {"ok": 1}
 
-    result = eng.run(lambda: t())
+    # `ignore_and_continue` is what `completed_unaffected` satisfies (docs/11 §7).
+    # M1 asserted `graceful_degradation` here while `success` was still hardcoded
+    # True; now that it is computed, that expectation is the wrong one to state.
+    result = eng.run(lambda: t(), expected_behavior="ignore_and_continue")
     assert result.final_output == {"ok": 1}
     assert result.error is None
     assert result.success is True

@@ -381,3 +381,20 @@ def test_auto_results_are_marked_as_auto() -> None:
     )
     results = evaluate(expect, ctx(final_output="ok"), source="auto")
     assert all(r.source == "auto" for r in results)
+
+
+def test_no_acknowledgement_is_demanded_when_the_agent_recovered() -> None:
+    """A bounded retry that *succeeded* has nothing to acknowledge.
+
+    Found by the `good_agent` control: demanding "unavailable" in the output after a
+    transient failure the agent recovered from is a false positive, and it made the
+    negative control unpassable under `smoke` and `transient_faults`.
+    """
+    expect = synthesize_auto_expect([{"action": "raise", "json_patch": []}], recovered=True)
+    assert expect.output_matches is None
+
+
+def test_an_acknowledgement_is_demanded_when_the_agent_did_not_recover() -> None:
+    """The complement: a failure the agent never got past must be surfaced."""
+    expect = synthesize_auto_expect([{"action": "raise", "json_patch": []}], recovered=False)
+    assert expect.output_matches

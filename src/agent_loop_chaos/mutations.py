@@ -126,7 +126,15 @@ def _records_of(value: Any) -> list[Any]:
     """
     if isinstance(value, list):
         return [item for item in value if isinstance(item, dict)]
-    return [value] if isinstance(value, dict) else []
+    if not isinstance(value, dict):
+        return []
+    # Real payloads usually wrap their records in an envelope. Unwrap exactly one
+    # list-valued key, and only when there is exactly one: guessing which of several
+    # lists holds the records would be worse than doing nothing.
+    lists = [v for v in value.values() if isinstance(v, list)]
+    if len(lists) == 1 and any(isinstance(item, dict) for item in lists[0]):
+        return [item for item in lists[0] if isinstance(item, dict)]
+    return [value]
 
 
 def _candidate_paths(record: Any, depth: int, prefix: str = "") -> list[str]:

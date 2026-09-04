@@ -502,3 +502,20 @@ def test_no_mutation_ever_touches_its_input(payload: Any, name: str, seed: int) 
     before = copy.deepcopy(payload)
     MUTATIONS[name](payload, random.Random(seed))
     assert payload == before, f"{name} mutated its input"
+
+
+def test_keyed_mutations_reach_records_wrapped_in_an_envelope() -> None:
+    """`{"data": [...]}` is at least as common as a bare list of records.
+
+    Missing it meant a scenario naming `temp_c` silently mutated nothing, the auto
+    assertions synthesized nothing, and the run passed while looking armed.
+    """
+    payload = {"data": [{"temp_c": 21, "city": "Paris"}, {"temp_c": 22, "city": "Lyon"}]}
+    out = MUTATIONS["drop_key"](payload, rng(), keys=["temp_c"])
+    assert out == {"data": [{"city": "Paris"}, {"city": "Lyon"}]}
+
+
+def test_an_envelope_with_several_lists_is_left_alone() -> None:
+    """Guessing which list holds the records would be worse than doing nothing."""
+    payload = {"a": [{"x": 1}], "b": [{"x": 2}]}
+    assert MUTATIONS["drop_key"](payload, rng(), keys=["x"]) == payload

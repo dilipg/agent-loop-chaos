@@ -61,6 +61,7 @@ def compute_metrics(
     injected_delay_ms: int = 0,
     wall_ms: int = 0,
     retries: int = 0,
+    counters: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     """Compute the report's `metrics` block from a trace.
 
@@ -71,6 +72,11 @@ def compute_metrics(
         injected_delay_ms: Delay the harness itself added, for the same reason.
         wall_ms: Wall time, supplied by the engine as a timing field.
         retries: Observed retries.
+        counters: The engine's live counters, when a run is in flight. They take
+            precedence because the vanilla adapter increments steps at a crossing
+            without emitting `step_started` -- counting events alone would report
+            zero steps for every vanilla run. Rebuilding from disk has no counters
+            and falls back to the trace.
 
     Returns:
         The metrics mapping, matching `chaos_report.schema.json`.
@@ -85,10 +91,11 @@ def compute_metrics(
         elif event.get("kind") == "llm_response":
             tokens_out += _estimate(_render(payload.get("result")))
 
+    live = dict(counters or {})
     return {
-        "steps": kinds.count("step_started"),
-        "tool_calls": kinds.count("tool_call_requested"),
-        "llm_calls": kinds.count("llm_request"),
+        "steps": live.get("steps", kinds.count("step_started")),
+        "tool_calls": live.get("tool_calls", kinds.count("tool_call_requested")),
+        "llm_calls": live.get("llm_calls", kinds.count("llm_request")),
         "retries": retries,
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,

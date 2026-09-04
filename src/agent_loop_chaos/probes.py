@@ -742,11 +742,14 @@ class AssertionsFailed(Probe):
         failed = [a for a in ctx.assertions if not a.ok]
         if not failed:
             return []
+        # The report schema requires `seq` on every symptom evidence entry, while an
+        # assertion's own evidence is free-form. Stamp the run's last seq on anything
+        # that lacks one rather than emitting an entry the schema rejects.
         evidence: list[dict[str, Any]] = []
         for assertion in failed:
-            evidence.extend(
-                assertion.evidence or [{"seq": _last_seq(trace), "kind": assertion.check}]
-            )
+            entries = assertion.evidence or [{"kind": assertion.check}]
+            for entry in entries:
+                evidence.append({"seq": _last_seq(trace), "check": assertion.check, **entry})
         checks = ", ".join(a.check for a in failed)
         return [self.symptom(f"assertion(s) failed: {checks}", evidence)]
 

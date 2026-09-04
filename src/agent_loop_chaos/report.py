@@ -409,6 +409,7 @@ def assemble(
     goal_fault_fired: bool = False,
     fault_severity_hints: Sequence[str] = (),
     strict_schema: bool = False,
+    metrics: Mapping[str, Any] | None = None,
 ) -> ChaosResult:
     """Build a complete `ChaosResult` from a trace and a plan.
 
@@ -451,6 +452,10 @@ def assemble(
         goal_fault_fired: Whether a goal or context fault fired.
         fault_severity_hints: `severity_hint` of every fault that fired.
         strict_schema: Raise `SchemaError` rather than recording `schema_errors[]`.
+        metrics: Metrics already computed by the caller. Passed in rather than
+            recomputed here, because the live counters know things the trace does
+            not -- the vanilla adapter increments steps without emitting
+            `step_started`. Omit it and the trace is the only source.
 
     Returns:
         The assembled result.
@@ -469,7 +474,7 @@ def assemble(
     )
 
     spec_gaps: list[dict[str, Any]] = []
-    metrics = compute_metrics(trace, wall_ms=wall_ms)
+    computed = dict(metrics) if metrics else compute_metrics(trace, wall_ms=wall_ms)
 
     classification = ClassificationInput(
         symptoms=list(symptoms),
@@ -521,9 +526,9 @@ def assemble(
         finished_at=finished_at,
         duration_ms=wall_ms,
         target=dict(target or {"framework": "vanilla", "adapter_version": "unknown"}),
-        metrics=metrics,
+        metrics=computed,
         loop={
-            "steps": metrics["steps"],
+            "steps": computed["steps"],
             "max_steps": int((plan.get("limits") or {}).get("max_steps", 25)),
             "limit_hit": limit_hit,
         },
