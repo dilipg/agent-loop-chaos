@@ -843,3 +843,34 @@ targeting mistake.
 the recorded `skipped_reason`, and `alc explain` prints each fault's fired state and
 reason. No classification or schema change: the information was already in
 `injected_faults[].skipped_reason` and simply never surfaced.
+
+### D-65 — `GraphRecursionError` maps to `limit_hit`, never to `error`
+*Affects `engine.py`, `docs/06` §1.8, phase 05, 2026-09-04.*
+
+`instrument_graph` sets LangGraph's `recursion_limit` from `Limits.max_steps`, so a
+`GraphRecursionError` is a stop *we* imposed. Reporting it in `error` would classify
+the run as `crashed` and blame the agent for our own limit — exactly what D-06
+established for `LimitExceeded`, arriving by a different route.
+
+Matched by class *name* rather than by import, so the core can classify it correctly
+without depending on an optional extra.
+
+### D-66 — LangGraph slots are instrumented in place, not replaced
+*Affects `adapters/langgraph.py`, `docs/06` §§1.2/1.6, phase 05, 2026-09-04.*
+
+A node is a `RunnableCallable` holding `func` and `afunc`, and a conditional edge's
+router usually is too. Replacing the container with a plain function makes LangGraph
+call `.invoke` on something that does not have it, and loses the signature
+introspection it uses to decide what to pass a node.
+
+So the wrapper goes *inside*: `func` and `afunc` are replaced and the container is
+handed back. `BranchSpec` is immutable in current versions, so its setter replaces
+the whole spec in its parent mapping, falling back through `_replace` and
+`dataclasses.replace`.
+
+One consequence worth stating because it will bite a user: a graph module using
+`from __future__ import annotations` turns every annotation into a string, and
+LangGraph compares a node's `config` annotation against the real `RunnableConfig`
+type object. A correctly typed node in such a module is reported as wrongly typed.
+`tests/fakes/lg_agent.py` therefore omits postponed evaluation, deliberately, and
+says so.

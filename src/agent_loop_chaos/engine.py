@@ -986,6 +986,10 @@ class ChaosEngine:
             return crossing.exception
         if crossing.layer == "llm" and crossing.messages is not None:
             return crossing.messages
+        if crossing.layer in {"state", "node"} and crossing.state is not None:
+            return crossing.state
+        if crossing.layer == "edge":
+            return crossing.result
         return crossing.args
 
     def cross(self, crossing: Crossing) -> Any:
@@ -1184,7 +1188,9 @@ class ChaosEngine:
             crossing: The crossing to update.
             value: The new value.
         """
-        if crossing.phase == "post":
+        if crossing.layer in {"state", "node"} and crossing.phase == "pre":
+            crossing.state = value
+        elif crossing.phase == "post":
             crossing.result = value
         elif crossing.layer == "llm" and crossing.messages is not None:
             crossing.messages = value
@@ -1647,6 +1653,239 @@ class ChaosEngine:
             except BaseException as exc:
                 return self._error_phase(crossing, exc, started)
         return self._post_phase(crossing, self._pick_repeat_result(crossing, results), started)
+
+    def route_node(
+        self,
+        fn: Callable[..., Any],
+        *,
+        name: str,
+        state: Any,
+        args: tuple[Any, ...] = (),
+        kwargs: dict[str, Any] | None = None,
+        intercept_state: bool = True,
+    ) -> Any:
+        """Route one graph node's execution through the plan.
+
+        A node entry is one step (D-05). State faults fire here rather than at a
+        separate hook, because a node boundary is the only place the whole state is
+        visible and a partial update has not yet been merged.
+
+        Args:
+            fn: The node callable.
+            name: The node's name.
+            state: The state the node was entered with.
+            args: Extra positional arguments LangGraph passed.
+            kwargs: Extra keyword arguments LangGraph passed.
+            intercept_state: Whether to route a state crossing too.
+
+        Returns:
+            The node's update, possibly replaced by a fault.
+        """
+        if not self.is_active():
+            return fn(state, *args, **(kwargs or {}))
+        try:
+            crossing, working = self._node_pre(name, state, intercept_state=intercept_state)
+        except _InjectedFailure as injected:
+            raise injected.original from None
+        except LimitExceeded:
+            raise
+        except Exception as exc:
+            self._internal_error(f"route_node.pre[{name}]", exc)
+            return fn(state, *args, **(kwargs or {}))
+
+        if crossing.has_substitute:
+            return self._node_post(crossing, crossing.substitute_result)
+        try:
+            update = fn(working, *args, **(kwargs or {}))
+        except LimitExceeded:
+            raise
+        except BaseException as exc:
+            return self._error_phase(crossing, exc, time.perf_counter())
+        return self._node_post(crossing, update)
+
+    async def aroute_node(
+        self,
+        fn: Callable[..., Any],
+        *,
+        name: str,
+        state: Any,
+        args: tuple[Any, ...] = (),
+        kwargs: dict[str, Any] | None = None,
+        intercept_state: bool = True,
+    ) -> Any:
+        """Async twin of `route_node`.
+
+        Args:
+            fn: The node coroutine function.
+            name: The node's name.
+            state: The state the node was entered with.
+            args: Extra positional arguments.
+            kwargs: Extra keyword arguments.
+            intercept_state: Whether to route a state crossing too.
+
+        Returns:
+            The node's update.
+        """
+        if not self.is_active():
+            return await fn(state, *args, **(kwargs or {}))
+        try:
+            crossing, working = self._node_pre(name, state, intercept_state=intercept_state)
+        except _InjectedFailure as injected:
+            raise injected.original from None
+        except LimitExceeded:
+            raise
+        except Exception as exc:
+            self._internal_error(f"aroute_node.pre[{name}]", exc)
+            return await fn(state, *args, **(kwargs or {}))
+
+        if crossing.has_substitute:
+            return self._node_post(crossing, crossing.substitute_result)
+        try:
+            update = await fn(working, *args, **(kwargs or {}))
+        except LimitExceeded:
+            raise
+        except BaseException as exc:
+            return self._error_phase(crossing, exc, time.perf_counter())
+        return self._node_post(crossing, update)
+
+    def _node_pre(self, name: str, state: Any, *, intercept_state: bool) -> tuple[Crossing, Any]:
+        """Open a node crossing, and a state crossing alongside it.
+
+        Args:
+            name: The node's name.
+            state: The state the node was entered with.
+            intercept_state: Whether to route the state crossing.
+
+        Returns:
+            ``(crossing, state)`` where the state may have been replaced by a fault.
+        """
+        run_state = self._state()
+        counters = run_state.ctx.counters
+        call_index = counters.next_call_index(f"node:{name}")
+        counters.steps += 1
+        span = run_state.ctx.next_span_id()
+
+        working = state
+        if intercept_state:
+            state_crossing = Crossing(
+                layer="state",
+                phase="pre",
+                name=name,
+                state=state,
+                step=counters.steps,
+                call_index=call_index,
+                span_id=span,
+            )
+            routed = self.cross(state_crossing)
+            if routed is not state:
+                working = routed
+
+        crossing = Crossing(
+            layer="node",
+            phase="pre",
+            name=name,
+            state=working,
+            step=counters.steps,
+            call_index=call_index,
+            span_id=span,
+        )
+        self._emit(
+            Event(
+                kind="node_entered",
+                level="standard",
+                layer="node",
+                phase="pre",
+                name=name,
+                step=counters.steps,
+                call_index=call_index,
+                span_id=span,
+                payload={"reads": sorted(working) if isinstance(working, dict) else []},
+            )
+        )
+        self.cross(crossing)
+        return crossing, working
+
+    def _node_post(self, crossing: Crossing, update: Any) -> Any:
+        """Close a node crossing.
+
+        Args:
+            crossing: The pre crossing, reused with `phase="post"`.
+            update: The partial update the node returned.
+
+        Returns:
+            The possibly-faulted update.
+        """
+        crossing.phase = "post"
+        crossing.result = update
+        self._emit(
+            Event(
+                kind="node_exited",
+                level="standard",
+                layer="node",
+                phase="post",
+                name=crossing.name,
+                step=crossing.step,
+                call_index=crossing.call_index,
+                span_id=crossing.span_id,
+                payload={"update": update},
+            )
+        )
+        return self._guarded_post(crossing, update, time.perf_counter())
+
+    def route_edge(
+        self,
+        fn: Callable[..., Any],
+        *,
+        name: str,
+        state: Any,
+        args: tuple[Any, ...] = (),
+        kwargs: dict[str, Any] | None = None,
+    ) -> Any:
+        """Route a conditional edge's routing decision through the plan.
+
+        Args:
+            fn: The router callable.
+            name: The node the edge leaves from.
+            state: The state the decision is made on.
+            args: Extra positional arguments.
+            kwargs: Extra keyword arguments.
+
+        Returns:
+            The destination, possibly overridden by `EdgeMisrouteFault`.
+        """
+        decision = fn(state, *args, **(kwargs or {}))
+        if not self.is_active():
+            return decision
+        try:
+            run_state = self._state()
+            crossing = Crossing(
+                layer="edge",
+                phase="pre",
+                name=name,
+                result=decision,
+                state=state,
+                step=run_state.ctx.counters.steps,
+                span_id=run_state.ctx.next_span_id(),
+            )
+            routed = self.cross(crossing)
+            self._emit(
+                Event(
+                    kind="edge_taken",
+                    level="standard",
+                    layer="edge",
+                    phase="pre",
+                    name=name,
+                    step=crossing.step,
+                    span_id=crossing.span_id,
+                    payload={"chose": routed, "would_have_chosen": decision},
+                )
+            )
+            return routed
+        except LimitExceeded:
+            raise
+        except Exception as exc:
+            self._internal_error(f"route_edge[{name}]", exc)
+            return decision
 
     def _pre_phase(
         self, layer: str, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]
@@ -2191,7 +2430,7 @@ class ChaosEngine:
             if state.ctx.dry_run:
                 self._note_skip(armed.record, "dry_run")
 
-    def _resolve_adapter(self, target: Any, requested: str) -> VanillaAdapter:
+    def _resolve_adapter(self, target: Any, requested: str) -> Any:
         """Choose an adapter.
 
         Args:
@@ -2204,13 +2443,11 @@ class ChaosEngine:
         Raises:
             ConfigError: When LangGraph is requested, which lands in M5.
         """
-        if requested == "langgraph" or (
-            requested == "auto" and hasattr(target, "get_graph") and not callable(target)
-        ):
-            raise ConfigError(
-                "the LangGraph adapter arrives in M5 (prompts/05-langgraph-adapter.md); "
-                "pass a plain callable, or adapter='vanilla'"
-            )
+        looks_like_graph = hasattr(target, "invoke") and hasattr(target, "get_graph")
+        if requested == "langgraph" or (requested == "auto" and looks_like_graph):
+            from .adapters.langgraph import LangGraphAdapter
+
+            return LangGraphAdapter()
         return VanillaAdapter()
 
     def _execute(
@@ -2251,7 +2488,7 @@ class ChaosEngine:
             The assembled `ChaosResult`.
         """
         resolved = self._resolve_adapter(target, adapter)
-        entrypoint = getattr(target, "__qualname__", None)
+        entrypoint = getattr(target, "__qualname__", None) or type(target).__name__
         state, run_dir, _plan, plan_hash = self._prepare(
             scenario_id=scenario_id,
             expected_behavior=expected_behavior,
@@ -2283,13 +2520,22 @@ class ChaosEngine:
             instrumented = resolved.instrument(target, self, state.ctx)
             from .adapters.vanilla import resolve_invocation
 
-            args, kwargs = resolve_invocation(instrumented, inputs, state.planted_state)
             try:
-                output = instrumented(*args, **kwargs)
+                if resolved.name == "langgraph":
+                    output = resolved.run(instrumented, inputs, state.ctx)
+                else:
+                    args, kwargs = resolve_invocation(instrumented, inputs, state.planted_state)
+                    output = instrumented(*args, **kwargs)
             except LimitExceeded as limit:
                 state.limit_hit = limit.limit
             except Exception as exc:
-                error = self._error_info(exc)
+                # `recursion_limit` is set from `Limits.max_steps`, so a
+                # GraphRecursionError is a stop we imposed. Reporting it in `error`
+                # would blame the agent for our limit, exactly as D-06 forbids.
+                if _is_recursion_limit(exc):
+                    state.limit_hit = "max_steps"
+                else:
+                    error = self._error_info(exc)
         finally:
             wall_ms = int((time.perf_counter() - started) * 1000)
             result = self._finish(
@@ -2342,7 +2588,7 @@ class ChaosEngine:
             The assembled `ChaosResult`.
         """
         resolved = self._resolve_adapter(target, adapter)
-        entrypoint = getattr(target, "__qualname__", None)
+        entrypoint = getattr(target, "__qualname__", None) or type(target).__name__
         state, run_dir, _plan, plan_hash = self._prepare(
             scenario_id=scenario_id,
             expected_behavior=expected_behavior,
@@ -2374,12 +2620,13 @@ class ChaosEngine:
             instrumented = resolved.instrument(target, self, state.ctx)
             from .adapters.vanilla import resolve_invocation
 
-            args, kwargs = resolve_invocation(instrumented, inputs, state.planted_state)
             try:
-                output = await asyncio.wait_for(
-                    self._maybe_await(instrumented(*args, **kwargs)),
-                    timeout=self.limits.timeout_s,
-                )
+                if resolved.name == "langgraph":
+                    coroutine = resolved.arun(instrumented, inputs, state.ctx)
+                else:
+                    args, kwargs = resolve_invocation(instrumented, inputs, state.planted_state)
+                    coroutine = self._maybe_await(instrumented(*args, **kwargs))
+                output = await asyncio.wait_for(coroutine, timeout=self.limits.timeout_s)
             except LimitExceeded as limit:
                 state.limit_hit = limit.limit
             except (TimeoutError, asyncio.TimeoutError):
@@ -2393,7 +2640,13 @@ class ChaosEngine:
                     )
                 )
             except Exception as exc:
-                error = self._error_info(exc)
+                # `recursion_limit` is set from `Limits.max_steps`, so a
+                # GraphRecursionError is a stop we imposed. Reporting it in `error`
+                # would blame the agent for our limit, exactly as D-06 forbids.
+                if _is_recursion_limit(exc):
+                    state.limit_hit = "max_steps"
+                else:
+                    error = self._error_info(exc)
         finally:
             wall_ms = int((time.perf_counter() - started) * 1000)
             result = self._finish(
@@ -2474,7 +2727,7 @@ class ChaosEngine:
         state: _RunState,
         run_dir: Path,
         plan_hash: str,
-        adapter: VanillaAdapter,
+        adapter: Any,
         entrypoint: str | None,
         output: Any,
         error: dict[str, Any] | None,
@@ -2537,7 +2790,7 @@ class ChaosEngine:
         state: _RunState,
         run_dir: Path,
         plan_hash: str,
-        adapter: VanillaAdapter,
+        adapter: Any,
         entrypoint: str | None,
         output: Any,
         error: dict[str, Any] | None,
@@ -2860,6 +3113,21 @@ def _visible_state(view: StateView | None) -> dict[str, Any]:
     if view is None or not isinstance(view.raw, dict):
         return {}
     return dict(view.raw)
+
+
+def _is_recursion_limit(exc: BaseException) -> bool:
+    """Report whether an exception is LangGraph's own step guard.
+
+    Matched by name so the check needs no langgraph import: the core must not depend
+    on an optional extra to classify an error correctly.
+
+    Args:
+        exc: The exception the graph raised.
+
+    Returns:
+        True for a recursion-limit error.
+    """
+    return type(exc).__name__ == "GraphRecursionError"
 
 
 def _objective_text(inputs: Any, initial_state: Mapping[str, Any] | None) -> str | None:

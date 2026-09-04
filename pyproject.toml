@@ -134,7 +134,15 @@ markers = [
 ]
 asyncio_mode = "auto"
 addopts = "-ra --strict-markers"
-filterwarnings = ["error"]
+filterwarnings = [
+    "error",
+    # Emitted by langgraph on import; not ours to fix, and failing the suite on a
+    # third-party deprecation would make the extra untestable. Matched by message
+    # rather than by class: naming a langchain class here breaks pytest startup in
+    # the `langgraph = none` CI column, which is the one column that proves the core
+    # has no framework dependency.
+    "ignore:.*allowed_objects.*",
+]
 
 [tool.coverage.run]
 source = ["src/agent_loop_chaos"]
