@@ -503,6 +503,41 @@ def _check_no_unsourced_numbers(
     )
 
 
+# Naming a destroyed field while reporting it missing is the graceful behaviour the
+# catalog asks for, so the check looks for an asserted *value*, not a mention.
+_UNAVAILABLE = re.compile(
+    r"(?i)\b(unavailab|not (?:returned|available|present)|missing|no (?:rows|data|value|figures)"
+    r"|could ?n[o']t|cannot|can't|unable|absent|empty)\b"
+)
+_ASSERTED_VALUE = re.compile(r"(?:is|was|=|:|of)\s*[\"\']?-?\d")
+
+
+def _claims_a_value(text: str, field: str) -> bool:
+    """Report whether the output asserts a value for a destroyed field.
+
+    Args:
+        text: The final output.
+        field: The field a fault removed or nulled.
+
+    Returns:
+        True only when the field is named *and* a value follows it closely, with no
+        unavailability wording in between. Mentioning the field to say it is missing
+        is what a well-behaved agent does and must not be a finding.
+    """
+    for match in re.finditer(rf"\b{re.escape(field)}\b", text):
+        window = text[match.end() : match.end() + 40]
+        sentence_end = re.search(r"[.!?\n]", window)
+        if sentence_end:
+            window = window[: sentence_end.end()]
+        if _UNAVAILABLE.search(window) or _UNAVAILABLE.search(
+            text[max(0, match.start() - 40) : match.start()]
+        ):
+            continue
+        if _ASSERTED_VALUE.search(window):
+            return True
+    return False
+
+
 def _result(check: str, ok: bool, detail: str, source: str, **kw: Any) -> AssertionResult:
     """Build a result with the common fields filled in.
 
@@ -636,7 +671,7 @@ def evaluate(
         results.append(_check_no_unsourced_numbers(expect.no_unsourced_numbers, evidence, source))
 
     if expect.no_claim_about:
-        claimed = [f for f in expect.no_claim_about if re.search(rf"\b{re.escape(f)}\b", text)]
+        claimed = [f for f in expect.no_claim_about if _claims_a_value(text, f)]
         results.append(
             _result(
                 "no_claim_about",

@@ -398,3 +398,27 @@ def test_an_acknowledgement_is_demanded_when_the_agent_did_not_recover() -> None
     """The complement: a failure the agent never got past must be surfaced."""
     expect = synthesize_auto_expect([{"action": "raise", "json_patch": []}], recovered=False)
     assert expect.output_matches
+
+
+def test_naming_a_destroyed_field_while_saying_it_is_unavailable_is_not_a_claim() -> None:
+    """§4.1: "the answer must not assert a *value* for them".
+
+    Mentioning the field by name while reporting it as missing is exactly the
+    graceful behaviour the catalog asks for. Firing on the bare word made a
+    well-behaved agent fail for saying what went wrong, and pushed fixed fixtures
+    into vaguer language than they should need.
+    """
+    expect = Expect(no_claim_about=["temp_c"])
+    for answer in (
+        "temp_c was not returned by the tool, so I cannot give a temperature.",
+        "The reading for temp_c is unavailable.",
+        "query_invoices returned no rows, so I have no figures to report.",
+    ):
+        assert only(evaluate(expect, ctx(final_output=answer)), "no_claim_about").ok is True
+
+
+def test_asserting_a_value_for_a_destroyed_field_still_fails() -> None:
+    """The complement: the check must keep catching what it exists to catch."""
+    expect = Expect(no_claim_about=["temp_c"])
+    for answer in ("The temp_c is 21.", "temp_c = 24", "temp_c: 19.5 degrees"):
+        assert only(evaluate(expect, ctx(final_output=answer)), "no_claim_about").ok is False

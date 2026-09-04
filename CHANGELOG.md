@@ -11,6 +11,28 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ### Added
 
+- **The `revenue_review` demo pair.** `examples/revenue_review/` is a five-node,
+  nine-LLM-call quarterly revenue-risk workflow over the three CSV fixtures in
+  `examples/revenue_review/data/`: a dict-dispatch graph (not a chain) with a
+  `reviewer -> writer` back-edge, four CSV-backed tools including the
+  side-effecting `flag_account_for_review`, and all twelve weaknesses from
+  `docs/09-DEMO-AGENT.md` §4 planted and commented at the site. It exercises the
+  harness against multi-call steps rather than a single-shot agent: 9 LLM calls
+  and 5 tool calls per clean pass. No LangGraph; plain Python and stdlib `csv`.
+- `examples/revenue_review_fixed/` — the negative control twin. Same graph, same
+  tools, same call profile, every weakness fixed per `docs/09` §5:
+  `validators.py` with `DataUnavailable(ExplicitError)`, bounded retries that skip
+  4xx, in-band error detection, a durable objective, one JSON repair attempt, a
+  `finish_reason` check, an `UNTRUSTED_DATA` fence, a capped back-edge with a
+  no-progress check, and an idempotency key on the side-effecting tool. It shows
+  zero symptoms under all twelve faults it is tested against.
+- `examples/fake_model.py` — a scripted, offline, mediocre-but-plausible model, so
+  each tree's module-level `graph` runs with no API key.
+- `tests/test_revenue_review.py` — 38 tests: both trees end to end, the call
+  counts, one test per planted weakness, and the M8-shaped gate (the fixed tree
+  clean under every fault, the buggy tree found out by four of them, and the
+  undelimited `notes` field leaking the injection canary end to end).
+
 - **M3 — LLM/prompt faults and the injection corpus (phase 03).** Built
   red-green-refactor, with every `pre` fault's effect asserted on the messages the
   model actually received.

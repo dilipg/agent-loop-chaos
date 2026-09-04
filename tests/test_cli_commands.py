@@ -199,3 +199,65 @@ def test_explain_shows_which_assertions_ran(
     capsys.readouterr()
     main(["explain", str(run_dir)])
     assert "output_non_empty" in capsys.readouterr().out
+
+
+def test_run_warns_when_armed_faults_never_fired(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A mistargeted fault otherwise reports FAIL with no explanation.
+
+    A scenario whose fault never fires proves nothing, but it still fails --
+    `completed_unaffected` does not satisfy `graceful_degradation`. Without a warning
+    that reads as a real finding, and the commonest cause is a tool or llm name that
+    does not match.
+    """
+    body = {
+        "scenarios": [
+            {
+                "id": "mistargeted",
+                "entrypoint": "tests.fakes.apps:build_good",
+                "faults": [
+                    {
+                        "type": "ToolCorruptionFault",
+                        "params": {"mutation_type": "drop_key"},
+                        "target": {"tool": "no_such_tool"},
+                        "trigger": {"on_call": 1},
+                    }
+                ],
+            }
+        ]
+    }
+    main(["run", str(write(tmp_path, body)), "--out", str(tmp_path / ".chaos")])
+    err = capsys.readouterr().err
+    assert "no fault fired" in err.lower()
+    assert "mistargeted" in err
+
+
+def test_explain_shows_each_faults_fired_state(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`skipped_reason` is already in the report; it has to be readable too."""
+    body = {
+        "scenarios": [
+            {
+                "id": "mistargeted",
+                "entrypoint": "tests.fakes.apps:build_good",
+                "faults": [
+                    {
+                        "type": "ToolCorruptionFault",
+                        "params": {"mutation_type": "drop_key"},
+                        "target": {"tool": "no_such_tool"},
+                        "trigger": {"on_call": 1},
+                    }
+                ],
+            }
+        ]
+    }
+    out = tmp_path / ".chaos"
+    main(["run", str(write(tmp_path, body)), "--out", str(out)])
+    run_dir = next(out.glob("mistargeted/*"))
+    capsys.readouterr()
+    main(["explain", str(run_dir)])
+    text = capsys.readouterr().out
+    assert "ToolCorruptionFault" in text
+    assert "never fired" in text

@@ -814,3 +814,32 @@ all passed.
 `payload_after` but not in `payload_before`, plus the leaf name of every `remove` op
 into `keys_removed` for R4. With that, the same scenario reports
 `hallucination_on_corrupt_data`.
+
+### D-63 — `no_claim_about` requires an asserted value, not a mention
+*Affects `docs/11` §4.1/§4.4, `assertions.py`, phase 04, 2026-09-04.*
+
+The check fired on a bare word-boundary match of the field name, so an agent that
+said "query_invoices returned no rows" failed for naming the field it was reporting
+as missing. That is precisely the graceful behaviour the catalog asks for, and the
+false positive pushed the `revenue_review_fixed` control into vaguer wording than it
+should have needed.
+
+§4.1 says the answer must not assert a *value* for a destroyed field. The check now
+fires only when the field is named **and** a value follows it within the same
+sentence, with no unavailability wording adjacent. Naming a field to report it
+missing is not a claim.
+
+### D-64 — A scenario whose faults never fire is reported, not silently failed
+*Affects `cli.py`, phase 04, 2026-09-04.*
+
+A mistargeted fault produces a run where nothing fires. That run still fails --
+`completed_unaffected` does not satisfy `graceful_degradation` (§7) -- but it
+demonstrates nothing, and with `failure_mode: unknown` and no symptom it reads as a
+real finding. Found while pointing a fault at `llm: "default"` when the agent named
+its model `"reviewer"`: four scenarios reported failures that were entirely my own
+targeting mistake.
+
+`alc run` now warns on stderr when a scenario armed faults and none fired, naming
+the recorded `skipped_reason`, and `alc explain` prints each fault's fired state and
+reason. No classification or schema change: the information was already in
+`injected_faults[].skipped_reason` and simply never surfaced.

@@ -209,6 +209,7 @@ def _run(args: argparse.Namespace) -> int:
         results.append(result)
         if not args.json:
             print(result.summary_line())
+        _warn_if_nothing_fired(result)
         if args.fail_fast and not result.success:
             break
 
@@ -234,6 +235,29 @@ def _run(args: argparse.Namespace) -> int:
             )
         )
     return EXIT_OK if all(r.success for r in results) else EXIT_FAILED
+
+
+def _warn_if_nothing_fired(result: Any) -> None:
+    """Warn when a scenario armed faults and none of them fired.
+
+    Such a run still fails -- `completed_unaffected` does not satisfy
+    `graceful_degradation` -- but it demonstrates nothing, and without a warning it
+    reads as a real finding. The commonest cause is a tool or llm name in the target
+    that does not match the agent.
+
+    Args:
+        result: The scenario's result.
+    """
+    faults = result.injected_faults
+    if not faults or any(f.get("fired") for f in faults):
+        return
+    reasons = sorted({str(f.get("skipped_reason")) for f in faults if f.get("skipped_reason")})
+    print(
+        f"  warning: {result.scenario_id}: no fault fired "
+        f"({', '.join(reasons) or 'no reason recorded'}); this scenario proves nothing. "
+        "Check the target's tool/llm name.",
+        file=sys.stderr,
+    )
 
 
 def _selected(scenario_id: str, pattern: str | None) -> bool:
@@ -410,6 +434,18 @@ def _explain(args: argparse.Namespace) -> int:
         print(f"    {mark} {assertion.get('check')} ({source}) — {assertion.get('detail', '')}")
     if not report.get("assertions"):
         print("    (none)")
+
+    print("\n  faults:")
+    for fault in report.get("injected_faults") or []:
+        if fault.get("fired"):
+            fires = fault.get("fires") or []
+            note = (fires[0].get("note") if fires else None) or "fired"
+            print(f"    fired  {fault.get('fault_id')} {fault.get('type')} — {note}")
+        else:
+            reason = fault.get("skipped_reason") or "no reason recorded"
+            print(f"    never fired  {fault.get('fault_id')} {fault.get('type')} — {reason}")
+    if not report.get("injected_faults"):
+        print("    (none armed)")
 
     print("\n  probes:")
     for symptom in report.get("symptoms") or []:
