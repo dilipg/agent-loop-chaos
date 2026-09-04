@@ -185,7 +185,9 @@ _STATE_INTEGRITY = [
     FaultSpec("StateDropFault", {}, {}, _t(on_step=2)),
     FaultSpec("StateTypeFault", {}, {}, _t(on_step=2)),
     FaultSpec("NodeSkipFault", {}, {}, _t(on_step=2)),
-    FaultSpec("EdgeMisrouteFault", {}, {}, _t(on_step=2)),
+    # `__END__` is the one destination a preset can name without knowing the
+    # graph: forcing an early end is a real failure mode and is always valid.
+    FaultSpec("EdgeMisrouteFault", {"force_to": "__END__"}, {}, _t(on_step=2)),
 ]
 _RESUME_SAFETY = [
     FaultSpec("CheckpointRollbackFault", {}, {}, _t(on_step=2)),

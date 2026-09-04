@@ -185,15 +185,15 @@ def test_a_preset_resolves_to_registered_faults() -> None:
     assert skipped == []
 
 
-def test_an_unregistered_preset_fault_is_skipped_not_fatal() -> None:
-    """D-14: `state_integrity` names phase-05 faults, and phase 04 must still run.
+def test_the_state_presets_resolve_completely_as_of_m5() -> None:
+    """D-14 said `state_integrity` would resolve lazily until phase 05 landed.
 
-    Resolving lazily by `kind` string is what lets this phase reference all ten
-    presets without owning phase 05's faults.
+    Phase 05 landed, so it must now resolve with nothing skipped. The degradation
+    mechanism itself is covered by its own test below.
     """
-    _resolved, skipped = resolve_preset("state_integrity")
-    assert skipped, "phase-05 faults should be recorded as skipped, not raised"
-    assert all(entry["reason"] == "fault_not_registered" for entry in skipped)
+    for preset in ("state_integrity", "resume_safety"):
+        _resolved, skipped = resolve_preset(preset)
+        assert skipped == [], f"{preset} still has unregistered faults: {skipped}"
 
 
 def test_an_unknown_preset_is_a_config_error() -> None:
@@ -324,3 +324,33 @@ def test_a_matrix_key_that_addresses_nothing_is_a_config_error() -> None:
     """
     with pytest.raises(ConfigError, match=r"faults\.0\.params\.mutation_type"):
         scenario(faults=[], matrix={"faults.0.params.mutation_type": ["drop_key"]}).expand()
+
+
+@pytest.mark.parametrize("name", sorted(PRESETS))
+def test_every_preset_fault_is_actually_constructible(name: str) -> None:
+    """A preset that cannot be built is worse than one that does not exist.
+
+    `state_integrity` shipped with an `EdgeMisrouteFault` carrying no `force_to`,
+    so the preset raised the moment M5 registered the fault. Nothing checked that
+    presets could be constructed, only that they were listed.
+    """
+    from agent_loop_chaos.faults.base import fault_from_dict
+
+    resolved, _skipped = resolve_preset(name)
+    for spec in resolved:
+        fault_from_dict(spec.to_dict())
+
+
+def test_the_skip_mechanism_still_works_for_an_unregistered_fault() -> None:
+    """Every shipped preset now resolves fully, so the mechanism needs its own test.
+
+    A preset naming a fault a later phase will add must degrade, not raise (D-14).
+    """
+    registry = PRESETS
+    registry["_probe_only"] = [FaultSpec("NotYetBuiltFault", {}, {}, {"on_call": 1})]
+    try:
+        resolved, skipped = resolve_preset("_probe_only")
+    finally:
+        del registry["_probe_only"]
+    assert resolved == []
+    assert skipped == [{"type": "NotYetBuiltFault", "reason": "fault_not_registered"}]

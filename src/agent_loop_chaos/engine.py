@@ -293,6 +293,11 @@ class ChaosEngine:
         self._validate_trigger(trigger)
         self._validate_accepts(fault, target)
         self._validate_side_effect_gate(fault, target)
+        # A fault may refuse a target combination only it can judge -- see
+        # StateDropFault(mode='remove') at a post phase (docs/06 §1.3).
+        check = getattr(fault, "check_target", None)
+        if callable(check):
+            check(target.phase)
 
         self._fault_counter += 1
         assigned = fault_id or f"f{self._fault_counter}"
