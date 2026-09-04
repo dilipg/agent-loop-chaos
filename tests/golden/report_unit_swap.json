@@ -17,7 +17,7 @@
     },
     {
       "check": "no_unsourced_numbers",
-      "detail": "the output asserts '87.8C' with nothing in the tool results, inputs or state to source it; 1 harness-injected value(s) were excluded",
+      "detail": "the output asserts '87.8C' with nothing in the tool results, inputs or state to source it",
       "evidence": [
         {
           "position": 6,
@@ -25,9 +25,6 @@
           "unit": "c",
           "value": 87.8
         }
-      ],
-      "harness_excluded": [
-        "87.8"
       ],
       "ok": false,
       "params": {

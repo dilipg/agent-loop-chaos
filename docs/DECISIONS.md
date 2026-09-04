@@ -1055,3 +1055,91 @@ current state. `tests/golden/loop_report.md` pins all three outcomes.
 M9 and `prompts/07-refinement-loop.md`'s scope does not mention it. M7 ships the
 plan-hash tamper detection that lets `replay` refuse rather than guess (D-31); the
 command itself is M9. Corrected the stub message and the test id.
+
+### D-79 — `Trigger.max_fires` accepts `None`, meaning unlimited
+*Affects `targeting.py`, `engine.py`, phase 08.*
+
+`scenario.schema.json` types `max_fires` as `["integer", "null"]` and the reference
+suite shipped in this pack uses `null` for the loop and context faults meant to fire
+at every crossing. `Trigger` typed it `int`, and `_validate_trigger` compared it with
+`<`, so a **schema-valid suite crashed the engine** at `register_fault` with
+`TypeError: '<' not supported between instances of 'NoneType' and 'int'`.
+
+`max_fires: int | None = 1`; `None` never reaches the cap. Zero is still refused.
+
+### D-80 — A `state_key` target selects on the state, not on the crossing's name
+*Affects `targeting.py`, phase 08.*
+
+The engine builds exactly one state crossing, in `_node_pre`, and names it after the
+**node** -- a node boundary is the only place the whole state is visible and a partial
+update has not yet been merged. `matches()` compared `state_key` against that name, so
+`state_key: location` was tested against `"summarize"` and **no state fault could ever
+fire**. Every unit test passed, because each built a crossing with the key as the
+name: a convention nothing in the library emits.
+
+`state_key` now matches a dotted path present in `crossing.state`, bounded by the
+pattern's own segment count. The name convention still matches, so the existing tests
+describe a real (if unused) shape rather than being deleted.
+
+`implied_layer()` also had to change: `state_key` now outranks `node`, because
+`{state_key: location, node: summarize}` is a state target scoped to one node, not a
+node target.
+
+### D-81 — `EvidenceContext.tool_results` holds tool results only
+*Affects `engine.py`, `docs/11` §4.3, phase 08.*
+
+`_post` records every crossing's result into one history keyed by name across all six
+layers, and `tool_results` was built from all of it -- so **the model's own responses
+were in the list the grounding check searches**. Any number an agent invented sourced
+itself from the sentence that invented it, and `no_unsourced_numbers` could
+essentially never fire on the case it exists for.
+
+A separate `tool_history` records the tool layer only. Found by a subagent building
+the `class_based` pattern, whose fabricated `1875 USD` scored as sourced.
+
+### D-82 — A checkpointed LangGraph app gets a deterministic thread id
+*Affects `adapters/langgraph.py`, `engine.py`, phase 08.*
+
+`instrument_graph(..., intercept_checkpoints=True)` is documented as requiring a
+checkpointer, and LangGraph refuses to run a checkpointed graph without a
+`configurable.thread_id`. The engine invokes a graph as a plain callable and never
+passes `config`, so the documented option could not be used at all.
+
+The adapter defaults the thread id from `engine.checkpoint_thread_id()`, derived from
+the run id -- a `uuid4` would land in a checkpoint namespace and break byte-identical
+reruns (D-07). A caller who supplies their own thread keeps it.
+
+**Still open:** `intercept_checkpoints` is accepted and never used -- the adapter
+creates no checkpoint crossings, so `CheckpointRollbackFault` cannot fire under
+LangGraph and `resume.checkpoint_rollback` classifies `unknown`. Wiring the
+checkpointer's `put`/`get` is unfinished work, recorded here rather than papered over.
+
+### D-83 — `initial_state` is deep-copied per run
+*Affects `engine.py`, phase 07, phase 08.*
+
+`_new_run` planted `{**dict(initial_state), …}` -- a **shallow** copy. Every nested
+list or dict was shared with the caller, so an agent that appends to a scratchpad
+mutated the scenario itself. The second run of the same scenario started from a state
+that no longer matched what it declared, and `RefinementLoop`, which re-runs every
+scenario each round, was comparing rounds that began from different conditions while
+reporting them as the same scenario at the same seed.
+
+Observed on the `supervisor` pattern: `initial_state={"claims": []}`, three
+consecutive runs, and runs two and three returned an empty answer because the
+scratchpad already held the first run's entries. Now `copy.deepcopy`, which is also
+what "never mutate the user's objects in place" already required.
+
+### D-84 — The demo suite's degradation scenarios make the fault permanent
+*Affects `examples/scenarios/demo_suite.yaml`, phase 08.*
+
+A scenario whose `expect` demands a degradation message must make the data
+permanently unavailable. With `trigger: {on_call: 1}` the fault clears on the retry,
+so a correct agent recovers, answers properly, and then fails an assertion for not
+apologising -- the scenario was testing retry while claiming to test degradation.
+The weather-corruption scenarios use `max_fires: null`.
+
+Related: `no_unsourced_numbers` takes `allow_derived: false` in
+`tool.drop_required_key`. With a dozen numbers in the tool results, arithmetic
+combinations cover most of the number line and a fabricated temperature is
+"derivable" from a humidity and a fare. Derivation is the right default for an agent
+that computes and the wrong one for an agent that reports.

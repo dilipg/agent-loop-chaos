@@ -69,3 +69,25 @@ def reset() -> None:
     global FIXED, BROKEN_SIBLING
     FIXED = False
     BROKEN_SIBLING = False
+
+
+def build_appending(engine: Any) -> Any:
+    """Build an agent that appends to a nested value in its initial state.
+
+    A scratchpad an agent writes into is ordinary. It is also the shape that exposes
+    a shallow copy of `initial_state`: the list is shared, so a second run sees the
+    first one's entries.
+
+    Args:
+        engine: The engine, unused beyond the builder convention.
+
+    Returns:
+        The agent callable.
+    """
+
+    def agent(question: Any = None, claims: Any = None, **_state: Any) -> str:
+        entries = claims if claims is not None else []
+        entries.append("did some work")
+        return f"claims={len(entries)}"
+
+    return agent

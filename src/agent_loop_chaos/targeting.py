@@ -11,9 +11,10 @@ answer (D-36).
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
+from typing import Any
 
 from .context import Crossing, FaultContext, Layer, Phase
 
@@ -63,10 +64,13 @@ class Target:
             return "tool"
         if self.llm is not None:
             return "llm"
-        if self.node is not None:
-            return "node"
+        # `state_key` outranks `node`: `{state_key: location, node: summarize}` is a
+        # state target scoped to one node's boundary, not a node target. Reading it
+        # the other way made every such target unmatchable.
         if self.state_key is not None:
             return "state"
+        if self.node is not None:
+            return "node"
         return None
 
 
@@ -85,7 +89,9 @@ class Trigger:
         after_step: Fire on every eligible crossing after this step.
         probability: Fire chance in ``[0, 1]``. Outside that range raises
             `ConfigError` at registration.
-        max_fires: Stop after this many fires.
+        max_fires: Stop after this many fires. `None` means unlimited, which is
+            what `scenario.schema.json` types it as and what the loop and context
+            faults in the demo suite use.
         cooldown_calls: Minimum target calls between two fires.
         stop_after_step: Never fire beyond this step.
     """
@@ -94,7 +100,7 @@ class Trigger:
     on_step: int | None = None
     after_step: int | None = None
     probability: float = 1.0
-    max_fires: int = 1
+    max_fires: int | None = 1
     cooldown_calls: int = 0
     stop_after_step: int | None = None
 
@@ -157,19 +163,75 @@ def matches(target: Target, crossing: Crossing) -> bool:
         ("llm", target.llm),
         ("node", target.node),
     ):
-        if expected is not None:
-            if crossing.layer != _LAYER_ATTR[attr]:
-                return False
-            if not fnmatchcase(crossing.name, expected):
-                return False
+        if expected is None:
+            continue
+        # `node:` also narrows a state crossing, which carries the node's name: a
+        # state fault is routinely scoped to one node's boundary.
+        if crossing.layer != _LAYER_ATTR[attr] and not (
+            attr == "node" and crossing.layer == "state"
+        ):
+            return False
+        if not fnmatchcase(crossing.name, expected):
+            return False
 
     if target.state_key is not None:
         if crossing.layer != "state":
             return False
-        if not state_key_matches(target.state_key, crossing.name):
+        if not _selects_state(target.state_key, crossing):
             return False
 
     return not (target.predicate is not None and not target.predicate(crossing))
+
+
+def _state_paths(value: Any, depth: int, prefix: str = "") -> Iterator[str]:
+    """Enumerate dotted key paths in a state value, down to `depth` segments.
+
+    Bounded by the pattern's own segment count, so a large state costs no more than
+    the pattern asks for.
+
+    Args:
+        value: The state, or a nested part of it.
+        depth: How many more segments to descend.
+        prefix: The path so far.
+
+    Yields:
+        Each dotted path.
+    """
+    if depth <= 0:
+        return
+    if isinstance(value, Mapping):
+        items: Iterable[tuple[str, Any]] = ((str(k), v) for k, v in value.items())
+    elif isinstance(value, (list, tuple)):
+        items = ((str(i), v) for i, v in enumerate(value))
+    else:
+        return
+    for key, child in items:
+        path = f"{prefix}.{key}" if prefix else key
+        yield path
+        yield from _state_paths(child, depth - 1, path)
+
+
+def _selects_state(pattern: str, crossing: Crossing) -> bool:
+    """Report whether a `state_key` pattern selects this state crossing.
+
+    The engine builds one state crossing per node entry and names it after the node,
+    because a node boundary is the only place the whole state is visible and a
+    partial update has not yet been merged. So the key has to be looked for *in the
+    state*, not in the crossing's name -- matching the name was the reason no state
+    fault could fire.
+
+    Args:
+        pattern: The `state_key` glob.
+        crossing: The state crossing.
+
+    Returns:
+        True when the pattern matches a path present in the state, or the crossing's
+        own name (the shape a per-key crossing would have).
+    """
+    if state_key_matches(pattern, crossing.name):
+        return True
+    depth = pattern.count(".") + 1
+    return any(state_key_matches(pattern, path) for path in _state_paths(crossing.state, depth))
 
 
 def should_fire(
@@ -196,7 +258,7 @@ def should_fire(
         ``"cooldown"``, ``"probability_not_met"``.
     """
     fires = ctx.counters.fires.get(fault_id, 0)
-    if fires >= trigger.max_fires:
+    if trigger.max_fires is not None and fires >= trigger.max_fires:
         return False, "max_fires_reached"
 
     if trigger.stop_after_step is not None and crossing.step > trigger.stop_after_step:

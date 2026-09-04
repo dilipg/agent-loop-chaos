@@ -1,0 +1,15 @@
+# The 15-line suite the README shows. One scenario, one fault, one real bug.
+scenarios:
+  - id: quickstart.drop_required_key
+    description: The weather tool stops returning the field the agent indexes into.
+    entrypoint: examples.trip_planner.app:build_app
+    inputs: { query: "3-day packing list for Paris" }
+    expected_behavior: graceful_degradation
+    expect:
+      no_unsourced_numbers: { enabled: true }
+      output_matches: ["(?i)unavailab|missing|could not"]
+    faults:
+      - type: ToolCorruptionFault
+        target: { tool: get_weather_data }
+        trigger: { on_call: 1 }
+        params: { mutation_type: drop_key, keys: [temp_c] }

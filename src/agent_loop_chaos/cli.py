@@ -80,6 +80,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--trace-level", dest="trace_level", choices=("minimal", "standard", "verbose")
     )
     run.add_argument("--filter", help="glob over scenario ids")
+    run.add_argument(
+        "--entrypoint",
+        help="override every scenario's entrypoint (MODULE:ATTR); how the same suite "
+        "is run against a corrected tree",
+    )
     run.add_argument("--fail-fast", dest="fail_fast", action="store_true")
     run.add_argument("--no-baseline", dest="no_baseline", action="store_true")
     run.add_argument("--dry-run", dest="dry_run", action="store_true")
@@ -203,6 +208,9 @@ def _run(args: argparse.Namespace) -> int:
 
     suite = load_suite(args.target)
     scenarios = [s for s in suite.scenarios if _selected(s.id, args.filter)]
+    if getattr(args, "entrypoint", None):
+        for scenario in scenarios:
+            scenario.entrypoint = args.entrypoint
     out_dir = Path(args.out or ".chaos")
 
     if args.rounds:

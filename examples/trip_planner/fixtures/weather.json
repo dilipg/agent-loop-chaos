@@ -1,0 +1,12 @@
+{
+  "Paris": [
+    {"date": "2026-09-08", "condition": "sunny", "temp_c": 24, "humidity": 48},
+    {"date": "2026-09-09", "condition": "partly cloudy", "temp_c": 21, "humidity": 55},
+    {"date": "2026-09-10", "condition": "light rain", "temp_c": 18, "humidity": 72}
+  ],
+  "Lisbon": [
+    {"date": "2026-09-08", "condition": "sunny", "temp_c": 29, "humidity": 41},
+    {"date": "2026-09-09", "condition": "sunny", "temp_c": 30, "humidity": 39},
+    {"date": "2026-09-10", "condition": "clear", "temp_c": 28, "humidity": 44}
+  ]
+}

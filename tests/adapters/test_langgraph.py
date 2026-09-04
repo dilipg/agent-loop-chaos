@@ -286,3 +286,64 @@ def test_the_adapter_reports_itself_and_its_version(tmp_path: Path) -> None:
     result = eng.run(app, inputs={"query": "x"}, expected_behavior="ignore_and_continue")
     assert result.target["framework"] == "langgraph"
     assert result.target["adapter_version"]
+
+
+class TestCheckpointerNeedsNoCallerConfig:
+    """A compiled graph with a checkpointer runs without the caller supplying a thread.
+
+    `instrument_graph(..., intercept_checkpoints=True)` is documented as requiring a
+    checkpointer, but the engine invokes a graph as a plain callable and never passes
+    `config`. LangGraph then raises `ValueError: Checkpointer requires one or more of
+    the following 'configurable' keys: thread_id`, so the documented option could not
+    be used at all -- and it is the only route to `resume.checkpoint_rollback`.
+
+    The thread id is derived from the run, not generated: a `uuid4` in a report would
+    break determinism (`docs/01` §7).
+    """
+
+    @staticmethod
+    def _graph(engine: Any) -> Any:
+        from langgraph.checkpoint.memory import MemorySaver
+
+        from agent_loop_chaos.adapters.langgraph import instrument_graph
+        from tests.fakes.lg_agent import build
+
+        compiled = build(lambda prompt: "warm").compile(checkpointer=MemorySaver())
+        return instrument_graph(compiled, engine, intercept_checkpoints=True)
+
+    def test_a_checkpointed_graph_runs(self, tmp_path: Any) -> None:
+        pytest.importorskip("langgraph")
+        engine = ChaosEngine(seed=1337, out_dir=tmp_path, write_bundle=False, judge="rules")
+        result = engine.run(
+            self._graph(engine),
+            inputs={"query": "x"},
+            scenario_id="cp",
+            # No fault is armed, so completing unaffected is the right outcome.
+            expected_behavior="ignore_and_continue",
+        )
+        assert result.error is None, result.error
+        assert result.success
+
+    def test_the_thread_id_is_deterministic(self, tmp_path: Any) -> None:
+        pytest.importorskip("langgraph")
+        threads = []
+        for _ in range(2):
+            engine = ChaosEngine(seed=1337, out_dir=tmp_path, write_bundle=False, judge="rules")
+            graph = self._graph(engine)
+            engine.run(graph, inputs={"query": "x"}, scenario_id="cp")
+            threads.append(engine.checkpoint_thread_id())
+        assert threads[0] == threads[1]
+        assert threads[0]
+
+    def test_a_caller_supplied_thread_is_not_overridden(self, tmp_path: Any) -> None:
+        pytest.importorskip("langgraph")
+        from langgraph.checkpoint.memory import MemorySaver
+
+        from agent_loop_chaos.adapters.langgraph import instrument_graph
+        from tests.fakes.lg_agent import build
+
+        engine = ChaosEngine(seed=1337, out_dir=tmp_path, write_bundle=False, judge="rules")
+        compiled = build(lambda prompt: "warm").compile(checkpointer=MemorySaver())
+        graph = instrument_graph(compiled, engine, intercept_checkpoints=True)
+        out = graph.invoke({"query": "x"}, {"configurable": {"thread_id": "mine"}})
+        assert out

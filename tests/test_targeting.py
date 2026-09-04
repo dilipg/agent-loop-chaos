@@ -240,3 +240,96 @@ def test_checks_run_before_the_rng_so_a_skip_costs_no_draw() -> None:
     ctx = context()
     should_fire(Trigger(on_call=2, probability=0.5), crossing(call_index=1), ctx, "f1")
     assert ctx.run.draws == {}
+
+
+class TestUnlimitedMaxFires:
+    """`max_fires: null` means unlimited, and the schema says so.
+
+    `scenario.schema.json` types it `["integer", "null"]`, and the reference suite
+    shipped in this pack uses `null` for the loop and context faults that are meant
+    to fire on every crossing. `Trigger` typed it `int`, so a schema-valid suite
+    crashed at `register_fault` with a `TypeError` from `None < 1`.
+    """
+
+    def test_none_is_accepted(self) -> None:
+        assert Trigger(max_fires=None).max_fires is None
+
+    def test_none_never_stops_firing(self) -> None:
+        ctx = context()
+        trigger = Trigger(max_fires=None)
+        for fires in (0, 1, 5, 500):
+            ctx.counters.fires["f1"] = fires
+            ok, reason = should_fire(trigger, crossing(call_index=fires + 1), ctx, "f1")
+            assert ok, f"unlimited trigger refused at {fires} fires: {reason}"
+
+    def test_an_integer_still_caps(self) -> None:
+        ctx = context()
+        ctx.counters.fires["f1"] = 2
+        assert should_fire(Trigger(max_fires=2), crossing(), ctx, "f1") == (
+            False,
+            "max_fires_reached",
+        )
+
+    def test_zero_is_still_rejected_at_registration(self) -> None:
+        from agent_loop_chaos import ChaosEngine
+        from agent_loop_chaos.errors import ConfigError
+        from agent_loop_chaos.faults import NoopFault
+
+        engine = ChaosEngine(write_bundle=False)
+        with pytest.raises(ConfigError, match="max_fires"):
+            engine.register_fault(NoopFault(), trigger=Trigger(max_fires=0))
+
+    def test_none_passes_registration(self) -> None:
+        from agent_loop_chaos import ChaosEngine
+        from agent_loop_chaos.faults import NoopFault
+
+        engine = ChaosEngine(write_bundle=False)
+        engine.register_fault(NoopFault(), trigger=Trigger(max_fires=None))
+
+
+class TestStateTargetsMatchTheKeysInScope:
+    """A `state_key` target selects on the state, not on the crossing's name.
+
+    The engine builds exactly one state crossing (`engine._node_pre`) and gives it
+    the **node's** name, because a node boundary is where the whole state is visible.
+    The matcher compared `state_key` against that name, so `state_key: location` was
+    tested against `"summarize"` and no state fault could ever fire. Every unit test
+    passed, because they each built a crossing with the key as the name -- a
+    convention nothing in the library actually emits.
+    """
+
+    @staticmethod
+    def _at_node(state: dict[str, object]) -> Crossing:
+        return crossing(layer="state", name="summarize", state=state)
+
+    def test_a_key_present_in_the_state_matches(self) -> None:
+        target = Target(state_key="location")
+        assert matches(target, self._at_node({"location": "Paris", "query": "x"}))
+
+    def test_a_key_absent_from_the_state_does_not(self) -> None:
+        assert not matches(Target(state_key="location"), self._at_node({"query": "x"}))
+
+    def test_a_glob_matches_a_nested_path(self) -> None:
+        state = {"messages": [{"content": "hi"}, {"content": "there"}]}
+        assert matches(Target(state_key="messages.*.content"), self._at_node(state))
+
+    def test_a_glob_at_the_wrong_depth_does_not(self) -> None:
+        state = {"messages": [{"content": "hi"}]}
+        assert not matches(Target(state_key="messages.*.deeper.still"), self._at_node(state))
+
+    def test_the_node_constraint_still_applies(self) -> None:
+        state = {"location": "Paris"}
+        assert matches(Target(state_key="location", node="summarize"), self._at_node(state))
+        assert not matches(Target(state_key="location", node="respond"), self._at_node(state))
+
+    def test_the_name_convention_still_works(self) -> None:
+        # The unit tests above document a crossing whose name *is* the key. Keep it
+        # matching: it costs nothing and the alternative is deleting tests that
+        # describe a reasonable shape.
+        assert matches(Target(state_key="messages"), crossing(layer="state", name="messages"))
+
+    def test_a_state_target_still_refuses_a_tool_crossing(self) -> None:
+        assert not matches(Target(state_key="location"), crossing())
+
+    def test_a_stateless_crossing_does_not_match(self) -> None:
+        assert not matches(Target(state_key="location"), crossing(layer="state", name="summarize"))

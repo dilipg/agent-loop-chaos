@@ -352,6 +352,57 @@ def _wrap_branch(engine: ChaosEngine, source: str, router: Any) -> Any:
     return wrapper
 
 
+def _supply_thread_id(compiled: Any, engine: ChaosEngine) -> None:
+    """Default the `configurable.thread_id` a checkpointer requires.
+
+    A checkpointed graph raises `ValueError` without one, and the engine invokes a
+    graph as a plain callable with no `config` -- so `intercept_checkpoints=True`
+    could not be used at all. A caller who passes their own thread keeps it.
+
+    Args:
+        compiled: The compiled graph, patched in place.
+        engine: The engine, for the deterministic id.
+    """
+    for method in ("invoke", "ainvoke", "stream", "astream"):
+        original = getattr(compiled, method, None)
+        if original is None:
+            continue
+        setattr(compiled, method, _with_thread(original, engine))
+
+
+def _with_thread(original: Any, engine: ChaosEngine) -> Any:
+    """Wrap an invoke-shaped method so it always carries a thread id.
+
+    Args:
+        original: The bound method.
+        engine: The engine, for the deterministic id.
+
+    Returns:
+        A wrapper with the same call shape.
+    """
+
+    def _merge(config: Any) -> dict[str, Any]:
+        merged: dict[str, Any] = dict(config or {})
+        configurable = dict(merged.get("configurable") or {})
+        configurable.setdefault("thread_id", engine.checkpoint_thread_id())
+        merged["configurable"] = configurable
+        return merged
+
+    if inspect.iscoroutinefunction(original):
+
+        @functools.wraps(original)
+        async def awrapper(state: Any, config: Any = None, **kwargs: Any) -> Any:
+            return await original(state, _merge(config), **kwargs)
+
+        return awrapper
+
+    @functools.wraps(original)
+    def wrapper(state: Any, config: Any = None, **kwargs: Any) -> Any:
+        return original(state, _merge(config), **kwargs)
+
+    return wrapper
+
+
 def instrument_graph(
     graph: Any,
     engine: ChaosEngine,
@@ -396,6 +447,8 @@ def instrument_graph(
             set_(_wrap_branch(engine, source, get()))
 
     compiled = graph if is_compiled(graph) else graph.compile()
+    if getattr(compiled, "checkpointer", None):
+        _supply_thread_id(compiled, engine)
     setattr(compiled, _MARKER, True)
     return compiled
 

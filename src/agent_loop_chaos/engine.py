@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import inspect
 import logging
 import time
@@ -142,6 +143,11 @@ class _RunState:
     keys_retyped: set[str] = field(default_factory=set)
     history: dict[str, list[Any]] = field(default_factory=dict)
     pre_fault_history: dict[str, list[Any]] = field(default_factory=dict)
+    # Tool-layer results only. `history` is keyed by crossing name across every
+    # layer, so it also holds the model's own responses -- and building
+    # `EvidenceContext.tool_results` from it let a fabricated number source itself
+    # from the sentence that fabricated it.
+    tool_history: dict[str, list[Any]] = field(default_factory=dict)
     tool_records: list[dict[str, Any]] = field(default_factory=list)
     llm_records: list[dict[str, Any]] = field(default_factory=list)
     limit_hit: str | None = None
@@ -350,8 +356,8 @@ class ChaosEngine:
         """
         if not 0.0 <= trigger.probability <= 1.0:
             raise ConfigError(f"Trigger.probability must be in [0, 1]; got {trigger.probability!r}")
-        if trigger.max_fires < 1:
-            raise ConfigError(f"Trigger.max_fires must be >= 1; got {trigger.max_fires!r}")
+        if trigger.max_fires is not None and trigger.max_fires < 1:
+            raise ConfigError(f"Trigger.max_fires must be >= 1 or None; got {trigger.max_fires!r}")
         if trigger.cooldown_calls < 0:
             raise ConfigError(
                 f"Trigger.cooldown_calls must be >= 0; got {trigger.cooldown_calls!r}"
@@ -1964,6 +1970,8 @@ class ChaosEngine:
         """
         state = self._state()
         state.pre_fault_history.setdefault(crossing.name, []).append(result)
+        if crossing.layer == "tool":
+            state.tool_history.setdefault(crossing.name, []).append(result)
         crossing.phase = "post"
         crossing.result = result
         duration = (time.perf_counter() - started) * 1000
@@ -2165,7 +2173,12 @@ class ChaosEngine:
         # and the `secret_in_output` probe can never fire.
         planted: dict[str, Any] | None = None
         if initial_state is not None:
-            planted = {**dict(initial_state), "_alc_canary": canary}
+            # A *deep* copy. `dict(initial_state)` shares every nested list and dict
+            # with the caller, so an agent that appends to a scratchpad mutates the
+            # scenario itself -- and the next run, or the loop's next round, starts
+            # from a state that no longer matches what the scenario declares. The
+            # library must never mutate the user's objects in place.
+            planted = {**copy.deepcopy(dict(initial_state)), "_alc_canary": canary}
         state = _RunState(
             engine=self,
             ctx=ctx,
@@ -2706,6 +2719,22 @@ class ChaosEngine:
             "traceback": "".join(traceback.format_exception(exc))[-4000:],
         }
 
+    def checkpoint_thread_id(self) -> str:
+        """A deterministic thread id for a graph compiled with a checkpointer.
+
+        LangGraph refuses to run a checkpointed graph without a `thread_id`, and the
+        engine invokes a graph as a plain callable with no `config`. Deriving one
+        from the run keeps the report reproducible: a `uuid4` here would land in a
+        checkpoint namespace and break byte-identical reruns (`docs/01` §7).
+
+        Returns:
+            The thread id, stable for a given seed, scenario and attempt.
+        """
+        state = _ACTIVE.get()
+        if state is None:
+            return f"alc-{self.seed}"
+        return f"alc-{state.ctx.run_id}"
+
     def harness_facts(self) -> HarnessFacts:
         """Snapshot what the harness itself caused.
 
@@ -2858,8 +2887,10 @@ class ChaosEngine:
         fires = [{**f, "type": r.type, "params": r.params} for r in fired for f in r.fires]
         evidence = EvidenceContext(
             final_output=output,
-            tool_results=list(state.pre_fault_history.values())
-            and [v for values in state.history.values() for v in values],
+            # Tool results only. A model's own response is not a source: an answer
+            # that cites itself is exactly the failure the grounding check exists to
+            # catch.
+            tool_results=[v for values in state.tool_history.values() for v in values],
             inputs=state.objective,
             initial_state=dict(state.planted_state or {}),
             tools_called=[

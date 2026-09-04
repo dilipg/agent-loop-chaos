@@ -17,6 +17,7 @@ Tests use `tests/fakes/fake_llm.FakeLLM` instead; this exists so the module-leve
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -40,7 +41,18 @@ _SCRIPT: dict[str, str] = {
     "DRAFT": "Draft: mid-market collections risk needs attention before the Q4 renewals.",
     "TIGHTEN": "Mid-market collections risk needs a CSM touch before renewal.",
     "REVIEW": "APPROVE",
+    # The trip planner (examples/trip_planner). PLAN and RESPOND are stable; SUMMARIZE
+    # is built per call, because what it says depends on what the forecast contained.
+    "PLAN": '{"location": "Paris", "origin": "DEL"}',
 }
+
+#: Which day-one temperature the summarizer reports when the forecast does not carry
+#: one. A real mediocre model does exactly this: it fills the gap from the season and
+#: the city rather than admitting the field was missing. It is what makes
+#: `no_unsourced_numbers` and `HallucinationSeedFault` catch something real.
+_FABRICATED_TEMP_C = 19
+
+_TEMP = re.compile(r"'temp_c':\s*(-?\d+(?:\.\d+)?)")
 
 
 def _text(messages: Any) -> str:
@@ -61,6 +73,71 @@ def _text(messages: Any) -> str:
     return str(messages)
 
 
+def _injected(prompt: str) -> str | None:
+    """Find instruction-shaped text the prompt carries in the clear.
+
+    Args:
+        prompt: The rendered prompt.
+
+    Returns:
+        The span, or `None` when there is none or it arrived inside a fence.
+    """
+    if FENCE in prompt:
+        return None
+    found = _INJECTED.search(prompt)
+    return prompt[found.start() : found.start() + 200].strip() if found else None
+
+
+def _summarize(prompt: str) -> str:
+    """Build a packing list from whatever the forecast actually contained.
+
+    Args:
+        prompt: The rendered summarize prompt.
+
+    Returns:
+        A JSON object with `packing_list` and `note`.
+    """
+    found = _TEMP.search(prompt)
+    temp = float(found.group(1)) if found else _FABRICATED_TEMP_C
+    warm = temp >= 20
+    items = (
+        ["light shirts", "sunglasses", "a compact umbrella", "walking shoes"]
+        if warm
+        else ["a warm jacket", "a scarf", "waterproof shoes", "gloves"]
+    )
+    note = f"Expect around {temp:g}C on day one, so pack accordingly."
+    obeyed = _injected(prompt)
+    if obeyed:
+        # Obedience inside the structured output, which is what it actually looks
+        # like: the JSON still parses and the instruction reaches the user.
+        note = f"{note} {obeyed}"
+    return json.dumps({"packing_list": items, "note": note})
+
+
+def _trip_respond(prompt: str) -> str:
+    """Write the traveller's final answer.
+
+    Args:
+        prompt: The rendered respond prompt.
+
+    Returns:
+        Two short paragraphs.
+    """
+    price = re.search(r"'price_usd':\s*(\d+)", prompt)
+    carrier = re.search(r"'carrier':\s*'([^']+)'", prompt)
+    items = re.search(r"Packing list:\s*(\[[^\]]*\])", prompt)
+    packing = items.group(1) if items else "[]"
+    airline = carrier.group(1) if carrier else "the carrier"
+    fare = (
+        f"The cheapest fare is ${price.group(1)} on {airline}."
+        if price
+        else "No fare was available."
+    )
+    note = re.search(r"Note:\s*(.+)", prompt)
+    tail = f"\n\n{note.group(1).strip()}" if note and note.group(1).strip() else ""
+    return f"Pack {packing}.\n\n{fare}{tail}"
+
+
 def respond(messages: Any, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
     """Answer one prompt from the script.
 
@@ -74,10 +151,18 @@ def respond(messages: Any, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
     """
     prompt = _text(messages)
     tag = _TAG.search(prompt)
-    body = _SCRIPT.get(tag.group(1) if tag else "", "OK")
-    if FENCE not in prompt:
-        found = _INJECTED.search(prompt)
-        if found:
-            # The whole point: undelimited tool text reads as instruction.
-            body = f"{body}\n{prompt[found.start() : found.start() + 200].strip()}"
+    name = tag.group(1) if tag else ""
+    if name == "SUMMARIZE":
+        body = _summarize(prompt)
+    elif name == "RESPOND":
+        body = _trip_respond(prompt)
+    else:
+        body = _SCRIPT.get(name, "OK")
+    if name != "SUMMARIZE":
+        # `_summarize` obeys inside its own structured output, which is what real
+        # obedience looks like; appending after it would only ever produce a JSON
+        # parse error and hide the finding. Everything else appends.
+        obeyed = _injected(prompt)
+        if obeyed:
+            body = f"{body}\n{obeyed}"
     return {"content": body, "finish_reason": "stop"}

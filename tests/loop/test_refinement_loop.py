@@ -401,3 +401,65 @@ class TestTasksWrittenIsActionable:
     def test_every_listed_path_exists(self, tmp_path: Path) -> None:
         report = _loop(_suite(), tmp_path, max_rounds=2, stop_when="rounds").run()
         assert all(p.is_file() for p in report.tasks_written)
+
+
+class TestInitialStateIsIsolatedPerRun:
+    """A scenario's `initial_state` must not carry mutations between runs.
+
+    `dict(scenario.initial_state)` is a *shallow* copy, so a nested list or dict is
+    shared by every run of that scenario. An agent that appends to
+    `state["claims"]` -- an ordinary thing for a scratchpad to do -- then sees the
+    previous round's entries, and the loop's round-over-round comparison is
+    comparing two different starting conditions while reporting them as the same
+    scenario at the same seed.
+    """
+
+    @staticmethod
+    def _suite() -> ChaosSuite:
+        return ChaosSuite(
+            [
+                Scenario(
+                    id="stateful",
+                    entrypoint="tests.fakes.swappable:build_appending",
+                    inputs=None,
+                    initial_state={"claims": []},
+                    faults=[],
+                    expected_behavior="ignore_and_continue",
+                )
+            ]
+        )
+
+    def test_each_round_starts_from_the_declared_state(self, tmp_path: Path) -> None:
+        suite = self._suite()
+        report = _loop(suite, tmp_path, max_rounds=3, stop_when="rounds").run()
+        answers = [r.results[0].final_output for r in report.rounds]
+        assert answers == ["claims=1", "claims=1", "claims=1"], (
+            f"the scratchpad leaked between rounds: {answers}"
+        )
+
+    def test_the_nested_value_the_agent_mutated_is_a_copy(self, tmp_path: Path) -> None:
+        # The direct reproduction: hand the engine the *same* nested list twice and
+        # assert the second run does not see the first run's writes.
+        from agent_loop_chaos import ChaosEngine
+        from tests.fakes.swappable import build_appending
+
+        shared: dict[str, list[str]] = {"claims": []}
+        answers = []
+        for attempt in range(3):
+            engine = ChaosEngine(seed=1337, out_dir=tmp_path, write_bundle=False, judge="rules")
+            result = engine.run(
+                build_appending(engine),
+                inputs=None,
+                initial_state=shared,
+                scenario_id="stateful",
+                expected_behavior="ignore_and_continue",
+                attempt=attempt + 1,
+            )
+            answers.append(result.final_output)
+        assert answers == ["claims=1"] * 3, f"the caller's list was shared: {answers}"
+        assert shared == {"claims": []}, "the engine mutated the caller's object"
+
+    def test_the_scenarios_own_state_is_not_mutated(self, tmp_path: Path) -> None:
+        suite = self._suite()
+        _loop(suite, tmp_path, max_rounds=2, stop_when="rounds").run()
+        assert suite.scenarios[0].initial_state == {"claims": []}
