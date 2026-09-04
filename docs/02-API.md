@@ -450,15 +450,43 @@ class RefinementLoop:
 
 @dataclass
 class LoopReport:
-    rounds: list[SuiteResult]
+    rounds: list[RoundResult]
     new_failures_per_round: list[int]
     fixed_between_rounds: list[list[str]]     # scenario ids that flipped to pass
     regressions: list[str]
-    tasks_written: list[Path]                 # AGENT_TASK.md paths
+    tasks_written: list[Path]                 # newest AGENT_TASK.md per scenario (D-76)
     out_dir: Path
+    tamper: dict[str, Any]                    # plan/file/must_not hashes, probe fingerprint
+    aborted: bool                             # a control scenario failed
+    abort_reason: str | None
+    wall_ms: int
+    @property
+    def flipped(self) -> list[dict]: ...      # [{scenario_id, round}]
     def to_dict(self) -> dict: ...
     def markdown(self) -> str: ...
+
+@dataclass
+class RoundResult:
+    round: int
+    results: list[ChaosResult]
+    outcomes: dict[str, Outcome]              # pass | fail | flipped_to_pass |
+                                              # flipped_to_fail | still_failing | skipped
+    wall_ms: int
+
+def run_suite(scenarios, *, out_dir, seed=None, attempt=1, ...) -> list[ChaosResult]: ...
+def probes_fingerprint() -> str: ...
+def scenario_fingerprint(scenario, plan_hash) -> dict: ...
 ```
+
+`RefinementLoop` also accepts `out_dir`, `judge`, `judge_options` and `no_baseline`,
+so it can be driven without constructing an engine first.
+
+`run_suite` is the single-round path shared by `alc run` and one round of the loop
+(D-74). Both must plan a scenario identically or the loop's "same seeds every round"
+guarantee is not true.
+
+A scenario whose id starts with `control.` is a control: it must pass in every round,
+and its failure aborts the loop (D-75), which is exit code **4** from the CLI.
 
 `on_findings` is the hand-off hook: the caller may shell out to a coding agent,
 apply patches, and return; the loop then re-runs the suite and reports what flipped.

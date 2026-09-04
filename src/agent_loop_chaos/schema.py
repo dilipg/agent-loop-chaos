@@ -25,13 +25,14 @@ from .errors import SchemaError
 
 __all__ = ["SCHEMA_FILES", "SchemaName", "load_schema", "registry", "validate_obj", "validator_for"]
 
-SchemaName = Literal["report", "trace", "verdict", "scenario"]
+SchemaName = Literal["report", "trace", "verdict", "scenario", "suite"]
 
 SCHEMA_FILES: dict[SchemaName, str] = {
     "report": "chaos_report.schema.json",
     "trace": "trace_event.schema.json",
     "verdict": "judge_verdict.schema.json",
     "scenario": "scenario.schema.json",
+    "suite": "suite.schema.json",
 }
 
 _MAX_VALUE_CHARS = 200

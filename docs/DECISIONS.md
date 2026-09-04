@@ -995,3 +995,63 @@ Both the POST path and the reachability probe use `http.client` instead, which e
 a connection object that can be closed in a `finally`. Same standard library, same
 zero dependencies, deterministic cleanup. The `[slm]` extra still selects `httpx` when
 it is installed.
+
+### D-74 — `run_suite` lives in `loop.py`, not `cli.py`
+*Affects `loop.py`, `cli.py`, phase 07.*
+
+`alc run` grew the scenario-running logic inline. `RefinementLoop` is its second
+caller and needs it identically, because the loop's guarantee that "the same seeds
+run every round" is only true if both callers plan a scenario the same way. A library
+module cannot import its own CLI, so a second copy was the alternative, and two
+copies of seed and baseline handling would drift silently -- the failure would look
+like non-determinism, not like duplication.
+
+`run_suite`, `build_fault`, `target_kwargs` and `resolve_entrypoint` move to
+`loop.py`; `cli.py` imports them. The three private helpers lose their leading
+underscore because they are now used across modules.
+
+### D-75 — Any `control.*` scenario is a control, not just `control.dry_run`
+*Affects `loop.py`, `docs/05` §9, phase 07.*
+
+`docs/05` §9 names one control scenario. The convention it establishes is a `control.`
+prefix — the fake suite already ships `control.no_faults` — and a suite is entitled to
+several: one dry-run control, one negative-control agent, one no-op scenario. The loop
+treats every scenario whose id starts with `control.` as a control that must pass in
+every round, and aborts on the first failure with exit code 4.
+
+Broadening this cannot produce a false abort in a suite that follows the naming
+convention, and it removes the trap where a suite adds `control.baseline` and gets no
+tamper protection from it.
+
+### D-76 — `tasks_written` holds the newest work order per scenario
+*Affects `loop.py`, `docs/02-API.md` §8, phase 07.*
+
+Every round rewrites a still-failing scenario's `AGENT_TASK.md` into a fresh run
+directory, because `run_id` includes the attempt (D-04). Appending each round's paths
+gave a two-round loop eight work orders for four bugs — and `docs/05` §8's pattern A
+is literally `print("\n".join(report.tasks_written))`, so a human would paste two
+orders per bug to a coding agent, one of them describing a superseded run.
+
+The list is keyed by scenario and holds the latest path. A scenario that starts
+passing drops out of it entirely: there is no outstanding work order for a bug that
+is fixed.
+
+### D-77 — A flip or a regression persists in the outcome column
+*Affects `loop.py`, phase 07.*
+
+`LoopReport.markdown()` labelled each scenario from its last round's classification.
+By round 3 a scenario fixed in round 2 read "passing" and one that regressed in round
+2 read "still failing" — losing the two facts a human scans the table for, and
+contradicting the example table in `prompts/07-refinement-loop.md`, which shows
+`fixed in r2` on a `FAIL | PASS | PASS` row.
+
+The label now scans the whole history: a regression outranks a fix, a fix outranks the
+current state. `tests/golden/loop_report.md` pins all three outcomes.
+
+### D-78 — `alc replay` is M9, not M7
+*Affects `engine.py`, `tests/test_import.py`, phase 07.*
+
+`ChaosEngine.replay`'s stub said it arrives in M7. `docs/08-ROADMAP.md` assigns it to
+M9 and `prompts/07-refinement-loop.md`'s scope does not mention it. M7 ships the
+plan-hash tamper detection that lets `replay` refuse rather than guess (D-31); the
+command itself is M9. Corrected the stub message and the test id.

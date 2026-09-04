@@ -335,6 +335,11 @@ class Scenario:
     description: str | None = None
     matrix: dict[str, list[Any]] | None = None
     preset_skipped: list[dict[str, str]] = field(default_factory=list)
+    # Set by `load_suite`, unset for a suite built in Python. `RefinementLoop` hashes
+    # this file between rounds: editing the scenario is the easiest way to make a
+    # chaos run pass, and a flip that follows an edit is a regression, not a fix
+    # (`docs/05` §9).
+    source_path: str | None = None
 
     def __post_init__(self) -> None:
         """Validate the fields that can only be checked against the registry.
@@ -685,4 +690,6 @@ def load_suite(path: str | Path) -> ChaosSuite:
     scenarios: list[Scenario] = []
     for body in document.get("scenarios") or []:
         scenarios.extend(_scenario_from_body(_merge_defaults(defaults, body)).expand())
+    for scenario in scenarios:
+        scenario.source_path = str(path)
     return ChaosSuite(scenarios)

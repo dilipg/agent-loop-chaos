@@ -96,7 +96,7 @@ def test_chaos_engine_is_implemented_as_of_m1() -> None:
     [
         pytest.param(
             lambda: agent_loop_chaos.ChaosEngine(write_bundle=False).replay("d"),
-            id="replay (M7)",
+            id="replay (M9)",
         ),
     ],
 )
@@ -107,7 +107,8 @@ def test_remaining_stubs_still_fail_loudly(call: object) -> None:
     rather than hand back a `None` that surfaces as a confusing error later.
 
     `Scenario`, `ChaosSuite` and `load_suite` left this list in M4; the three judges
-    left it in M6.
+    left it in M6; `RefinementLoop` and `LoopReport` left it in M7. `replay` belongs
+    to M9 per `docs/08-ROADMAP.md`, not M7 -- the stub said otherwise and was wrong.
     """
     with pytest.raises(NotImplementedError, match=r"M\d"):
         call()  # type: ignore[operator]

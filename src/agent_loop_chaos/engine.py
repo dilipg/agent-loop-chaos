@@ -2343,11 +2343,11 @@ class ChaosEngine:
             The new `ChaosResult`, with `attempt` incremented.
 
         Raises:
-            NotImplementedError: Until M7, which also adds the plan-hash tamper
+            NotImplementedError: Until M9. M7 ships the plan-hash tamper
                 check that lets `replay` refuse rather than guess (D-31).
         """
         raise NotImplementedError(
-            "ChaosEngine.replay arrives in M7 (prompts/07-refinement-loop.md)"
+            "ChaosEngine.replay arrives in M9 (prompts/09-cli-and-release.md)"
         )
 
     def _prepare(

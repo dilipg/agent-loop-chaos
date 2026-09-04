@@ -27,6 +27,9 @@ EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_USAGE = 2
 EXIT_INTERNAL = 3
+# D-26. A control scenario failed or a scenario changed shape mid-loop: the harness
+# itself was altered, so nothing in the report can be trusted.
+EXIT_TAMPERED = 4
 
 log = logging.getLogger("agent_loop_chaos")
 
@@ -185,60 +188,43 @@ def _load_report(run_dir: Path) -> tuple[dict[str, Any], Path]:
 
 
 def _run(args: argparse.Namespace) -> int:
-    """Run a suite and write its bundles.
+    """Run a suite and write its bundles, once or as a refinement loop.
 
     Args:
         args: Parsed arguments.
 
     Returns:
-        `EXIT_OK` when every scenario passed, `EXIT_FAILED` otherwise.
+        `EXIT_OK` when every scenario passed, `EXIT_FAILED` otherwise, `EXIT_TAMPERED`
+        when the loop detected that the harness itself was altered.
     """
     from .bundle import write_suite_json
-    from .engine import ChaosEngine
-    from .scenarios import load_suite
+    from .loop import run_suite
+    from .scenarios import ChaosSuite, load_suite
 
     suite = load_suite(args.target)
     scenarios = [s for s in suite.scenarios if _selected(s.id, args.filter)]
     out_dir = Path(args.out or ".chaos")
-    results = []
-    # One baseline per (entrypoint, inputs). Recomputing it per scenario would double
-    # the cost of every suite for an answer that cannot have changed.
-    baselines: dict[str, Any] = {}
 
-    for scenario in scenarios:
-        engine = ChaosEngine(
-            seed=args.seed if args.seed is not None else scenario.seed,
-            out_dir=out_dir,
-            limits=scenario.limits,
-            dry_run=scenario.dry_run,
-            allow_side_effects=scenario.allow_side_effects,
-            strict_schema=False,
-        )
-        for spec in scenario.faults:
-            engine.register_fault(_build_fault(spec), **_target_kwargs(spec))
+    if args.rounds:
+        return _run_loop(args, ChaosSuite(scenarios), out_dir)
 
-        baseline = None
-        if not args.no_baseline and not scenario.dry_run:
-            baseline = _shared_baseline(baselines, scenario, out_dir)
-
-        result = engine.run(
-            _resolve_entrypoint(scenario.entrypoint, engine),
-            inputs=scenario.inputs,
-            initial_state=dict(scenario.initial_state or {}) or None,
-            scenario_id=scenario.id,
-            expected_behavior=scenario.expected_behavior,
-            must_not=scenario.must_not,
-            expect=scenario.expect,
-            expected_errors=scenario.expected_errors,
-            allow_side_effects=scenario.allow_side_effects,
-            baseline=baseline,
-        )
-        results.append(result)
+    def report(result: Any) -> None:
         if not args.json:
             print(result.summary_line())
         _warn_if_nothing_fired(result)
-        if args.fail_fast and not result.success:
-            break
+
+    results = run_suite(
+        scenarios,
+        out_dir=out_dir,
+        seed=args.seed,
+        no_baseline=args.no_baseline,
+        fail_fast=args.fail_fast,
+        judge=args.judge,
+        judge_options=_judge_options(args),
+        narrate_all=getattr(args, "narrate_all", False),
+        allow_remote_judge=getattr(args, "allow_remote_judge", False),
+        on_result=report,
+    )
 
     write_suite_json(out_dir, results, seed=args.seed or 0)
     if args.json:
@@ -262,6 +248,46 @@ def _run(args: argparse.Namespace) -> int:
             )
         )
     return EXIT_OK if all(r.success for r in results) else EXIT_FAILED
+
+
+def _run_loop(args: argparse.Namespace, suite: Any, out_dir: Path) -> int:
+    """Run the refinement loop with no hand-off hook.
+
+    `alc run --rounds N` writes work orders and re-runs; it never calls a coding
+    agent itself. Automating that is what `examples/refine_with_claude_code.py` is
+    for, precisely so the decision to let something edit source stays the user's.
+
+    Args:
+        args: Parsed arguments.
+        suite: The filtered suite.
+        out_dir: Where bundles are written.
+
+    Returns:
+        `EXIT_TAMPERED` when the loop aborted, `EXIT_FAILED` when the final round
+        still has a failure, `EXIT_OK` otherwise.
+    """
+    from .loop import RefinementLoop
+
+    report = RefinementLoop(
+        suite,
+        max_rounds=args.rounds,
+        stop_when=args.stop_when or "no_new_failures",
+        out_dir=out_dir,
+        judge=args.judge,
+        judge_options=_judge_options(args),
+        no_baseline=args.no_baseline,
+    ).run()
+
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True, default=str))
+    else:
+        print(report.markdown())
+
+    if report.aborted:
+        print(f"alc run: {report.abort_reason}", file=sys.stderr)
+        return EXIT_TAMPERED
+    last = report.rounds[-1] if report.rounds else None
+    return EXIT_OK if last and last.failed == 0 else EXIT_FAILED
 
 
 def _shared_baseline(cache: dict[str, Any], scenario: Any, out_dir: Path) -> Any:
@@ -292,7 +318,7 @@ def _shared_baseline(cache: dict[str, Any], scenario: Any, out_dir: Path) -> Any
             strict_schema=False,
         )
         cache[key] = engine.run(
-            _resolve_entrypoint(scenario.entrypoint, engine),
+            resolve_entrypoint(scenario.entrypoint, engine),
             inputs=scenario.inputs,
             initial_state=dict(scenario.initial_state or {}) or None,
             scenario_id=f"{scenario.id}.baseline",
@@ -344,7 +370,7 @@ def _selected(scenario_id: str, pattern: str | None) -> bool:
     return fnmatch(scenario_id, pattern) or fnmatch(scenario_id, f"*{pattern}*")
 
 
-def _build_fault(spec: dict[str, Any]) -> Any:
+def build_fault(spec: dict[str, Any]) -> Any:
     """Construct a fault from a scenario's fault spec.
 
     Args:
@@ -358,7 +384,7 @@ def _build_fault(spec: dict[str, Any]) -> Any:
     return fault_from_dict(spec)
 
 
-def _target_kwargs(spec: dict[str, Any]) -> dict[str, Any]:
+def target_kwargs(spec: dict[str, Any]) -> dict[str, Any]:
     """Translate a spec's target and trigger into `register_fault` arguments.
 
     Args:
@@ -377,7 +403,7 @@ def _target_kwargs(spec: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _resolve_entrypoint(entrypoint: Any, engine: Any) -> Any:
+def resolve_entrypoint(entrypoint: Any, engine: Any) -> Any:
     """Import a ``module:attr`` entrypoint, building it when it wants the engine.
 
     A vanilla agent's tools have to be wrapped by *this run's* engine before any tool

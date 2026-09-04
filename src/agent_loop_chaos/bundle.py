@@ -673,7 +673,17 @@ def write_bundle(
     return written
 
 
-def write_suite_json(out_dir: Path, results: Sequence[ChaosResult], *, seed: int) -> str:
+def write_suite_json(
+    out_dir: Path,
+    results: Sequence[ChaosResult],
+    *,
+    seed: int,
+    loop: Any = None,
+    rounds_planned: int = 1,
+    status: str = "completed",
+    current: str | None = None,
+    planned: Sequence[str] | None = None,
+) -> str:
     """Write the suite-level summary.
 
     Written at `schema_version` **1.0** here. Phase 07 makes it live and bumps it to
@@ -684,8 +694,14 @@ def write_suite_json(out_dir: Path, results: Sequence[ChaosResult], *, seed: int
 
     Args:
         out_dir: The suite output directory.
-        results: Every scenario's result.
+        results: The final round's results.
         seed: The suite seed.
+        loop: A `LoopReport`, when a refinement loop produced these results. Its
+            presence is what bumps the document to `1.1`.
+        rounds_planned: `max_rounds`, so a consumer can render progress.
+        status: `running`, `completed` or `aborted`.
+        current: The scenario executing right now, for a live document.
+        planned: Scenario ids the run intends to execute.
 
     Returns:
         The path written.
@@ -741,6 +757,23 @@ def write_suite_json(out_dir: Path, results: Sequence[ChaosResult], *, seed: int
             r.artifacts["agent_task"] for r in results if r.artifacts.get("agent_task")
         ],
     }
+
+    if loop is not None:
+        # D-25 versions the field sets once: the loop fields and the live-progress
+        # fields arrive together at 1.1, rather than being bolted onto 1.0.
+        payload["schema_version"] = "1.1"
+        payload["status"] = "aborted" if getattr(loop, "aborted", False) else status
+        payload["planned"] = list(planned or [str(r.scenario_id) for r in results])
+        payload["current"] = current
+        payload["round"] = len(loop.rounds)
+        payload["rounds_planned"] = rounds_planned
+        payload["rounds"] = [r.to_dict() for r in loop.rounds]
+        payload["flipped"] = loop.flipped
+        payload["regressions"] = list(loop.regressions)
+        payload["tasks_written"] = [str(p) for p in loop.tasks_written]
+        payload["wall_ms"] = loop.wall_ms
+        payload["tamper"] = dict(loop.tamper)
+
     path = out_dir / "suite.json"
     path.write_text(_json(payload, indent=2), encoding="utf-8")
     return str(path)

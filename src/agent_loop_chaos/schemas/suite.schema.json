@@ -1,0 +1,209 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/dilipg/agent-loop-chaos/schemas/suite.schema.json",
+  "title": "SuiteResult",
+  "description": "What a suite run writes to <out_dir>/suite.json. This is the file CI, an optimizer, the refinement loop and the dashboard all poll, which is why it has a schema of its own (docs/DECISIONS.md D-25). Field sets are versioned once: 1.0 is written at suite end by a single-round run; 1.1 adds the refinement-loop fields and the live-progress fields together. Evolution is additive, so a 1.0 document still validates here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "started_at",
+    "finished_at",
+    "seed",
+    "passed",
+    "failed",
+    "skipped",
+    "failure_modes",
+    "coverage",
+    "results",
+    "worst",
+    "tasks_written"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+$",
+      "examples": ["1.1"]
+    },
+    "status": {
+      "enum": ["running", "completed", "aborted"],
+      "description": "1.1. Absent in a 1.0 document. `aborted` means the run stopped early -- a control scenario failed, or tampering was detected."
+    },
+    "started_at": {
+      "type": "string",
+      "description": "ISO-8601. Empty string when the suite selected no scenarios."
+    },
+    "finished_at": {
+      "type": ["string", "null"],
+      "description": "Null while `status` is `running`. A timing field; never read by decision logic."
+    },
+    "seed": {
+      "type": "integer"
+    },
+    "planned": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "1.1. Scenario ids the run intends to execute, in order, known before the first one starts."
+    },
+    "current": {
+      "type": ["string", "null"],
+      "description": "1.1. The scenario executing right now, or null when none is."
+    },
+    "round": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "1.1. Which refinement round produced this document. 1 for a single-round run."
+    },
+    "rounds_planned": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "1.1. `max_rounds`, so a consumer can render progress before the loop ends."
+    },
+    "passed": {"type": "integer", "minimum": 0},
+    "failed": {"type": "integer", "minimum": 0},
+    "skipped": {"type": "integer", "minimum": 0},
+    "failure_modes": {
+      "type": "object",
+      "additionalProperties": {"type": "integer"},
+      "description": "Histogram over failing scenarios only."
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": {"type": "integer"},
+      "description": "Fault types that actually fired, and how often. This namespace is fault kinds and nothing else (D-25) -- judge metrics are top-level fields."
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["scenario_id", "run_id", "success", "failure_mode", "severity"],
+        "properties": {
+          "scenario_id": {"type": ["string", "null"]},
+          "run_id": {"type": "string"},
+          "success": {"type": "boolean"},
+          "failure_mode": {"$ref": "chaos_report.schema.json#/properties/failure_mode"},
+          "severity": {"enum": ["critical", "high", "medium", "low", "info"]},
+          "report": {"type": ["string", "null"]},
+          "agent_task": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "worst": {
+      "type": "array",
+      "items": {"type": ["string", "null"]},
+      "description": "The first few failing scenario ids, for a one-line CI summary."
+    },
+    "tasks_written": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "AGENT_TASK.md paths. This is the product: hand these to a coding agent."
+    },
+    "rounds": {
+      "type": "array",
+      "description": "1.1. One entry per completed refinement round.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["round", "passed", "failed"],
+        "properties": {
+          "round": {"type": "integer", "minimum": 1},
+          "passed": {"type": "integer", "minimum": 0},
+          "failed": {"type": "integer", "minimum": 0},
+          "wall_ms": {"type": "integer", "minimum": 0},
+          "failure_modes": {
+            "type": "object",
+            "additionalProperties": {"type": "integer"}
+          },
+          "outcomes": {
+            "type": "object",
+            "additionalProperties": {
+              "enum": [
+                "pass",
+                "fail",
+                "flipped_to_pass",
+                "flipped_to_fail",
+                "still_failing",
+                "skipped"
+              ]
+            },
+            "description": "Scenario id to its classification in this round."
+          }
+        }
+      }
+    },
+    "flipped": {
+      "type": "array",
+      "description": "1.1. Scenarios that went from failing to passing, and when. A flip whose plan or scenario file changed is NOT here -- it is a regression (docs/05 section 9).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["scenario_id", "round"],
+        "properties": {
+          "scenario_id": {"type": "string"},
+          "round": {"type": "integer", "minimum": 1}
+        }
+      }
+    },
+    "regressions": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "1.1. Human-readable lines. Covers both a scenario that went from passing to failing and a scenario that 'passed' only after being modified."
+    },
+    "judge_disagreement_rate": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Fraction of judged runs where the model's classification contradicted the probes. The probes won; a high rate means the probes or the judge prompt need work (docs/05 section 7)."
+    },
+    "judge_latency_ms_total": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total time spent in judge calls, so nobody is surprised by suite wall-time (docs/05 section 10)."
+    },
+    "wall_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "1.1. Total wall time across every round. A timing field."
+    },
+    "tamper": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "1.1. The integrity record. A coding agent that 'fixes' a failure by weakening the scenario is the failure mode this exists to catch, and it is not hypothetical (docs/05 section 9).",
+      "required": ["probes_sha256", "probes_changed", "scenarios"],
+      "properties": {
+        "probes_sha256": {
+          "type": "string",
+          "description": "Hash of the installed probe module's source, taken each round."
+        },
+        "probes_changed": {
+          "type": "boolean",
+          "description": "True when the probe module's hash changed mid-loop."
+        },
+        "control_failed": {
+          "type": ["string", "null"],
+          "description": "The id of a control scenario that failed, which aborts the loop."
+        },
+        "modified": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Scenario ids whose plan hash, file hash or must_not list changed between rounds."
+        },
+        "scenarios": {
+          "type": "object",
+          "description": "Scenario id to its integrity hashes, as of the latest round.",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["plan_hash"],
+            "properties": {
+              "plan_hash": {"type": "string"},
+              "scenario_file": {"type": ["string", "null"]},
+              "must_not": {"type": "string"}
+            }
+          }
+        }
+      }
+    }
+  }
+}

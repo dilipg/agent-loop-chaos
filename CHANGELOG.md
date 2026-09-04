@@ -9,6 +9,41 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+### M7 — the refinement loop
+
+- `loop.py`: `RefinementLoop`, `LoopReport`, `RoundResult`, and the shared `run_suite`
+  that `alc run` now also uses (D-74). Rounds re-run the **whole** suite with the same
+  seeds, so a fix that broke something else is caught.
+- Tamper detection, per `docs/05` §9. Before each round the loop fingerprints every
+  scenario — its `plan_hash`, its source file, its `must_not` list — plus the probe
+  module's own source. A scenario that flips to pass *after* its fingerprint changed
+  is reported in `regressions`, never as a fix. A failing `control.*` scenario aborts
+  the loop with exit code 4 (D-75, D-26).
+- `schemas/suite.schema.json`: `suite.json` gets a real schema, since the loop and the
+  dashboard both consume it (D-25). Bumped to `1.1` with `rounds`, `flipped`,
+  `regressions`, `tamper`, `wall_ms` and the live-progress fields phase 10 needs. A
+  1.0 document still validates.
+- `alc run --rounds N [--stop-when …]`: runs the loop with no hand-off hook, prints
+  the markdown table, exits 1 on a remaining failure and 4 on tampering.
+- `examples/refine_with_claude_code.py`: read-only by default. `--apply` refuses a
+  dirty tree or `main`/`master`, prints a loud warning first, and degrades to printing
+  the work orders when no coding-agent CLI is installed.
+- `tests/golden/loop_report.md` pins the round-by-round table. 78 new tests.
+
+Fixed along the way:
+
+- **`tasks_written` listed one work order per round per scenario** (D-76) — eight
+  paths for four bugs after two rounds, half of them describing superseded runs. Now
+  keyed by scenario, holding the newest, and a scenario that starts passing drops out.
+- **A flip and a regression were invisible after the round they happened in** (D-77).
+  The outcome column read from the last round only, so "fixed in r2" became "passing"
+  by r3 and "REGRESSION in r2" became "still failing" — the two facts a human scans
+  the table for. Caught by writing the golden.
+- **`ChaosEngine.replay`'s stub claimed M7** (D-78); the roadmap assigns it to M9.
+- `Scenario` gains `source_path`, set by `load_suite`, so the loop can hash the file a
+  scenario came from.
+
+
 ### M6 — the judge: rules, SLM, ensemble
 
 - `judges/base.py`: `Verdict`, `JudgeMeta`, `JudgeEvidence` with the `docs/05` §2 caps,
