@@ -26,3 +26,17 @@ coverage.xml
 
 # OS
 .DS_Store
+
+# `alc init` scaffolds this into whatever directory it is run from. Running the
+# smoke test from the repo root committed one in M9; ignoring it means the next
+# person's `alc init` does not end up in a commit either.
+chaos/
+
+# iCloud conflict copies. Desktop & Documents sync duplicates a file being written
+# as `name 2.ext`, and a stray `_editable_impl 3.pth` silently breaks the editable
+# install. Ignored so they never reach a commit; still worth deleting.
+* [0-9].py
+* [0-9].md
+* [0-9].json
+* [0-9].yaml
+* [0-9].pth
