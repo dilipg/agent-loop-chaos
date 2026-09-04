@@ -271,11 +271,11 @@ scenarios:
         params: { from_node: summarize, force_to: respond }
 
   # ------------------------------------------------------------------ resume safety
-  - id: resume.duplicate_hold
+  - id: resume.checkpoint_rollback
     description: >
-      The booking step runs twice, as a checkpoint replay would make it. Without an
-      idempotency key the traveller ends up holding two seats, and nothing in the
-      answer says so.
+      A committed node is replayed from the state it entered with, as a restored
+      checkpoint would make it. Without an idempotency key the traveller ends up
+      holding two seats, and nothing in the answer says so.
     must_not: [duplicate_side_effect]
     # The traveller asks to book, so both trees reach the booking step and the only
     # difference between them is the idempotency key.
@@ -290,15 +290,13 @@ scenarios:
       # (D-108). Two calls, same arguments, two distinct holds.
       idempotent_effects: [hold_booking]
     faults:
-      # `DuplicateSideEffectFault`, not `CheckpointRollbackFault`: the checkpoint
-      # *crossing* exists (D-106) but `resume_from_checkpoint` has no implementation,
-      # so that fault records a skip and the scenario would prove nothing. This one
-      # produces the same observable -- the booking step runs twice -- which is the
-      # part the agent's design has to survive.
-      - type: DuplicateSideEffectFault
-        target: { tool: hold_booking }
+      # `(node, post)` is where the replay is performable: LangGraph writes the
+      # checkpoint after the node has returned, so a same-node replay cannot be driven
+      # from the checkpointer without re-entering the graph (D-111).
+      - type: CheckpointRollbackFault
+        target: { layer: node, node: respond, phase: post }
         trigger: { on_call: 1 }
-        params: { times: 2 }
+        params: { rollback_steps: 1, times: 1 }
 
   # ------------------------------------------------------------------- control run
   - id: control.dry_run

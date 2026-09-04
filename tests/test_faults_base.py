@@ -350,13 +350,20 @@ class TestAnUnsupportedActionIsNotAFire:
         from agent_loop_chaos import ChaosEngine
         from agent_loop_chaos.adapters.langgraph import instrument_graph
         from agent_loop_chaos.faults import CheckpointRollbackFault
-        from agent_loop_chaos.targeting import Trigger
+        from agent_loop_chaos.targeting import Target, Trigger
         from tests.fakes.lg_agent import build
 
         engine = ChaosEngine(
             seed=1337, out_dir=tmp_path, write_bundle=False, strict_schema=False, judge="rules"
         )
-        engine.register_fault(CheckpointRollbackFault(rollback_steps=1), trigger=Trigger(on_call=1))
+        # Targeted at the *checkpoint* layer specifically. Since D-111 the fault also
+        # accepts `(node, post)`, where the replay is performable -- so an untargeted
+        # registration fires there and this would be testing nothing.
+        engine.register_fault(
+            CheckpointRollbackFault(rollback_steps=1),
+            target=Target(layer="checkpoint", phase="post"),
+            trigger=Trigger(on_call=1),
+        )
         compiled = build(lambda prompt: "warm").compile(checkpointer=MemorySaver())
         graph = instrument_graph(compiled, engine, intercept_checkpoints=True)
         return engine.run(graph, inputs={"query": "x"}, scenario_id="unsupported")

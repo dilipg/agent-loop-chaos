@@ -580,7 +580,16 @@ class CheckpointRollbackFault(Fault):
     """
 
     kind: ClassVar[str] = "CheckpointRollbackFault"
-    accepts: ClassVar[frozenset[tuple[Layer, Phase]]] = frozenset({("checkpoint", "post")})
+    # `(node, post)` is where the replay is actually performable: LangGraph calls the
+    # checkpointer's `put` *after* the node has returned, so a same-node replay cannot
+    # be driven from there without re-entering the graph. `route_node` still holds the
+    # node's function and the state it entered with -- which is exactly a checkpoint --
+    # so restoring that state and calling the function again is the rollback (D-111).
+    # `(checkpoint, post)` stays: it is where a true multi-step resume belongs when an
+    # adapter can perform one.
+    accepts: ClassVar[frozenset[tuple[Layer, Phase]]] = frozenset(
+        {("checkpoint", "post"), ("node", "post")}
+    )
     severity_hint: ClassVar[Severity] = "critical"
     performs_real_action: ClassVar[bool] = True
 

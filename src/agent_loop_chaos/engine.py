@@ -142,6 +142,11 @@ class _RunState:
     facts_messages: list[str] = field(default_factory=list)
     faulted_seqs: set[int] = field(default_factory=set)
     harness_invocation_seqs: set[int] = field(default_factory=set)
+    #: Non-zero while a harness-caused node replay is running. Everything the replayed
+    #: body does is the harness's doing, so its tool calls are attributed to us (R1) --
+    #: otherwise `duplicate_side_effect` fires on the *correct* agent too, since both
+    #: trees call the tool twice and only the results differ.
+    replay_depth: int = 0
     harness_raised_seqs: set[int] = field(default_factory=set)
     keys_removed: set[str] = field(default_factory=set)
     keys_retyped: set[str] = field(default_factory=set)
@@ -1137,7 +1142,7 @@ class ChaosEngine:
 
             # Checked here rather than where a terminal action is resolved: that
             # happens after this loop, and by then the fire is already recorded.
-            unsupported = outcome.action in UNSUPPORTED_ACTIONS
+            unsupported = not _action_is_performable(outcome.action, crossing.layer)
             if unsupported or (
                 outcome.action == "noop" and not outcome.delay_ms and not armed.fault.noop_is_a_fire
             ):
@@ -1325,6 +1330,12 @@ class ChaosEngine:
         if outcome.action == "invoke_target":
             crossing.invoke_times = max(1, int(outcome.params.get("times", 2)))
             crossing.invoke_return_from = str(outcome.params.get("return_from", "first"))
+            return value
+        if outcome.action == "resume_from_checkpoint" and crossing.layer == "node":
+            # The node has committed and `route_node` still holds its function and the
+            # state it entered with. Re-running from that state is the rollback, and it
+            # re-runs the side effects -- which is the finding (D-111).
+            crossing.replay_times = max(1, int(outcome.params.get("times", 1)))
             return value
         # resume_from_checkpoint needs a checkpointer, so it lands with the LangGraph
         # adapter in M5 (D-10).
@@ -1801,8 +1812,66 @@ class ChaosEngine:
         except LimitExceeded:
             raise
         except BaseException as exc:
-            return self._error_phase(crossing, exc, time.perf_counter())
-        return self._node_post(crossing, update)
+            return self._error_phase(crossing, _from_target(exc), time.perf_counter())
+        result = self._node_post(crossing, update)
+        return self._replay_node(fn, crossing, working, args, kwargs, result)
+
+    def _replay_node(
+        self,
+        fn: Callable[..., Any],
+        crossing: Crossing,
+        entry_state: Any,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any] | None,
+        result: Any,
+    ) -> Any:
+        """Re-run a committed node from the state it entered with.
+
+        That state is the checkpoint: restoring it and calling the node again is what
+        a rollback does, and it re-runs the node's side effects -- which is the whole
+        finding. The replayed invocations are attributed to the harness (R1), so
+        `duplicate_side_effect` does not fire on them; what catches the agent is
+        `idempotent_effects`, which asks whether two identical calls produced two
+        effects (D-108).
+
+        Args:
+            fn: The node's function.
+            crossing: The node crossing, carrying `replay_times`.
+            entry_state: The state the node was entered with.
+            args: Extra positional arguments.
+            kwargs: Extra keyword arguments.
+            result: What the first pass produced.
+
+        Returns:
+            The last replay's update, since a restored checkpoint means the replay is
+            what actually proceeds. `result` unchanged when nothing was replayed.
+        """
+        if crossing.replay_times < 1:
+            return result
+        state = self._state()
+        for repeat in range(1, crossing.replay_times + 1):
+            self._emit(
+                Event(
+                    kind="checkpoint_restored",
+                    level="minimal",
+                    layer="node",
+                    name=crossing.name,
+                    step=crossing.step,
+                    payload={"replay": repeat, "of": crossing.replay_times},
+                )
+            )
+            self._record_harness_invocation(crossing, repeat)
+            state.replay_depth += 1
+            try:
+                result = fn(entry_state, *args, **(kwargs or {}))
+            except LimitExceeded:
+                raise
+            except BaseException as exc:
+                return self._error_phase(crossing, _from_target(exc), time.perf_counter())
+            finally:
+                state.replay_depth -= 1
+        state.history.setdefault(crossing.name, []).append(result)
+        return result
 
     async def aroute_node(
         self,
@@ -2122,6 +2191,9 @@ class ChaosEngine:
         state.pre_fault_history.setdefault(crossing.name, []).append(result)
         if crossing.layer == "tool":
             state.tool_history.setdefault(crossing.name, []).append(result)
+            if state.replay_depth > 0:
+                # Inside a harness-caused replay, so this call is ours (R1).
+                state.harness_invocation_seqs.add(state.ctx.trace._seq)
         crossing.phase = "post"
         crossing.result = result
         duration = (time.perf_counter() - started) * 1000
@@ -3607,7 +3679,27 @@ def _from_target(exc: BaseException) -> BaseException:
 #: so it is recorded as a skip rather than a fire -- the same reasoning as D-95.
 #: `resume_from_checkpoint` needs a replay the LangGraph adapter does not implement:
 #: the checkpoint *crossing* exists (D-106), the resume does not.
-UNSUPPORTED_ACTIONS: frozenset[str] = frozenset({"resume_from_checkpoint"})
+#: `resume_from_checkpoint` is performable at a `(node, post)` crossing and not at a
+#: `(checkpoint, post)` one -- the checkpointer's `put` runs after the node returned,
+#: so a replay from there would mean re-entering the graph. The check is per crossing
+#: rather than a flat action list.
+UNSUPPORTED_ACTIONS: frozenset[str] = frozenset()
+
+
+def _action_is_performable(action: str, layer: str) -> bool:
+    """Report whether the engine can carry out an action at this layer.
+
+    Args:
+        action: The outcome's action.
+        layer: The crossing's layer.
+
+    Returns:
+        False when the action would be a silent no-op, so the caller records a skip
+        naming it rather than counting a fire (D-109).
+    """
+    if action == "resume_from_checkpoint":
+        return layer == "node"
+    return action not in UNSUPPORTED_ACTIONS
 
 
 #: Frames that own nothing. A failure inside them belongs to their caller.

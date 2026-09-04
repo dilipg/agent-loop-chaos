@@ -1627,3 +1627,33 @@ withstands is a robustness result; the suite has zero scenarios whose faults nev
 
 Demo suite: **19 failures across 7 distinct modes** on `trip_planner`, **0** on
 `trip_planner_fixed`.
+
+### D-111 — `resume_from_checkpoint` replays at the node boundary (closes D-109's gap)
+*Affects `faults/state.py`, `engine.py`, `context.py`, phase 9.3.*
+
+D-106 wired the checkpoint *crossing*; the resume stayed unimplemented, so the fault
+recorded an honest skip and the demo covered the same observable with a different
+fault. That is now closed.
+
+**Where the replay happens, and why.** LangGraph calls the checkpointer's `put`
+*after* the node has already returned, so a same-node replay cannot be driven from
+there without re-entering the graph. `route_node` still holds the node's function and
+the state it entered with — and that state *is* a checkpoint. Restoring it and calling
+the function again is the rollback, and it re-runs the node's side effects, which is
+the entire finding.
+
+So `CheckpointRollbackFault` accepts `("node", "post")` as well. `("checkpoint",
+"post")` stays for a true multi-step resume, and asking for one there still records a
+skip naming the action (D-109) rather than pretending.
+
+**The attribution that makes it correct.** `state.replay_depth` is non-zero while a
+replayed body runs, and every tool crossing inside it is added to
+`harness_invocation_seqs`. Without that, `duplicate_side_effect` fires on the
+**correct** agent too: both trees call the booking tool twice under a replay, and only
+the *results* differ. R1 says a probe never fires on what the harness caused, and a
+harness-caused replay causes everything the replayed body does.
+
+What catches the buggy tree is `idempotent_effects` (D-108) — two identical calls,
+two distinct holds. `resume.checkpoint_rollback` is back in the demo suite under its
+own fault, failing the buggy tree with `duplicate_side_effect` and passing the fixed
+one.

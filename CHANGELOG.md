@@ -9,6 +9,20 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+### `resume_from_checkpoint` implemented (post-0.1.0)
+
+**D-111** — the replay happens at the node boundary, not in the checkpointer.
+LangGraph writes the checkpoint *after* the node returned, so a same-node replay
+cannot be driven from `put` without re-entering the graph; `route_node` still holds
+the node's function and the state it entered with, and that state is the checkpoint.
+
+The attribution matters as much as the replay: `replay_depth` marks everything a
+replayed body does as the harness's (R1). Without it `duplicate_side_effect` fires on
+the **correct** agent too — both trees call the booking tool twice under a replay, and
+only the results differ. `idempotent_effects` is what separates them.
+
+`resume.checkpoint_rollback` is back in the demo under its own fault.
+
 ### Closing the last two gaps (post-0.1.0)
 
 - **D-108** `idempotent_effects`, a new `expect` check. `duplicate_side_effect` counts
@@ -157,11 +171,10 @@ on the *correct* tree rather than the buggy one.
 
 ### Known gaps
 
-- `resume_from_checkpoint` is unimplemented. D-106 wired the checkpoint *crossing*;
-  replaying a committed node from an earlier checkpoint is re-entrant work the
-  LangGraph adapter does not do. The fault records an honest skip naming the action
-  rather than reporting a fire (D-109), and the demo covers the same observable with
-  `DuplicateSideEffectFault`.
+- A *multi-step* `resume_from_checkpoint` — rolling back further than the node that
+  just committed — is still unimplemented at the `(checkpoint, post)` crossing, and
+  asking for one there records a skip naming the action rather than pretending
+  (D-109). The single-node replay that the fault is actually for works (D-111).
 - Demo weakness #12 is exercised and survived: the state fault fires and the graph's
   own routing supplies a location before `summarize` is reachable. A robustness
   result, not a dead scenario — the suite has none of those.

@@ -124,8 +124,12 @@ class TestTheRollbackFaultReachesIt:
         unimplemented action.
         """
         engine = ChaosEngine(seed=1337, out_dir=tmp_path, judge="rules", strict_schema=False)
+        # The checkpoint layer specifically: since D-111 the fault also accepts
+        # `(node, post)`, where the replay *is* performable.
         engine.register_fault(
-            CheckpointRollbackFault(rollback_steps=1, times=1), trigger=Trigger(on_call=1)
+            CheckpointRollbackFault(rollback_steps=1, times=1),
+            target=Target(layer="checkpoint", phase="post"),
+            trigger=Trigger(on_call=1),
         )
         result = engine.run(
             _graph(engine),
