@@ -303,27 +303,70 @@ def extract_code_pointers(
         pointers.extend(reversed(frames))
 
     if not pointers:
-        for event in trace:
-            if event.get("kind") != "fault_fired":
-                continue
-            name = event.get("name")
-            if not name:
-                continue
-            pointers.append(
+        pointers.extend(_pointers_from_fires(trace))
+    return pointers
+
+
+def _pointers_from_fires(trace: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Point at the code that consumed a faulted value, with no exception to go on.
+
+    A crash hands you a traceback. A **silent wrong answer** -- the commonest mode,
+    and the one this library exists to find -- hands you nothing, so this section used
+    to render as "no pointer met the confidence floor" for exactly the findings that
+    most needed one.
+
+    The engine records the innermost user frame at each `fault_fired`, which is the
+    frame about to receive the changed value. That is a real file and line the
+    interpreter reported, so it clears the confidence floor; it is still weaker than a
+    traceback, which is why a crash's frames are preferred and this only runs when
+    there are none.
+
+    Args:
+        trace: The loaded trace.
+
+    Returns:
+        At most one pointer per faulted tool, newest first.
+    """
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for event in trace:
+        if event.get("kind") != "fault_fired":
+            continue
+        name = str(event.get("name") or "")
+        caller = (event.get("payload") or {}).get("caller")
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        if isinstance(caller, Mapping) and caller.get("file"):
+            out.append(
+                {
+                    "file": str(caller["file"]),
+                    "line": caller.get("line"),
+                    "symbol": str(caller.get("symbol") or name),
+                    "why": (
+                        f"the fault changed what {name!r} returned, and this frame is "
+                        "what received it -- the missing check belongs here"
+                    ),
+                    # A real frame the interpreter reported, so it clears the render
+                    # floor; below a traceback, which is direct evidence of the break.
+                    "confidence": 0.6,
+                }
+            )
+        else:
+            out.append(
                 {
                     "file": f"<caller of {name}>",
                     "line": None,
-                    "symbol": str(name),
+                    "symbol": name,
                     "why": (
                         f"the fault changed what {name!r} returned; the caller that consumes "
                         "it is where the missing validation belongs"
                     ),
-                    # Advisory, not derived from a frame the interpreter reported.
+                    # No frame was captured, so this names a tool rather than a place.
                     "confidence": 0.4,
                 }
             )
-            break
-    return pointers
+    return out
 
 
 def extract_code_context(pointers: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:

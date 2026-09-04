@@ -242,3 +242,89 @@ def test_a_fault_can_reject_its_parameters_eagerly() -> None:
     with pytest.raises(ConfigError, match="needs `required`"):
         Picky()
     assert Picky(required=1).params() == {"required": 1}
+
+
+class TestANoopOutcomeIsNotAFire:
+    """A fault that decided to do nothing did not fire.
+
+    Several faults evaluate their trigger, look at the crossing, and correctly decide
+    there is nothing to do -- `RateLimitFault` inside its budget, `NodeSkipFault` at a
+    node it does not target, `MalformedToolCallFault` on a response with no tool call.
+    They recorded an honest note and then set `fired: True`.
+
+    That inflates `suite.json`'s `coverage`, which is read as "this fault kind was
+    exercised", and it suppresses the `no fault fired` warning for a scenario that
+    genuinely proved nothing. D-36 already says `skipped_reason` carries the reason a
+    fault did not fire; a no-op outcome is exactly that case, and its note is exactly
+    that reason.
+    """
+
+    @staticmethod
+    def _run(tmp_path: Any, fault: Any, **kw: Any) -> Any:
+        from agent_loop_chaos import ChaosEngine
+
+        engine = ChaosEngine(
+            seed=1337, out_dir=tmp_path, write_bundle=False, strict_schema=False, judge="rules"
+        )
+
+        @engine.tool(name="lookup", side_effecting=False)
+        def lookup() -> dict[str, Any]:
+            return {"value": 1}
+
+        def agent(question: Any = None) -> str:
+            lookup()
+            return "done"
+
+        engine.register_fault(fault, **kw)
+        return engine.run(agent, inputs={"question": "?"}, scenario_id="noop")
+
+    def test_a_noop_outcome_does_not_count_as_fired(self, tmp_path: Any) -> None:
+        from agent_loop_chaos.faults import RateLimitFault
+        from agent_loop_chaos.targeting import Target
+
+        # `after_calls: 5` with one call: the fault runs and correctly does nothing.
+        result = self._run(tmp_path, RateLimitFault(after_calls=5), target=Target(tool="lookup"))
+        record = result.injected_faults[0]
+        assert record["fired"] is False, "a no-op is not a fire"
+
+    def test_the_reason_is_kept(self, tmp_path: Any) -> None:
+        from agent_loop_chaos.faults import RateLimitFault
+        from agent_loop_chaos.targeting import Target
+
+        result = self._run(tmp_path, RateLimitFault(after_calls=5), target=Target(tool="lookup"))
+        reason = result.injected_faults[0]["skipped_reason"]
+        assert reason, "the fault's own note explains why nothing happened; keep it"
+        assert "budget" in reason or "rate" in reason.lower()
+
+    def test_a_real_mutation_still_counts_as_fired(self, tmp_path: Any) -> None:
+        from agent_loop_chaos.faults import ToolCorruptionFault
+        from agent_loop_chaos.targeting import Target
+
+        result = self._run(
+            tmp_path,
+            ToolCorruptionFault(mutation_type="drop_key", keys=["value"]),
+            target=Target(tool="lookup"),
+        )
+        record = result.injected_faults[0]
+        assert record["fired"] is True
+        # D-36: the key is present only when the fault did not fire.
+        assert record.get("skipped_reason") is None
+
+    def test_a_delay_counts_as_fired(self, tmp_path: Any) -> None:
+        """Nothing changed shape, but the run really was slowed."""
+        from agent_loop_chaos.faults import ToolLatencyFault
+        from agent_loop_chaos.targeting import Target
+
+        result = self._run(tmp_path, ToolLatencyFault(delay_ms=1), target=Target(tool="lookup"))
+        assert result.injected_faults[0]["fired"] is True
+
+    def test_a_raise_counts_as_fired(self, tmp_path: Any) -> None:
+        from agent_loop_chaos.faults import ToolErrorFault
+        from agent_loop_chaos.targeting import Target
+
+        result = self._run(
+            tmp_path,
+            ToolErrorFault(error_type="http_500", message="boom"),
+            target=Target(tool="lookup"),
+        )
+        assert result.injected_faults[0]["fired"] is True

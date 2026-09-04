@@ -1305,3 +1305,117 @@ along with `initial_state` minus the planted canary.
 
 A run recorded before this change replays without inputs, as it always did. There is
 no way to recover what it was asked, and inventing one would be worse.
+
+### D-95 — A no-op outcome is a skip with a reason, not a fire
+*Affects `engine.py`, `faults/base.py`, phase 9.1, refines D-36.*
+
+Several faults evaluate their trigger, look at the crossing, and correctly decide
+there is nothing to do: `RateLimitFault` inside its budget, `NodeSkipFault` at a node
+it does not target, `MalformedToolCallFault` on a response carrying no tool call. Each
+recorded an honest note — and then set `fired: true`.
+
+That inflates `suite.json`'s `coverage`, which is read as "this fault kind was
+exercised", and it suppresses the `no fault fired` warning for a scenario that proved
+nothing. D-36 already reserves `skipped_reason` for the reason a fault did not fire; a
+no-op outcome *is* that case, and the fault's own note is that reason.
+
+`Fault.noop_is_a_fire` is the exception, declared on the class rather than
+special-cased by name. `NoopFault` sets it: for the plumbing double, reaching the
+crossing is the observation. A delay also still counts — nothing changed shape, but
+the run really was slowed.
+
+Immediate effect: the four `llm.malformed_tool_call` rows in the demo suite turned out
+to be dead. The demo agent is a prompt-based graph with no `tool_calls` to malform, so
+the fault had been reporting `fired` on every crossing while changing nothing, and all
+four read as passing scenarios. Removed; `examples/patterns/function_calling` is the
+tree that actually exercises that fault.
+
+### D-96 — `error.raised_in` is populated, and stdlib frames are transparent
+*Affects `engine.py`, phase 9.1.*
+
+`probes.py` and `outcomes.py` both branch on `error["raised_in"] == "harness"`. It is
+how CLAUDE.md's "an engine bug must never be reported as an agent failure" is meant to
+be enforced. The schema declared the field. **The engine never wrote it**, so the
+branch was dead and every exception was attributed to the agent — including ours.
+
+Three things had to be right, and each was found by a failing sweep:
+
+1. **Read the innermost frame, not the outermost.** The outermost is always the engine
+   calling the agent; reading it blames the library for every crash.
+2. **Standard-library and site-packages frames are transparent.** A `JSONDecodeError`
+   raised inside `json/decoder.py` belongs to whoever called `json.loads`. Attributing
+   it to the harness files every agent's parse bug as our own.
+3. **A deliberately injected raise is the agent's failure.** `ToolErrorFault` raises
+   from a library frame by construction — that is where the interception point is —
+   and an agent that failed to handle it has failed. The exception is tagged
+   `_alc_injected` at the injection site and excluded before attribution.
+
+This immediately exposed a bad test: every assertion in `tests/judges/test_wiring.py`
+ran `engine.run(_scenario())`, passing the `Scenario` **object** as the target. No
+fault was registered and the engine raised `ConfigError: cannot inspect the signature
+of Scenario(...)` — which the suite had been reading as "the agent crashed". The whole
+class was asserting against a harness error. It now goes through `run_suite`.
+
+### D-97 — A pointer for a silent failure, and paths render relative
+*Affects `engine.py`, `report.py`, `bundle.py`, `tests/normalize.py`, phase 9.1.*
+
+`AGENT_TASK.md` section 4 promises a `file:line`, and the whole pitch is that a pointer
+turns a finding into a mechanical task. It came from the stack — so for a **silent
+wrong answer**, the commonest mode and the one this library exists to find, there was
+no exception and the section rendered "_no pointer met the confidence floor_".
+
+The engine now records the innermost user frame at each `fault_fired`: the frame about
+to receive the changed value. That is a real frame the interpreter reported, so it
+clears the floor at 0.6 — below a traceback, which is direct evidence, and used only
+when there are none.
+
+`bundle.display_path` renders a path relative to the working directory. An absolute
+`/Users/someone/...` in a work order is noise, and it also made the golden fixture
+machine-specific. `tests/normalize.py` gains `file` for the same reason.
+
+### D-98 — Every probe carries a negative control and a stated boundary
+*Affects `tests/probes/`, `probes.py`, phase 9.1.*
+
+Nine library bugs surfaced in phase 08 and **five failed on the correct tree, not the
+buggy one**. The probes decide pass/fail and had gone four milestones without a
+negative control, which is precisely where a false positive hides.
+
+`tests/probes/test_negative_controls.py` enforces two things per probe:
+
+- a test whose name says the probe does *not* fire, exercising its code path with a
+  correct agent — or an entry in `CONTROLLED_ELSEWHERE` naming the agent-level control
+  that covers it, capped at six so the exemption stays a debt rather than a design;
+- a docstring that states where the probe deliberately stays quiet. Fifteen of twenty
+  had never written that down, and a probe that documents only when it fires cannot be
+  reviewed for false positives at all.
+
+### D-99 — The full catalog is swept across every agent shape
+*Affects `tests/test_full_catalog.py`, phase 9.1.*
+
+`tests/test_patterns.py` runs each pattern against the one fault it declares, which
+proves that pattern's weakness is reachable and nothing about the other 26 faults.
+"The harness attaches to your loop however it is written" is the library's actual
+claim, so the sweep runs all 27 kinds against all 16 trees — 570 combinations —
+asserting the engine never raises into the agent, the report is always schema-valid,
+and a fault reporting `fired` actually did something.
+
+It deliberately does **not** assert that every fault breaks every agent. Most will not,
+and that is correct: a `StateDropFault` has nothing to drop in a stateless pipeline.
+What is not correct is a fault that no-ops while reporting coverage, which is what
+D-95 came out of.
+
+### D-100 — LLM cassettes ship (implements D-45)
+*Affects `cassettes.py`, `cli.py`, phase 9.1.*
+
+`Cassette` maps a hash of what was sent to what came back, so a suite against a real
+model reproduces. `--record CASSETTE` and `--replay-cassette CASSETTE` on `alc run`;
+`mode="auto"` records a miss and replays a hit while a scenario is being written.
+
+One rule shapes it: **a miss is never a guess.** In replay mode an unrecorded prompt
+raises `CassetteMiss` naming the file and the command to re-record, because inventing
+a response reintroduces exactly the non-determinism cassettes exist to remove. Past
+the end of a repeated prompt's recordings the last response repeats rather than
+raising: an extra call is a difference in the agent and belongs in a divergence
+report, not in a crash that hides every later finding.
+
+Entries are written sorted, because a cassette is committed and has to diff cleanly.

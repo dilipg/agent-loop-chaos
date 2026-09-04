@@ -25,6 +25,7 @@ import inspect
 import json
 import logging
 import platform
+import sys
 import time
 import traceback
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -1112,6 +1113,18 @@ class ChaosEngine:
             if outcome is None:
                 continue
 
+            if outcome.action == "noop" and not outcome.delay_ms and not armed.fault.noop_is_a_fire:
+                # The fault ran and correctly decided to do nothing -- inside its rate
+                # budget, at a node it does not target, on a response with no tool
+                # call. Counting that as a fire inflates `suite.json`'s coverage, which
+                # is read as "this fault kind was exercised", and it suppresses the
+                # "no fault fired" warning for a scenario that proved nothing. D-36
+                # already reserves `skipped_reason` for exactly this, and the fault's
+                # own note is the reason.
+                if not armed.record.fired:
+                    armed.record.skipped_reason = outcome.note or "the fault applied no change"
+                continue
+
             counters = state.ctx.counters
             counters.fires[armed.fault_id] = counters.fires.get(armed.fault_id, 0) + 1
             counters.last_fire_call[armed.fault_id] = crossing.call_index
@@ -1134,6 +1147,12 @@ class ChaosEngine:
                         "type": armed.record.type,
                         "action": outcome.action,
                         "note": outcome.note,
+                        # The user frame that is about to receive the changed value.
+                        # For a crash the traceback is better evidence; for a *silent*
+                        # wrong answer -- the commonest mode -- there is no traceback,
+                        # and without this the work order's "where to look" section is
+                        # empty for exactly the findings that most need it.
+                        "caller": _user_caller(),
                     },
                     tags={"fault_key": armed.record.fault_key},
                 )
@@ -1260,6 +1279,11 @@ class ChaosEngine:
             if not isinstance(error, BaseException):
                 error = RuntimeError(str(error) if error is not None else armed.record.type)
             state.harness_raised_seqs.add(state.ctx.trace._seq)
+            # Tag it so attribution can tell a *deliberate* injected raise from a
+            # library defect. Both are raised from library frames, but only the second
+            # is our bug -- and an injected raise the agent failed to handle is the
+            # agent's failure, which is the whole point of injecting it.
+            error._alc_injected = True
             raise _InjectedFailure(error)
         if outcome.action == "delay":
             delay_ms = min(outcome.delay_ms, state.ctx.limits.max_injected_delay_ms)
@@ -2854,10 +2878,17 @@ class ChaosEngine:
         Returns:
             A dict with the type, message and the tail of the traceback.
         """
+        text = "".join(traceback.format_exception(exc))
+        injected = bool(getattr(exc, "_alc_injected", False))
         return {
             "type": type(exc).__name__,
             "message": str(exc)[:1000],
-            "traceback": "".join(traceback.format_exception(exc))[-4000:],
+            "traceback": text[-4000:],
+            # `probes.py` and `outcomes.py` both branch on this to keep a library bug
+            # from being reported as an agent failure. It was read and never written,
+            # so the branch was dead and every exception was blamed on the agent --
+            # including ours.
+            "raised_in": "agent" if injected else raised_in(text),
         }
 
     def checkpoint_thread_id(self) -> str:
@@ -3388,6 +3419,80 @@ def _read_trace(path: Path) -> list[dict[str, Any]]:
         except ValueError:  # pragma: no cover - a truncated final line
             continue
     return out
+
+
+#: Frames that own nothing. A failure inside them belongs to their caller.
+_TRANSPARENT_FRAMES = ("site-packages", "/lib/python", "<frozen", "<string>")
+
+
+def raised_in(traceback_text: str) -> str:
+    """Attribute an exception to the agent or to the harness.
+
+    Reads the **innermost** frame -- where the exception was actually raised. The
+    outermost frame is always the engine calling the agent, so reading that would
+    attribute every crash to the library.
+
+    Args:
+        traceback_text: A formatted traceback.
+
+    Returns:
+        `"harness"` when the deepest frame is the library's own source, else
+        `"agent"`. An unparseable traceback defaults to `"agent"`: claiming a library
+        bug on no evidence would hide real agent failures behind `harness_error`.
+
+        A **deliberately injected** raise is excluded by the caller before this is
+        consulted. It comes from a library frame by construction -- that is where the
+        interception point is -- but an agent that failed to handle it has failed,
+        which is exactly what injecting it was for.
+    """
+    from .report import _FRAME_RE
+
+    files = [
+        match.group("file")
+        for line in traceback_text.splitlines()
+        if (match := _FRAME_RE.match(line))
+    ]
+    # Walk inward-out to the first frame that *owns* the failure. The standard
+    # library and installed packages are transparent: a `JSONDecodeError` raised
+    # inside `json/decoder.py` belongs to whoever called `json.loads`, and blaming
+    # the harness for it would file every agent's parse bug as our own.
+    for filename in reversed(files):
+        if "agent_loop_chaos" in filename:
+            return "harness"
+        if not any(marker in filename for marker in _TRANSPARENT_FRAMES):
+            return "agent"
+    return "agent"
+
+
+def _user_caller(*, depth: int = 40) -> dict[str, Any] | None:
+    """Find the innermost stack frame that belongs to the user's own code.
+
+    Args:
+        depth: How far up the stack to look before giving up.
+
+    Returns:
+        ``{file, line, symbol}`` for the nearest non-library frame, or `None`. The
+        library's own frames, the standard library and installed packages are all
+        skipped: a pointer into any of them sends a coding agent to fix nothing.
+    """
+    from .report import _is_user_frame
+
+    try:
+        frame: Any = sys._getframe(1)
+    except (AttributeError, ValueError):  # pragma: no cover - exotic interpreter
+        return None
+    for _ in range(depth):
+        if frame is None:
+            return None
+        filename = frame.f_code.co_filename
+        if _is_user_frame(filename):
+            return {
+                "file": filename,
+                "line": frame.f_lineno,
+                "symbol": frame.f_code.co_name,
+            }
+        frame = frame.f_back
+    return None
 
 
 def entrypoint_fingerprint(target: Any) -> str:

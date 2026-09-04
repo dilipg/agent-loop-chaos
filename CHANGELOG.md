@@ -9,7 +9,44 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
-Nothing yet.
+### Hardening (post-0.1.0)
+
+The three weakest parts of 0.1.0, addressed. Six more library bugs fell out of doing
+so, which is roughly the point.
+
+**Cassettes** (D-100, implements D-45). `Cassette` records `messages_hash -> response`
+so a suite against a real model reproduces. `alc run --record CASSETTE` /
+`--replay-cassette CASSETTE`. A miss in replay mode raises and names the command to
+re-record; inventing a response would reintroduce the flake this removes.
+
+**A pointer for silent failures** (D-97). `AGENT_TASK.md` section 4 rendered "_no
+pointer met the confidence floor_" for the commonest failure mode, because it read the
+stack and a silent wrong answer has none. The engine now records the user frame about
+to receive each faulted value. Paths render relative to the working directory.
+
+**Probe negative controls** (D-98, D-99). Five of nine bugs in phase 08 failed on the
+*correct* tree. Now enforced: every probe has a test proving it stays quiet on correct
+behaviour, and a docstring stating where — fifteen of twenty had never written that
+down. `tests/test_full_catalog.py` sweeps all 27 faults across all 16 pattern trees,
+570 combinations.
+
+Bugs found on the way:
+
+- **D-95** A fault that decided to do nothing reported `fired: true`, inflating
+  `suite.json` coverage and suppressing the "no fault fired" warning. It is now a skip
+  carrying the fault's own reason. This immediately exposed four dead rows in the demo
+  suite: `MalformedToolCallFault` had been "firing" against an agent with no
+  `tool_calls` to malform.
+- **D-96** `error.raised_in` was declared in the schema, read by two modules, and never
+  written — so "an engine bug must never be reported as an agent failure" was
+  unenforced. Fixing it exposed that every assertion in `tests/judges/test_wiring.py`
+  was running against a `ConfigError` from passing a `Scenario` object as the agent.
+- `alc init` had scaffolded a `chaos/` directory into the library's own repo during an
+  M9 smoke test. Removed, and gitignored along with iCloud's `name 2.ext` conflict
+  copies.
+
+Demo suite after these changes: **17 failures, 6 distinct modes** on `trip_planner`;
+**0** on `trip_planner_fixed`; **0** scenarios whose faults never fire.
 
 ## 0.1.0 — 2026-09-04
 

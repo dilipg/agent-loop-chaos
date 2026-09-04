@@ -220,6 +220,11 @@ class Fault(ABC):
     accepts: ClassVar[frozenset[tuple[Layer, Phase]]] = frozenset()
     severity_hint: ClassVar[Severity] = "medium"
     performs_real_action: ClassVar[bool] = False
+    #: Whether a `noop` outcome still counts as a fire. False for every real fault:
+    #: a no-op means "I looked at this crossing and there was nothing to do", which
+    #: is a skip with a reason, not coverage. `NoopFault` sets it True, because for
+    #: the plumbing double, reaching the crossing *is* the observation.
+    noop_is_a_fire: ClassVar[bool] = False
 
     def __init__(self, **params: Any) -> None:
         """Initialise and validate parameters eagerly.
@@ -389,6 +394,10 @@ class NoopFault(Fault):
     kind: ClassVar[str] = "NoopFault"
     accepts: ClassVar[frozenset[tuple[Layer, Phase]]] = ALL_PAIRS
     severity_hint: ClassVar[Severity] = "info"
+    #: Reaching the crossing *is* the observation here, so a no-op outcome still
+    #: counts as a fire. Every other fault's no-op means "I looked and there was
+    #: nothing to do", which is a skip with a reason.
+    noop_is_a_fire: ClassVar[bool] = True
 
     def apply(self, crossing: Crossing, ctx: FaultContext) -> FaultOutcome:
         """Record a no-change mutation and let the value through.

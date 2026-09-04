@@ -38,10 +38,10 @@
   "baseline": null,
   "code_pointers": [
     {
-      "file": "<caller of get_weather_data>",
-      "line": null,
-      "symbol": "get_weather_data",
-      "why": "the fault changed what 'get_weather_data' returned; the caller that consumes it is where the missing validation belongs"
+      "file": "<path>",
+      "line": 59,
+      "symbol": "agent",
+      "why": "the fault changed what 'get_weather_data' returned, and this frame is what received it -- the missing check belongs here"
     }
   ],
   "delta_vs_baseline": null,

@@ -20,6 +20,27 @@ from agent_loop_chaos.judges.rules import RuleJudge
 from agent_loop_chaos.scenarios import Scenario
 
 
+def _run(tmp_path: Path, judge: Any) -> Any:
+    """Run the drop-key scenario through the shared suite runner.
+
+    Not `engine.run(_scenario())`: that passes the `Scenario` *object* as the target,
+    so no fault is registered and the engine fails with a `ConfigError` about an
+    uninspectable callable. Every assertion in this file used to pass against that
+    -- including "the agent crashed" -- which `error.raised_in` exposed the moment it
+    started recording who actually raised.
+
+    Args:
+        tmp_path: Where to write the bundle.
+        judge: The judge to use.
+
+    Returns:
+        The scenario's result.
+    """
+    from agent_loop_chaos.loop import run_suite
+
+    return run_suite([_scenario()], out_dir=tmp_path, judge=judge)[0]
+
+
 def _scenario() -> Scenario:
     """The drop-key scenario against the naive fake: a known, reproducible crash."""
     return Scenario(
@@ -46,7 +67,7 @@ class TestEngineWiring:
         assert result.verdict["confidence"] == 1.0
 
     def test_judge_fields_reach_the_report_top_level(self, tmp_path: Path) -> None:
-        result = ChaosEngine(out_dir=tmp_path, judge="rules", seed=7).run(_scenario())
+        result = _run(tmp_path, "rules")
         assert result.refinement_hint == result.verdict["refinement_hint"]
         assert result.root_cause_hypothesis == result.verdict["root_cause_hypothesis"]
         assert result.suggested_fixes == result.verdict["suggested_fixes"]
@@ -61,7 +82,7 @@ class TestEngineWiring:
                 verdict.passed = not ev.passed  # the thing that must never work
                 return verdict
 
-        result = ChaosEngine(out_dir=tmp_path, judge=Liar(), seed=7).run(_scenario())
+        result = _run(tmp_path, Liar())
         assert result.verdict["passed"] == result.success
 
     def test_a_raising_judge_is_an_internal_error_not_a_crash(self, tmp_path: Path) -> None:
@@ -71,7 +92,7 @@ class TestEngineWiring:
             def judge(self, ev: JudgeEvidence) -> Verdict:
                 raise RuntimeError("judge exploded")
 
-        result = ChaosEngine(out_dir=tmp_path, judge=Exploding(), seed=7).run(_scenario())
+        result = _run(tmp_path, Exploding())
         assert result.verdict["narrative"]  # rules verdict stood in
         events = [
             json.loads(line) for line in Path(result.artifacts["trace"]).read_text().splitlines()
@@ -92,7 +113,7 @@ class TestEngineWiring:
             def judge(self, ev: JudgeEvidence) -> Verdict:
                 return RuleJudge().judge(ev)
 
-        result = ChaosEngine(out_dir=tmp_path, judge=Recording(), seed=7).run(_scenario())
+        result = _run(tmp_path, Recording())
         path = Path(result.artifacts["run_dir"]) / "judge.json"
         assert path.is_file()
         stored = json.loads(path.read_text())
@@ -100,18 +121,18 @@ class TestEngineWiring:
         assert stored["verdict"]["narrative"]
 
     def test_no_judge_json_when_the_judge_never_called_a_model(self, tmp_path: Path) -> None:
-        result = ChaosEngine(out_dir=tmp_path, judge="rules", seed=7).run(_scenario())
+        result = _run(tmp_path, "rules")
         assert not (Path(result.artifacts["run_dir"]) / "judge.json").is_file()
 
     def test_report_is_still_schema_valid(self, tmp_path: Path) -> None:
         from agent_loop_chaos.schema import validate_obj
 
-        result = ChaosEngine(out_dir=tmp_path, judge="rules", seed=7).run(_scenario())
+        result = _run(tmp_path, "rules")
         assert validate_obj(result.to_dict(), "report") == []
         assert validate_obj(result.verdict, "verdict") == []
 
     def test_agent_task_carries_the_judge_hint(self, tmp_path: Path) -> None:
-        result = ChaosEngine(out_dir=tmp_path, judge="rules", seed=7).run(_scenario())
+        result = _run(tmp_path, "rules")
         task = Path(result.artifacts["agent_task"]).read_text()
         assert result.refinement_hint is not None
         assert result.refinement_hint.split(":")[0][:40] in task
@@ -152,7 +173,7 @@ class TestAlcJudge:
 
     @staticmethod
     def _run(tmp_path: Path) -> Path:
-        result = ChaosEngine(out_dir=tmp_path, judge="rules", seed=7).run(_scenario())
+        result = _run(tmp_path, "rules")
         return Path(result.artifacts["run_dir"])
 
     def test_rewrites_the_bundle_with_a_new_judge_meta(self, tmp_path: Path) -> None:

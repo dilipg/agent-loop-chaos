@@ -88,7 +88,7 @@ crossing. Pointers below 0.5 confidence are omitted.
 
 | File | Line | Confidence | Why |
 |---|---|---|---|
-| _no pointer met the confidence floor_ | — | — | — |
+| `tests/test_golden.py` | 59 | 0.6 | the fault changed what 'get_weather_data' returned, and this frame is what received it -- the missing check belongs here |
 
 ## 5. Hypothesis and suggested direction — *written by a language model*
 

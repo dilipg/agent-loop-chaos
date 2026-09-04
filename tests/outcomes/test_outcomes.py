@@ -544,3 +544,68 @@ class TestRetriedThenSucceededIsReachable:
         )
         assert result.verdict["observed_behavior"] == "retried_then_succeeded"
         assert result.success is True
+
+
+class TestRaisedInIsPopulated:
+    """`error.raised_in` distinguishes the agent's crash from the library's.
+
+    `probes.py` and `outcomes.py` both branch on `error["raised_in"] == "harness"` —
+    it is how an engine bug is prevented from being reported as an agent failure, the
+    rule CLAUDE.md states outright. The engine never set it, so the branch was dead
+    and every exception was attributed to the agent, including ours.
+
+    The outermost frame is always the engine calling the agent, so attribution has to
+    read the *innermost* frame: where the exception was actually raised.
+    """
+
+    @staticmethod
+    def _crash(tmp_path: Any) -> Any:
+        from agent_loop_chaos import ChaosEngine
+
+        def agent(question: Any = None) -> str:
+            raise KeyError("temp_c")
+
+        engine = ChaosEngine(seed=1337, out_dir=tmp_path, write_bundle=False, judge="rules")
+        return engine.run(agent, inputs={"question": "?"}, scenario_id="crash")
+
+    def test_an_agent_crash_is_attributed_to_the_agent(self, tmp_path: Any) -> None:
+        result = self._crash(tmp_path)
+        assert result.error is not None
+        assert result.error["raised_in"] == "agent"
+
+    def test_the_agent_crash_classifies_as_crashed(self, tmp_path: Any) -> None:
+        assert self._crash(tmp_path).verdict["observed_behavior"] == "crashed"
+
+    def test_a_harness_raised_error_is_attributed_to_the_harness(self) -> None:
+        from agent_loop_chaos.engine import raised_in
+
+        library = (
+            "Traceback (most recent call last):\n"
+            '  File "/x/src/agent_loop_chaos/engine.py", line 1, in _execute\n'
+            "    output = instrumented()\n"
+            '  File "/x/src/agent_loop_chaos/faults/tool.py", line 9, in apply\n'
+            "    boom()\n"
+            "RuntimeError: a library bug\n"
+        )
+        assert raised_in(library) == "harness"
+
+    def test_the_outermost_frame_is_ignored(self) -> None:
+        """It is always the engine calling the agent; reading it blames us for everything."""
+        from agent_loop_chaos.engine import raised_in
+
+        agent_crash = (
+            "Traceback (most recent call last):\n"
+            '  File "/x/src/agent_loop_chaos/engine.py", line 1, in _execute\n'
+            "    output = instrumented()\n"
+            '  File "/x/examples/patterns/class_based.py", line 228, in run\n'
+            "    self.tools[name](ticket)\n"
+            "KeyError: 'nope'\n"
+        )
+        assert raised_in(agent_crash) == "agent"
+
+    def test_an_unparseable_traceback_defaults_to_the_agent(self) -> None:
+        """Blaming the library on no evidence would hide real agent failures."""
+        from agent_loop_chaos.engine import raised_in
+
+        assert raised_in("") == "agent"
+        assert raised_in("not a traceback at all") == "agent"

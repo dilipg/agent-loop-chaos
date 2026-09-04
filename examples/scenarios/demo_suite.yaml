@@ -192,14 +192,13 @@ scenarios:
         trigger: { on_call: 2 }
         params: { at_ratio: 0.55, cut: mid_json, set_finish_reason: length }
 
-  - id: llm.malformed_tool_call
-    faults:
-      - type: MalformedToolCallFault
-        target: { llm: default }
-        trigger: { on_call: 1 }
-        params: { mode: missing_arg }
-    matrix:
-      faults.0.params.mode: [missing_arg, unknown_tool, wrong_type, args_as_string]
+  # `llm.malformed_tool_call` lived here and was removed in phase 9.1.
+  # `MalformedToolCallFault` rewrites a `tool_calls` list, and this agent has none:
+  # it is a prompt-based graph whose nodes call tools directly. The fault correctly
+  # recorded "the response requested no tool call" on every crossing -- but it also
+  # reported `fired: true`, so all four matrix rows read as passing scenarios rather
+  # than as dead ones. Making a no-op outcome a skip (D-95) is what surfaced them.
+  # The pattern that *does* exercise this fault is `examples/patterns/function_calling`.
 
   - id: llm.empty_response
     description: The model returns nothing at all on the final turn.

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -74,6 +75,30 @@ OBSERVED_RULES: dict[str, str] = {
 
 _MIN_POINTER_CONFIDENCE = 0.5
 _EXCERPT_CHARS = 1200
+
+
+def display_path(path: str) -> str:
+    """Render a file path the way a reader would type it.
+
+    A work order is read next to a checkout, so `app/nodes.py:34` is useful and
+    `/Users/someone/src/proj/app/nodes.py:34` is noise -- and it also makes a golden
+    fixture machine-specific. A path outside the current tree is left absolute:
+    `../../../usr/lib/...` is worse than what it replaced.
+
+    Args:
+        path: The path, or a placeholder like `<caller of get_weather>`.
+
+    Returns:
+        The relative path when it is inside the working directory, else the input
+        unchanged.
+    """
+    if not path or path.startswith("<") or not os.path.isabs(path):
+        return path
+    try:
+        relative = os.path.relpath(path, os.getcwd())
+    except (OSError, ValueError):  # pragma: no cover - different drives on Windows
+        return path
+    return path if relative.startswith("..") else relative
 
 
 def _fence(text: str, marker: str = "|") -> str:
@@ -386,7 +411,8 @@ def _section_four(result: ChaosResult) -> str:
     for pointer in shown:
         line = pointer.get("line")
         lines.append(
-            f"| `{pointer.get('file')}` | {line if line is not None else '—'} "
+            f"| `{display_path(str(pointer.get('file') or ''))}` "
+            f"| {line if line is not None else '—'} "
             f"| {pointer.get('confidence')} | {pointer.get('why', '')} |"
         )
     if not shown:

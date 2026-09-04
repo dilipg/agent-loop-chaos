@@ -84,6 +84,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="how much payload detail to record (default: standard)",
     )
     run.add_argument("--filter", help="glob over scenario ids")
+    cassette = run.add_mutually_exclusive_group()
+    cassette.add_argument(
+        "--record",
+        metavar="CASSETTE",
+        help="record every model response to a cassette file, so the suite replays later",
+    )
+    cassette.add_argument(
+        "--replay-cassette",
+        dest="replay_cassette",
+        metavar="CASSETTE",
+        help="replay model responses from a cassette; never calls the model",
+    )
     run.add_argument(
         "--quiet", "-q", action="store_true", help="summary only, no per-scenario lines"
     )

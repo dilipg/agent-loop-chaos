@@ -52,6 +52,12 @@ PATH_KEYS: frozenset[str] = frozenset(
         "plan_path",
         "cmd",
         "suite_path",
+        # `code_pointers[].file` and `code_context[].file` are absolute paths into
+        # whoever's checkout produced the run. Before M9.1 the pointer section was
+        # usually empty on a silent failure, so no absolute path reached a golden;
+        # now that it points at a real frame, one does, and a golden carrying a
+        # machine path fails on every other machine.
+        "file",
     }
 )
 
