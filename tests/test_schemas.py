@@ -42,7 +42,7 @@ def test_every_schema_id_is_substituted(name: str) -> None:
     """No `$id` still carries the `OWNER` placeholder (D-39, D-50)."""
     schema_id = load_schema(name)["$id"]  # type: ignore[arg-type]
     assert "OWNER" not in schema_id
-    assert schema_id.startswith("https://github.com/dilipgdt/agent-loop-chaos/schemas/")
+    assert schema_id.startswith("https://github.com/dilipg/agent-loop-chaos/schemas/")
 
 
 def test_registry_is_built_once_and_covers_both_keys() -> None:

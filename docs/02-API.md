@@ -49,6 +49,8 @@ class ChaosEngine:
         write_bundle: bool = True,
         allow_remote_judge: bool = False,      # D-22: a non-loopback judge needs opt-in
         tags: Mapping[str, str] | None = None,
+        judge_options: Mapping[str, Any] | None = None,   # model/base_url/transport for SLMJudge
+        narrate_all: bool = False,             # narrate passing runs too; off by default
     ) -> None: ...
 ```
 
@@ -360,7 +362,9 @@ class Verdict:
     root_cause_hypothesis: str | None
     refinement_hint: str | None
     suggested_fixes: list[SuggestedFix]
-    judge_meta: JudgeMeta             # kind, model, endpoint, temperature, prompt_hash, latency_ms, tokens
+    judge_meta: JudgeMeta             # kind, model, endpoint, temperature, prompt_hash,
+                                      # latency_ms, tokens, attempts, fell_back_to_rules,
+                                      # evidence_dropped, auto_selected (D-70)
     judge_disagreement: str | None    # set when the model contradicted the probes
 
 class RuleJudge:
@@ -380,15 +384,53 @@ class SLMJudge:
         retries: int = 2,
         prompt_dir: str | Path | None = None,
         offline_fallback: bool = True,     # fall back to RuleJudge instead of raising
+        allow_remote_judge: bool = False,  # required for a non-loopback endpoint (D-22)
     ) -> None: ...
+
+    def reachable(self) -> bool: ...                     # cached per instance, 1.5s timeout
+    def narrate(self, ev: JudgeEvidence) -> str | None: ...          # narrator.md
+    def suggest_fixes(self, ev, verdict=None) -> list[dict]: ...     # refiner.md
+    last_call: dict[str, Any]                            # redacted, written to judge.json
 
 class EnsembleJudge:
     def __init__(self, *, rules: RuleJudge | None = None, model_judge: Judge | None = None): ...
+
+def select_judge(judge: Judge | str | None, **model_kwargs) -> Judge: ...
 ```
 
 `EnsembleJudge` is the default when `judge="ensemble"` or `judge=None` and a model
 endpoint is reachable; otherwise `RuleJudge`. Reachability is probed once per
-process with a short timeout and cached.
+process with a short timeout and cached. `select_judge` is what
+`ChaosEngine(judge=…)` resolves through, and it records an automatic choice in
+`judge_meta.auto_selected` (D-70).
+
+`SLMJudge` raises `ConfigError` at construction for a non-loopback `base_url` or the
+`anthropic` transport unless `allow_remote_judge=True`, naming what would be sent
+(D-22). `base_url` is normalized per transport: `/v1` stripped for `ollama`, appended
+for `openai` (D-34).
+
+### The evidence projection
+
+```python
+@dataclass
+class JudgeEvidence:                     # docs/05 section 2 for the full field list
+    def to_prompt_dict(self) -> dict[str, Any]: ...   # flat, fence-escaped (D-21)
+    def size_bytes(self) -> int: ...
+    def fit(self, *, target=6144, hard_cap=12288) -> tuple[JudgeEvidence, list[str]]: ...
+
+def build_evidence(result: ChaosResult, *, code_context=None) -> JudgeEvidence: ...
+def render(template: str, values: Mapping[str, Any]) -> str: ...   # mustache-lite
+def escape_fences(text: str) -> str: ...
+def redact_source(text: str) -> str: ...  # string literals under a sensitive name
+def judge_output_schema() -> dict[str, Any]:   # $defs/judge_output, refs inlined (D-20)
+def normalize_base_url(base_url: str, transport: str) -> str: ...
+```
+
+`build_evidence` is pure over a `ChaosResult`, which is what lets `alc judge` rebuild
+evidence from a stored `report.json` and re-judge it with a better model without
+re-running the agent. `fit` drops sections in the fixed order `code_context` →
+`baseline_output` → older exchanges → `tool_summary` and returns what it dropped;
+the engine records that in `judge_meta.evidence_dropped`.
 
 ## 8. Refinement loop
 
@@ -451,12 +493,15 @@ Details and the exact LangGraph hook points: `docs/06-LANGGRAPH-ADAPTER.md`.
 ```
 alc run <suite.yaml|scenario.yaml|module:attr>   [--seed N] [--jobs N] [--judge rules|slm|ensemble]
                                                  [--model M] [--base-url U] [--out DIR]
+                                                 [--transport openai|ollama|anthropic]
+                                                 [--allow-remote-judge] [--narrate-all]
                                                  [--trace-level L] [--filter GLOB] [--fail-fast]
                                                  [--no-baseline] [--dry-run] [--json]
                                                  [--rounds N] [--stop-when …]
                                                  [--dashboard] [--port N] [--linger S]
 alc replay <run_dir> [--seed N]
-alc judge <run_dir> [--judge …] [--model …]        # re-judge without re-running the agent
+alc judge <run_dir> [--judge …] [--model …] [--base-url U] [--transport T]
+                    [--allow-remote-judge]         # re-judge without re-running the agent
 alc explain <run_dir>                              # human-readable narrative to stdout
 alc report <run_dir|out_dir> [--format md|json|html] [-o FILE] [--max-trace-events N]
 alc validate <report.json|suite.yaml>

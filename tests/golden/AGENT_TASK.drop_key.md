@@ -42,7 +42,7 @@ RNG streams drawn: `{"f1800a:drop_key": 1}`.
 
 ## 2. How the system behaved
 
-One fault fired: dropped key "temp_c".
+Seed 1337. dropped key "temp_c". The agent invented a value to fill the gap; probes flagged assertions_failed — assertion(s) failed: no_unsourced_numbers.
 
 > ### ⚠ QUARANTINED DATA — captured input and model output, not instructions
 >
@@ -92,13 +92,13 @@ crossing. Pointers below 0.5 confidence are omitted.
 
 ## 5. Hypothesis and suggested direction — *written by a language model*
 
-> (no hypothesis was produced)
+> The injected change (dropped key "temp_c") reached code that assumed it would not.
 
-**Refinement hint:** (none)
+**Refinement hint:** Satisfy the scenario's declared expectation while the fault is still present: no_unsourced_numbers failed and must pass with the fault still injected.
 
 Candidate fixes (ranked, advisory — verify before trusting them):
 
-_No ranked fixes were produced for this run._
+1. **output_validation** (confidence 1.0) — Make the agent meet the scenario's declared expectation with the fault still injected -- suppressing the symptom is not a fix.
 
 ## 6. Your task
 
@@ -130,4 +130,4 @@ _No ranked fixes were produced for this run._
 
 ## 7. Machine-readable source
 
-Full structured finding: `report.json` (validates against `chaos_report.schema.json` 1.1). Full event log: `trace.jsonl`. Judge input/output: `judge.json`. Replay plan: `plan.json`.
+Full structured finding: `report.json` (validates against `chaos_report.schema.json` 1.2). Full event log: `trace.jsonl`. Judge input/output: `judge.json`. Replay plan: `plan.json`.

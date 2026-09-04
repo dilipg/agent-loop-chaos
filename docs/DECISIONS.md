@@ -925,3 +925,73 @@ After 0.1.0 is tagged the same change would be a MAJOR schema bump.
 The commit author name stays `dilipgdt`. It is a display name on existing commits,
 it identifies the right person, and rewriting history to change it would trade a real
 cost -- every commit hash -- for a cosmetic one.
+
+### D-70 — `judge_meta` gains `evidence_dropped` and `auto_selected`; report schema 1.2
+*Affects `judge_verdict.schema.json`, `chaos_report.schema.json`, `report.py`, phase 06.*
+
+Phase 06 requires two facts the schema had nowhere to put. `docs/05` §2 says budget
+enforcement must "record what was dropped in `judge_meta`", and the phase prompt says
+the automatic rules-vs-ensemble choice is "recorded in `judge_meta`" — but
+`judge_meta` sets `additionalProperties: false` and had neither field.
+
+Added `evidence_dropped` (array of section names, in drop order) and `auto_selected`
+(boolean). Both optional, so this is a MINOR bump: `SCHEMA_VERSION` 1.1 → 1.2.
+
+`auto_selected` is not redundant with `kind`. "The judge was rules" and "the judge was
+rules because nothing was listening on the endpoint" are different facts about a
+report, and only the second explains a suite whose narration quality changed without
+any config change.
+
+`suite.json` gains `judge_disagreement_rate` and `judge_latency_ms_total` at the same
+time, staying at its own `schema_version` 1.0: D-25 reserves 1.1 for phase 07's
+semantic change (`status`, `planned`, `current`, `round`), and these two are purely
+additive. The rate is top-level, not inside `coverage`, whose namespace is fault
+kinds (D-25).
+
+### D-71 — The trace closes after post-run, not before it
+*Affects `engine.py`, phases 04 and 06.*
+
+`_end_run` closed the trace and then called `_post_run`. Everything in lifecycle
+steps 8–13 — metrics, assertions, probes, classification, the judge, the bundle —
+therefore emitted into a closed file handle. The sink logged "dropping it" and the
+event vanished, so a library bug in a probe or a judge left **no** `internal_error`
+record at all: exactly the evidence CLAUDE.md's "never crash the run it is observing"
+rule depends on.
+
+The close moves into a `finally` around `_post_run`. Two consequences, both
+deliberate: probes still see only the events that existed when the agent stopped,
+because `_post_run` snapshots the trace before emitting anything; and `write_bundle`
+now receives the *live* event list rather than that snapshot, so post-run
+`internal_error` events survive into `trace.jsonl` instead of being clobbered by a
+rewrite from the stale copy.
+
+### D-72 — The refinement hint follows the mechanism, not the dominant symptom
+*Affects `judges/rules.py`, `docs/05` §6.*
+
+`assertions_failed` sits at rank 5 in `PROBE_PRECEDENCE`, above `unhandled_exception`
+and every other structural probe. That is correct for classification. It is wrong for
+the hint, because `assertions_failed` reports *that* the agent failed and never *why*
+— the best sentence it can produce is "satisfy the declared expectation", which is
+not something a coding agent can act on without asking a question. Running the fake
+suite showed four of five scenarios collapsing to that one hint while the real
+mechanism sat in "(and 1 other symptom)".
+
+`RuleJudge` now builds the hint and the fix from the highest-precedence symptom that
+is **not** `assertions_failed`, falling back to it only when it is the only symptom
+(where it still names the failed checks). `failure_mode`, `severity` and the narrative
+are unchanged and still follow `PROBE_PRECEDENCE`, so the report and the hint can
+name different symptoms on purpose.
+
+### D-73 — The stdlib HTTP path uses `http.client`, not `urllib.request`
+*Affects `judges/slm.py`, `docs/05` §4.*
+
+`docs/05` §4 specifies `urllib.request` as the zero-dependency fallback so
+`pip install agent-loop-chaos` alone can judge. `urllib.request.urlopen` abandons its
+connection when the read times out — the exception escapes before the context manager
+is entered — and the socket survives until the garbage collector notices. A suite
+judged against a hung endpoint leaks one socket per scenario.
+
+Both the POST path and the reachability probe use `http.client` instead, which exposes
+a connection object that can be closed in a `finally`. Same standard library, same
+zero dependencies, deterministic cleanup. The `[slm]` extra still selects `httpx` when
+it is installed.

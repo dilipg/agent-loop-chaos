@@ -39,9 +39,7 @@ def test_the_five_line_langgraph_promise(tmp_path: Path, monkeypatch: Any) -> No
         ToolCorruptionFault(mutation_type="drop_key", keys=["temp_c"]),
         target_tool="get_weather_data",
     )
-    result = engine.run(
-        instrument_graph(app, engine), inputs={"query": "Pack list for Paris"}
-    )
+    result = engine.run(instrument_graph(app, engine), inputs={"query": "Pack list for Paris"})
     print(result.to_json())
     # --- end of the snippet -----------------------------------------------------
 
@@ -95,9 +93,7 @@ def test_the_snippets_are_still_the_ones_in_the_doc() -> None:
     A snippet that works here and not in the README is the same failure as one that
     works nowhere -- the reader only ever sees the README.
     """
-    doc = (
-        Path(__file__).resolve().parents[1] / "docs" / "02-API.md"
-    ).read_text(encoding="utf-8")
+    doc = (Path(__file__).resolve().parents[1] / "docs" / "02-API.md").read_text(encoding="utf-8")
     section = doc.split("## 11. The 5-line integration promise")[1]
     for line in (
         "engine = ChaosEngine(seed=1337)",

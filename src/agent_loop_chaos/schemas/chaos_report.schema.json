@@ -50,7 +50,7 @@
       "type": "string",
       "pattern": "^\\d+\\.\\d+$",
       "examples": [
-        "1.1"
+        "1.2"
       ]
     },
     "run_id": {
@@ -277,7 +277,7 @@
     },
     "injected_faults": {
       "type": "array",
-      "description": "Exactly what chaos was introduced, with before/after diffs. On a baseline or dry run every entry is present with fired=false and skipped_reason set (D-12) — never an empty list.",
+      "description": "Exactly what chaos was introduced, with before/after diffs. On a baseline or dry run every entry is present with fired=false and skipped_reason set (D-12) \u2014 never an empty list.",
       "items": {
         "type": "object",
         "additionalProperties": false,

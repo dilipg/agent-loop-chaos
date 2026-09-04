@@ -40,7 +40,11 @@ def golden_run(tmp_path: Path, mutation: str) -> Any:
     Returns:
         The `ChaosResult`.
     """
-    engine = ChaosEngine(seed=1337, out_dir=tmp_path / ".chaos", strict_schema=True)
+    # `judge="rules"` is pinned, not left to default. `judge=None` probes for a
+    # model endpoint, so a developer with Ollama running would get an ensemble
+    # verdict and a golden that never matches. D-07 names `--judge rules` as one of
+    # the conditions for a byte-identical report; this is that condition.
+    engine = ChaosEngine(seed=1337, out_dir=tmp_path / ".chaos", strict_schema=True, judge="rules")
     engine.register_fault(
         ToolCorruptionFault(mutation_type=mutation, keys=["temp_c"]),
         target=Target(tool="get_weather_data", phase="post"),

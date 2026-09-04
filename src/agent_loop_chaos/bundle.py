@@ -678,7 +678,9 @@ def write_suite_json(out_dir: Path, results: Sequence[ChaosResult], *, seed: int
 
     Written at `schema_version` **1.0** here. Phase 07 makes it live and bumps it to
     1.1 with `status`, `planned`, `current` and `round`; adding those now would ship
-    fields no consumer expects at this version (D-25).
+    fields no consumer expects at this version (D-25). `judge_disagreement_rate` and
+    `judge_latency_ms_total` are additive and always present, so a 1.0 consumer that
+    ignores unknown keys is unaffected (D-70).
 
     Args:
         out_dir: The suite output directory.
@@ -700,6 +702,16 @@ def write_suite_json(out_dir: Path, results: Sequence[ChaosResult], *, seed: int
                 kind = str(fault.get("type"))
                 coverage[kind] = coverage.get(kind, 0) + 1
 
+    # `judge_disagreement_rate` is a top-level field, not a `coverage` entry:
+    # `coverage`'s namespace is fault kinds and nothing else (D-25). A high rate
+    # means the probes or the judge prompt need work, which makes it the most useful
+    # signal the library produces about itself (`docs/05` §7).
+    judged = [r for r in results if (r.verdict or {}).get("judge_meta")]
+    disagreed = sum(1 for r in results if (r.verdict or {}).get("judge_disagreement"))
+    latencies = [
+        int((r.verdict or {}).get("judge_meta", {}).get("latency_ms") or 0) for r in results
+    ]
+
     payload = {
         "schema_version": "1.0",
         "started_at": results[0].started_at if results else "",
@@ -710,6 +722,8 @@ def write_suite_json(out_dir: Path, results: Sequence[ChaosResult], *, seed: int
         "skipped": 0,
         "failure_modes": failure_modes,
         "coverage": coverage,
+        "judge_disagreement_rate": round(disagreed / len(judged), 4) if judged else 0.0,
+        "judge_latency_ms_total": sum(latencies),
         "results": [
             {
                 "scenario_id": r.scenario_id,

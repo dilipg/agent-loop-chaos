@@ -15,6 +15,10 @@ from typing import Any
 
 import pytest
 
+# Captured before `no_network` can replace it, so `loopback` has something real to
+# hand back to a test that talks to a fake server on 127.0.0.1.
+_REAL_SOCKET = socket.socket
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA = Path(__file__).resolve().parent / "data"
 
@@ -63,3 +67,21 @@ def repo_root() -> Path:
         Path to the checkout root.
     """
     return REPO_ROOT
+
+
+@pytest.fixture
+def loopback(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Restore real sockets, for tests that talk to a fake server on localhost.
+
+    `no_network` exists to catch an accidental call to a real endpoint. A fake HTTP
+    server bound to 127.0.0.1 is neither accidental nor remote, and the SLM judge
+    cannot be tested end to end without one -- `docs/07` §5 requires exactly this.
+
+    Args:
+        monkeypatch: Patching helper.
+
+    Yields:
+        None, for the duration of the test.
+    """
+    monkeypatch.setattr(socket, "socket", _REAL_SOCKET)
+    yield

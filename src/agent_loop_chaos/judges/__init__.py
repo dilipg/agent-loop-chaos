@@ -5,137 +5,113 @@ Rules decide; models explain. A judge is **advisory only**: it may author
 fixes, and it never touches `success`. When a judge contradicts the probes, the
 probes win and the disagreement is recorded in `verdict.judge_disagreement`
 (`docs/11-OUTCOMES-AND-ASSERTIONS.md` §1).
-
-Arrives in M6 (`prompts/06-judge-slm.md`). Per D-51 the protocol and the three judge
-classes are declared here in M0; `base.py`, `rules.py`, `slm.py` and `ensemble.py`
-are created by M6 and re-export through this package.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from pathlib import Path
-from typing import Any, Literal, Protocol, runtime_checkable
+import logging
+from typing import Any
 
-__all__ = ["EnsembleJudge", "Judge", "RuleJudge", "SLMJudge", "Verdict"]
+from ..errors import ConfigError
+from .base import (
+    HARD_CAP_BYTES,
+    TARGET_BYTES,
+    Judge,
+    JudgeEvidence,
+    JudgeMeta,
+    Verdict,
+    build_evidence,
+    escape_fences,
+    render,
+)
+from .ensemble import EnsembleJudge
+from .rules import FIX_TABLE, HINT_TABLE, RuleJudge
+from .slm import SLMJudge, judge_output_schema, normalize_base_url
 
-_M6 = "arrives in M6 (prompts/06-judge-slm.md)"
+__all__ = [
+    "FIX_TABLE",
+    "HARD_CAP_BYTES",
+    "HINT_TABLE",
+    "TARGET_BYTES",
+    "EnsembleJudge",
+    "Judge",
+    "JudgeEvidence",
+    "JudgeMeta",
+    "RuleJudge",
+    "SLMJudge",
+    "Verdict",
+    "build_evidence",
+    "escape_fences",
+    "judge_output_schema",
+    "normalize_base_url",
+    "render",
+    "select_judge",
+]
+
+log = logging.getLogger("agent_loop_chaos")
 
 
-@runtime_checkable
-class Judge(Protocol):
-    """What every judge implements."""
+def select_judge(judge: Judge | str | None, **model_kwargs: Any) -> Judge:
+    """Resolve `ChaosEngine(judge=…)` to a judge instance.
 
-    name: str
+    `None` means "use a model if one is there": probe the endpoint once, take the
+    ensemble when it answers and rules when it does not. The choice is recorded in
+    `judge_meta.auto_selected`, because "the judge was rules" and "the judge was
+    rules because nothing was listening" are different facts about a report.
 
-    def judge(self, ev: Any) -> Verdict:
-        """Turn probe output and trace evidence into a verdict.
+    Args:
+        judge: `"rules"`, `"slm"`, `"ensemble"`, `None`, or an instance.
+        model_kwargs: Passed to `SLMJudge` when one is constructed.
 
-        Args:
-            ev: The `JudgeEvidence` assembled by the engine. Untrusted spans inside
-                it are fenced before they reach a model (D-21).
+    Returns:
+        A judge.
 
-        Returns:
-            The `Verdict`. `passed` is supplied by the engine, never by a model.
-        """
-        ...
-
-
-class Verdict:
-    """A classified outcome plus its narration.
-
-    `passed` is authoritative but is computed by the probes and the scenario's
-    `expected_behavior` — a judge only ever carries it, never decides it.
+    Raises:
+        ConfigError: When `judge` is a string that names nothing.
     """
+    if judge is None:
+        model: SLMJudge | None = None
+        try:
+            model = SLMJudge(**model_kwargs)
+            reachable = model.reachable()
+        except ConfigError as exc:
+            # A remote endpoint without consent is not an error when nobody asked
+            # for a model judge -- it just means the answer is rules.
+            log.info("no model judge available: %s", exc)
+            reachable = False
+        chosen: Judge = EnsembleJudge(model_judge=model) if reachable else RuleJudge()
+        return _mark_auto(chosen)
 
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize to the `judge_verdict.schema.json` shape.
+    if not isinstance(judge, str):
+        return judge
+    if judge == "rules":
+        return RuleJudge()
+    if judge == "slm":
+        return SLMJudge(**model_kwargs)
+    if judge == "ensemble":
+        return EnsembleJudge(model_judge=SLMJudge(**model_kwargs))
+    raise ConfigError(
+        f"unknown judge {judge!r}; expected one of rules, slm, ensemble, or an instance"
+    )
 
-        Returns:
-            The verdict as a plain dict.
 
-        Raises:
-            NotImplementedError: Until M6.
-        """
-        raise NotImplementedError(f"Verdict.to_dict {_M6}")
+def _mark_auto(judge: Judge) -> Judge:
+    """Tag a judge so its verdicts record that the library chose it.
 
+    Args:
+        judge: The judge selected by reachability.
 
-class RuleJudge:
-    """Deterministic judge. No model, no network, no clock.
-
-    This is the default and it is fully supported on its own: `--judge rules` works
-    offline, and a socket-blocking test fixture proves it makes no network call.
+    Returns:
+        The same judge, wrapped so `judge_meta.auto_selected` is set.
     """
+    from dataclasses import replace
 
-    def __init__(self, *, templates: Mapping[str, str] | None = None) -> None:
-        """Initialise.
+    inner = judge.judge
 
-        Args:
-            templates: Override the narration templates.
+    def judged(ev: JudgeEvidence) -> Verdict:
+        verdict = inner(ev)
+        verdict.judge_meta = replace(verdict.judge_meta, auto_selected=True)
+        return verdict
 
-        Raises:
-            NotImplementedError: Until M6.
-        """
-        raise NotImplementedError(f"RuleJudge {_M6}")
-
-
-class SLMJudge:
-    """Small-language-model judge, over an OpenAI-compatible or Ollama transport."""
-
-    def __init__(
-        self,
-        *,
-        model: str = "qwen2.5:7b-instruct",
-        base_url: str = "http://localhost:11434/v1",
-        api_key: str | None = None,
-        transport: Literal["openai", "ollama", "anthropic"] = "openai",
-        temperature: float = 0.0,
-        max_tokens: int = 900,
-        timeout_s: float = 60.0,
-        retries: int = 2,
-        prompt_dir: str | Path | None = None,
-        offline_fallback: bool = True,
-    ) -> None:
-        """Initialise.
-
-        Args:
-            model: Model identifier.
-            base_url: Endpoint. Normalized per transport (D-34). A non-loopback
-                endpoint additionally requires `allow_remote_judge=True` before it
-                may receive code context (D-22).
-            api_key: Credential, if the endpoint needs one.
-            transport: Wire protocol.
-            temperature: Sampling temperature. Defaults to 0 for reproducibility.
-            max_tokens: Response cap.
-            timeout_s: Per-request timeout.
-            retries: Retry count on a transport error.
-            prompt_dir: Override the packaged prompt assets.
-            offline_fallback: Fall back to `RuleJudge` instead of raising when the
-                endpoint is unreachable.
-
-        Raises:
-            MissingExtraError: When `httpx` is absent.
-            NotImplementedError: Until M6.
-        """
-        raise NotImplementedError(f"SLMJudge {_M6}")
-
-
-class EnsembleJudge:
-    """Rules decide, the model explains.
-
-    The default when ``judge="ensemble"``, or when `judge` is `None` and a model
-    endpoint is reachable; otherwise `RuleJudge`. Reachability is probed once per
-    process with a short timeout and cached.
-    """
-
-    def __init__(self, *, rules: RuleJudge | None = None, model_judge: Any | None = None) -> None:
-        """Initialise.
-
-        Args:
-            rules: The authoritative rule judge. Defaults to `RuleJudge()`.
-            model_judge: The narrating judge. Defaults to `SLMJudge()`.
-
-        Raises:
-            NotImplementedError: Until M6.
-        """
-        raise NotImplementedError(f"EnsembleJudge {_M6}")
+    judge.judge = judged  # type: ignore[method-assign]
+    return judge

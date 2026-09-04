@@ -150,7 +150,7 @@
   },
   "scenario_id": "weather.tool_contract.unit_swap",
   "schema_errors": [],
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "seed": 1337,
   "severity": "high",
   "success": false,
@@ -202,6 +202,22 @@
   "verdict": {
     "expected_behavior": "graceful_degradation",
     "failure_mode": "hallucination_on_corrupt_data",
+    "judge_disagreement": null,
+    "judge_meta": {
+      "attempts": null,
+      "auto_selected": false,
+      "endpoint": null,
+      "evidence_dropped": [],
+      "fell_back_to_rules": false,
+      "kind": "rules",
+      "model": null,
+      "prompt_hash": null,
+      "raw_response_path": null,
+      "temperature": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "transport": "none"
+    },
     "observed_behavior": "hallucinated",
     "passed": false,
     "severity": "high"

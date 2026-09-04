@@ -57,7 +57,7 @@ from .faults.base import (
 )
 from .metrics import compute_delta, compute_metrics
 from .probes import ProbeContext, run_probes
-from .report import ChaosResult, assemble
+from .report import ChaosResult, assemble, extract_code_context
 from .seeding import canonical_json, sha256_of
 from .targeting import Target, Trigger, matches, should_fire
 from .trace import Event, JsonlSink, MemorySink, TraceLevel, TraceRecorder
@@ -188,6 +188,8 @@ class ChaosEngine:
         tags: Mapping[str, str] | None = None,
         allow_side_effects: Sequence[str] = (),
         strict_trace: bool = False,
+        judge_options: Mapping[str, Any] | None = None,
+        narrate_all: bool = False,
     ) -> None:
         """Initialise an engine.
 
@@ -196,7 +198,9 @@ class ChaosEngine:
             out_dir: Where run bundles are written. Sensitive by default (D-24).
             trace_level: How much payload detail to record.
             limits: Run guard rails. Defaults to `Limits()`.
-            judge: Judge selection. Unused until M6.
+            judge: `"rules"`, `"slm"`, `"ensemble"`, `None`, or a judge instance.
+                `None` picks the ensemble when a model endpoint answers and rules
+                when it does not, recording the choice in `judge_meta`.
             redact_keys: Extra key patterns on top of the default deny-list.
             strict_schema: Raise `SchemaError` when the assembled report does not
                 validate, instead of recording `schema_errors[]` and continuing.
@@ -204,7 +208,7 @@ class ChaosEngine:
                 unfaulted baseline (D-12).
             write_bundle: Write `trace.jsonl`, `plan.json` and the report to disk.
             allow_remote_judge: Opt-in required before a non-loopback judge endpoint
-                may receive code context (D-22). Unused until M6.
+                may receive code context (D-22).
             tags: Free-form labels recorded in the report.
             allow_side_effects: Tools the D-23 gate may target with a real-action
                 fault. Per-tool and deliberate: naming one tool never permits
@@ -213,6 +217,12 @@ class ChaosEngine:
             strict_trace: Validate every trace event against the schema as it is
                 written. Used throughout the test suite; off by default so a
                 production run is not slowed by it.
+            judge_options: Extra keyword arguments for a constructed `SLMJudge`
+                (`model`, `base_url`, `transport`, `timeout_s`, …). Ignored when
+                `judge` is already an instance.
+            narrate_all: Make a narration call for passing runs too. Off by
+                default: one judge call per failing run is the cost model
+                (`docs/05` §10).
         """
         self.seed = seed
         self.out_dir = Path(out_dir)
@@ -227,6 +237,9 @@ class ChaosEngine:
         self.tags: dict[str, str] = dict(tags or {})
         self.allow_side_effects: set[str] = set(allow_side_effects)
         self.strict_trace = strict_trace
+        self.judge_options: dict[str, Any] = dict(judge_options or {})
+        self.narrate_all = narrate_all
+        self._judge_impl: Any | None = None
 
         self._faults: list[_ArmedFault] = []
         self._tools: dict[str, ToolInfo] = {}
@@ -2770,20 +2783,26 @@ class ChaosEngine:
             )
         except Exception as exc:
             self._internal_error("run_finished", exc)
+
+        # The trace closes *after* post-run, not before it. Steps 8-13 emit
+        # `internal_error` events of their own, and closing first wrote them to a
+        # dead handle -- a library bug in a probe or a judge left no trace at all.
+        # Probes still see only the events that existed when the agent stopped,
+        # because `_post_run` snapshots the trace before emitting anything.
+        try:
+            return self._post_run(
+                state,
+                run_dir,
+                plan_hash,
+                adapter,
+                entrypoint,
+                output,
+                facts_error,
+                wall_ms,
+                expected_behavior,
+            )
         finally:
             state.ctx.trace.close()
-
-        return self._post_run(
-            state,
-            run_dir,
-            plan_hash,
-            adapter,
-            entrypoint,
-            output,
-            facts_error,
-            wall_ms,
-            expected_behavior,
-        )
 
     def _post_run(
         self,
@@ -2984,13 +3003,21 @@ class ChaosEngine:
         result.llm_exchanges = state.llm_records
         result.chaos_narrative = _narrate(fired)
 
+        # 12b. judge -- advisory only. `success`, `failure_mode` and `severity` are
+        # already decided above and are not revisited here.
+        judge_record = self._apply_judge(result)
+
         # 13. bundle
         if self.write_bundle:
             written = write_bundle(
                 result,
                 run_dir,
                 plan=state.plan,
-                trace=trace,
+                # Re-read rather than reusing the snapshot the probes saw: post-run
+                # steps emit `internal_error` events of their own, and writing the
+                # snapshot would clobber them out of `trace.jsonl`.
+                trace=list(ctx.trace.memory.events if ctx.trace.memory else trace),
+                judge=judge_record,
                 baseline_output=(
                     state.baseline_result.final_output if state.baseline_result else None
                 ),
@@ -3001,6 +3028,104 @@ class ChaosEngine:
                 result.artifacts["agent_task"] = written["agent_task"]
                 (run_dir / "report.json").write_text(result.to_json(), encoding="utf-8")
         return result
+
+    # -------------------------------------------------------------------- judging
+
+    def _judge(self) -> Any:
+        """Resolve and cache the judge for this engine.
+
+        Cached per engine rather than per run: a reachability probe costs 1.5 s, and
+        a 21-scenario suite should pay it once.
+
+        Returns:
+            A judge instance. Falls back to `RuleJudge` when selection itself fails,
+            because a misconfigured judge must not stop a run.
+        """
+        if self._judge_impl is None:
+            from .judges import RuleJudge, select_judge
+
+            options = dict(self.judge_options)
+            options.setdefault("allow_remote_judge", self.allow_remote_judge)
+            try:
+                self._judge_impl = select_judge(self.judge, **options)
+            except Exception as exc:
+                self._internal_error("judge_selection", exc)
+                self._judge_impl = RuleJudge()
+        return self._judge_impl
+
+    def _apply_judge(self, result: ChaosResult) -> dict[str, Any] | None:
+        """Judge an assembled result in place, and return the record for `judge.json`.
+
+        A judge is advisory (`docs/11` §1). It may write `verdict`'s narration fields
+        and the report's `root_cause_hypothesis`, `refinement_hint` and
+        `suggested_fixes`. It may not touch `success`, `failure_mode` or `severity`,
+        which is enforced here by copying the computed values back over whatever the
+        judge returned.
+
+        Args:
+            result: The assembled result, mutated in place.
+
+        Returns:
+            The judge's raw request/response plus the verdict, or `None` when no
+            model was called and there is nothing to audit.
+        """
+        from .judges.base import build_evidence
+
+        judge: Any = None
+        try:
+            evidence = build_evidence(
+                result, code_context=extract_code_context(result.code_pointers)
+            )
+        except Exception as exc:
+            self._internal_error("judge_evidence", exc)
+            return None
+
+        try:
+            judge = self._judge()
+            verdict = judge.judge(evidence)
+        except Exception as exc:
+            # An engine bug must never be reported as an agent failure, and a judge
+            # is the least trustworthy thing in the pipeline. Falling through to the
+            # rules judge rather than returning keeps the report narrated: an empty
+            # narrative reads as "nothing to say", not as "the judge broke".
+            self._internal_error("judge", exc)
+            try:
+                from dataclasses import replace
+
+                from .judges.rules import RuleJudge
+
+                verdict = RuleJudge().judge(evidence)
+                verdict.judge_meta = replace(verdict.judge_meta, fell_back_to_rules=True)
+            except Exception as inner:
+                self._internal_error("judge_fallback", inner)
+                return None
+
+        # The judge carries these; it never decides them.
+        verdict.passed = result.success
+        verdict.observed_behavior = result.verdict["observed_behavior"]
+        verdict.failure_mode = result.failure_mode
+        verdict.severity = result.severity
+        verdict.expected_behavior = result.verdict["expected_behavior"]
+
+        if self.narrate_all and result.success and hasattr(judge, "narrate"):
+            try:
+                narrated = judge.narrate(evidence)
+                if narrated:
+                    verdict.narrative = narrated
+            except Exception as exc:
+                self._internal_error("judge_narrate", exc)
+
+        result.verdict = verdict.to_dict()
+        result.root_cause_hypothesis = verdict.root_cause_hypothesis
+        result.refinement_hint = verdict.refinement_hint
+        result.suggested_fixes = list(verdict.suggested_fixes)
+        if verdict.narrative:
+            result.chaos_narrative = verdict.narrative
+
+        last_call = dict(getattr(judge, "last_call", {}) or {})
+        if not last_call:
+            return None
+        return {**last_call, "verdict": verdict.to_dict()}
 
 
 def _narrate(fired: Sequence[FaultRecord]) -> str:

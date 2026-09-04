@@ -57,6 +57,21 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--judge", choices=("rules", "slm", "ensemble"), help="judge to use")
     run.add_argument("--model", help="model id for the SLM judge")
     run.add_argument("--base-url", dest="base_url", help="judge endpoint")
+    run.add_argument(
+        "--transport", choices=("openai", "ollama", "anthropic"), help="judge wire protocol"
+    )
+    run.add_argument(
+        "--allow-remote-judge",
+        dest="allow_remote_judge",
+        action="store_true",
+        help="consent to a non-loopback judge endpoint receiving payloads and source (D-22)",
+    )
+    run.add_argument(
+        "--narrate-all",
+        dest="narrate_all",
+        action="store_true",
+        help="narrate passing runs too; off by default, one model call per failure",
+    )
     run.add_argument("--out", help="output directory (default .chaos)")
     run.add_argument(
         "--trace-level", dest="trace_level", choices=("minimal", "standard", "verbose")
@@ -82,6 +97,9 @@ def build_parser() -> argparse.ArgumentParser:
     judge.add_argument("run_dir")
     judge.add_argument("--judge", dest="judge_kind", choices=("rules", "slm", "ensemble"))
     judge.add_argument("--model")
+    judge.add_argument("--base-url", dest="base_url", help="judge endpoint")
+    judge.add_argument("--transport", choices=("openai", "ollama", "anthropic"))
+    judge.add_argument("--allow-remote-judge", dest="allow_remote_judge", action="store_true")
 
     explain = sub.add_parser("explain", help="human-readable narrative to stdout")
     explain.add_argument("run_dir")
@@ -455,6 +473,85 @@ def _validate(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _judge_options(args: argparse.Namespace) -> dict[str, Any]:
+    """Collect the judge flags that were actually given.
+
+    Only present flags are returned, so an unset one falls through to `SLMJudge`'s
+    own default rather than overriding it with `None`.
+
+    Args:
+        args: Parsed arguments.
+
+    Returns:
+        Keyword arguments for `SLMJudge`.
+    """
+    options: dict[str, Any] = {}
+    for flag, key in (("model", "model"), ("base_url", "base_url"), ("transport", "transport")):
+        value = getattr(args, flag, None)
+        if value:
+            options[key] = value
+    if getattr(args, "allow_remote_judge", False):
+        options["allow_remote_judge"] = True
+    return options
+
+
+def _judge(args: argparse.Namespace) -> int:
+    """Re-judge a stored run without re-running the agent.
+
+    The whole pipeline after the trace is pure over `(trace, plan)`, so a better
+    model can be pointed at last week's run. `success`, `failure_mode` and `severity`
+    are *not* recomputed: they were decided by the probes and the assertions layer at
+    run time, and a judge has no authority over them (`docs/11` §1).
+
+    Args:
+        args: Parsed arguments.
+
+    Returns:
+        `EXIT_OK`, or `EXIT_FAILED` when the re-judged run had failed.
+
+    Raises:
+        ConfigError: When no report can be found.
+    """
+    from .bundle import write_agent_task
+    from .judges import select_judge
+    from .judges.base import build_evidence
+    from .report import ChaosResult, extract_code_context
+
+    document, path = _load_report(Path(args.run_dir))
+    result = ChaosResult.from_dict(document)
+    run_dir = path.parent
+
+    judge = select_judge(args.judge_kind, **_judge_options(args))
+    evidence = build_evidence(result, code_context=extract_code_context(result.code_pointers))
+    verdict = judge.judge(evidence)
+
+    # The judge carries these; it never decides them.
+    verdict.passed = result.success
+    verdict.observed_behavior = result.verdict["observed_behavior"]
+    verdict.expected_behavior = result.verdict["expected_behavior"]
+    verdict.failure_mode = result.failure_mode
+    verdict.severity = result.severity
+
+    result.verdict = verdict.to_dict()
+    result.root_cause_hypothesis = verdict.root_cause_hypothesis
+    result.refinement_hint = verdict.refinement_hint
+    result.suggested_fixes = list(verdict.suggested_fixes)
+    if verdict.narrative:
+        result.chaos_narrative = verdict.narrative
+
+    (run_dir / "report.json").write_text(result.to_json(), encoding="utf-8")
+    last_call = dict(getattr(judge, "last_call", {}) or {})
+    if last_call:
+        (run_dir / "judge.json").write_text(
+            json.dumps({**last_call, "verdict": verdict.to_dict()}, indent=2, default=str),
+            encoding="utf-8",
+        )
+    write_agent_task(result, run_dir)
+
+    print(f"{result.scenario_id or result.run_id}: re-judged by {verdict.judge_meta.kind}")
+    return EXIT_OK if result.success else EXIT_FAILED
+
+
 def _explain(args: argparse.Namespace) -> int:
     """Print a human-readable narrative of a stored run.
 
@@ -545,6 +642,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "report": _report,
         "validate": _validate,
         "explain": _explain,
+        "judge": _judge,
     }
     handler = handlers.get(args.command)
     if handler is not None:

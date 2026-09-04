@@ -9,6 +9,54 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+### M6 — the judge: rules, SLM, ensemble
+
+- `judges/base.py`: `Verdict`, `JudgeMeta`, `JudgeEvidence` with the `docs/05` §2 caps,
+  `build_evidence`, the ten-line `render` mustache-lite, `escape_fences` and
+  `redact_source`. `JudgeEvidence.fit()` drops sections in the fixed order
+  `code_context` → `baseline_output` → older exchanges → `tool_summary` and reports
+  what it dropped.
+- `judges/rules.py`: `RuleJudge` with a hint and a fix for all 20 probe codes. A test
+  asserts the tables cover the probe registry exactly in both directions, so adding a
+  probe later cannot silently produce an empty hint.
+- `judges/slm.py`: `SLMJudge` over `openai` / `ollama` / `anthropic`, `httpx` when the
+  `[slm]` extra is present and `http.client` otherwise. Structured-output ladder:
+  native JSON schema → prompt-embedded → fence-stripping parser → one repair → rules
+  fallback. Never raises into the run.
+- `judges/ensemble.py`: `EnsembleJudge`. Rules own `passed`, `observed_behavior`,
+  `failure_mode` and `severity`; the model owns narration, hypothesis, hint, fixes and
+  confidence. A contradiction is recorded in `judge_disagreement`, not applied.
+- `judges/prompts/`: the four assets copied from `assets/prompts/`, with D-21's
+  untrusted-data fencing preserved.
+- Engine, bundle and CLI wiring: `ChaosEngine(judge=…, judge_options=…, narrate_all=…)`,
+  `judge.json` in the bundle, `alc judge <run_dir>`, and `--transport` /
+  `--allow-remote-judge` / `--narrate-all` on `alc run`.
+- `tests/fakes/fake_slm.py`: a scripted local endpoint covering all eight cases in
+  `docs/07` §5. 182 new tests; 92% coverage on `judges/`.
+
+Fixed along the way:
+
+- **The trace closed before post-run** (D-71), so every `internal_error` raised by a
+  probe, an assertion or the judge was written to a dead handle and lost — and
+  `write_bundle` then rewrote `trace.jsonl` from a stale snapshot. Both fixed.
+- **Refinement hints collapsed to a useless sentence** (D-72). `assertions_failed`
+  outranks the structural probes, so four of five fake-suite scenarios produced
+  "satisfy the declared expectation" while the real mechanism sat in "(and 1 other
+  symptom)". Hints and fixes now follow the mechanism; classification is unchanged.
+- **A socket leak in the no-`httpx` path** (D-73). `urllib.request.urlopen` abandons
+  its connection on a read timeout; a suite judged against a hung endpoint leaked one
+  socket per scenario. Replaced with `http.client`, closed in a `finally`.
+- **Code context leaked hardcoded credentials.** `redact()` matches secret *shapes*
+  and sensitive mapping keys; a source line like `PASSWORD = "hunter2"` is neither.
+  `redact_source` closes the gap D-22 names.
+- `jsonschema` is still imported lazily: `judges/slm.py` defers `..schema` so
+  `import agent_loop_chaos` does not pull it in.
+
+Schema: report `schema_version` 1.1 → 1.2. `judge_meta` gains `evidence_dropped` and
+`auto_selected` (D-70); `suite.json` gains `judge_disagreement_rate` and
+`judge_latency_ms_total` at its own version 1.0.
+
+
 ### Added
 
 - **The `revenue_review` demo pair.** `examples/revenue_review/` is a five-node,

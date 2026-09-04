@@ -94,9 +94,6 @@ def test_chaos_engine_is_implemented_as_of_m1() -> None:
 @pytest.mark.parametrize(
     "call",
     [
-        pytest.param(lambda: agent_loop_chaos.RuleJudge(), id="RuleJudge (M6)"),
-        pytest.param(lambda: agent_loop_chaos.SLMJudge(), id="SLMJudge (M6)"),
-        pytest.param(lambda: agent_loop_chaos.EnsembleJudge(), id="EnsembleJudge (M6)"),
         pytest.param(
             lambda: agent_loop_chaos.ChaosEngine(write_bundle=False).replay("d"),
             id="replay (M7)",
@@ -109,11 +106,27 @@ def test_remaining_stubs_still_fail_loudly(call: object) -> None:
     Each of these lands in a later milestone; until then, calling one must say so
     rather than hand back a `None` that surfaces as a confusing error later.
 
-    `Scenario`, `ChaosSuite` and `load_suite` left this list in M4, which implemented
-    them.
+    `Scenario`, `ChaosSuite` and `load_suite` left this list in M4; the three judges
+    left it in M6.
     """
     with pytest.raises(NotImplementedError, match=r"M\d"):
         call()  # type: ignore[operator]
+
+
+@pytest.mark.parametrize(
+    ("name", "kwargs"),
+    [
+        ("RuleJudge", {}),
+        # A loopback endpoint, so construction needs no D-22 consent.
+        ("SLMJudge", {"base_url": "http://localhost:11434", "transport": "ollama"}),
+        ("EnsembleJudge", {}),
+    ],
+)
+def test_judges_are_implemented_as_of_m6(name: str, kwargs: dict[str, object]) -> None:
+    """M6 built the three judges, so constructing one must no longer raise."""
+    judge = getattr(agent_loop_chaos, name)(**kwargs)
+    assert judge.name in {"rules", "slm", "ensemble"}
+    assert callable(judge.judge)
 
 
 def test_limit_exceeded_is_not_catchable_as_exception() -> None:

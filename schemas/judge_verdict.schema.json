@@ -181,6 +181,17 @@
             "string",
             "null"
           ]
+        },
+        "evidence_dropped": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Evidence sections dropped to fit the prompt budget, in the order they were dropped (docs/05 section 2). Empty when everything fit."
+        },
+        "auto_selected": {
+          "type": "boolean",
+          "description": "True when `judge=None` and the library chose this judge by probing endpoint reachability, rather than the caller naming it."
         }
       }
     }
