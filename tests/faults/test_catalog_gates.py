@@ -169,7 +169,13 @@ def test_alc_list_faults_json_is_machine_readable(capsys: pytest.CaptureFixture[
     from agent_loop_chaos.cli import main
 
     assert main(["list-faults", "--json"]) == 0
-    payload = json.loads(capsys.readouterr().out)
+    document = json.loads(capsys.readouterr().out)
+    # An *object*, not a bare array: `docs/02-API.md` section 10 says `--json` prints
+    # one JSON object, and an object leaves room to add a field without breaking
+    # every consumer's parser. M9 changed this shape; the doc always said object.
+    assert isinstance(document, dict)
+    payload = document["faults"]
+    assert document["count"] == len(payload)
     kinds = {entry["kind"] for entry in payload}
     assert set(SECTION_A) <= kinds
     assert all("accepts" in entry and "severity_hint" in entry for entry in payload)

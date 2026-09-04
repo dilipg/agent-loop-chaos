@@ -1233,3 +1233,75 @@ is suppressed for the same reason.
 
 Both are real weaknesses in the code. Neither is dressed up as caught, and the
 `trip_planner` README lists them as uncaught rather than omitting them.
+
+### D-90 — `--json` prints an object, including `list-faults`
+*Affects `cli.py`, phase 09.*
+
+`docs/02-API.md` §10 has always said `--json` prints "one JSON object". `list-faults`
+printed a bare array, which is one JSON *document* but not an object, and it leaves a
+consumer no room for a sibling field. It now prints `{"faults": [...], "count": n}`.
+
+`validate` gained `--json` at the same time, emitting `{path, kind, valid, errors}`,
+so every command the docs offer `--json` for actually has it.
+
+This changed a shape a test depended on. The test asserted the old array; the doc
+always described the new object, so the test was updated rather than the contract.
+
+### D-91 — `replay` compares the crossing sequence, not just the plan hash
+*Affects `engine.py`, `cli.py`, phase 09, implements D-31.*
+
+`reproduce.env` now records `library_version`, `python`, `adapter` and
+`entrypoint_source_sha256` — the parts of an experiment that `plan_hash` cannot cover.
+`ChaosEngine.replay` rebuilds the plan, re-runs, and compares the observed
+`(layer, name, phase, call_index)` sequence against the original. A difference emits a
+`replay_divergence` event and a `schema_errors` note rather than reporting a faithful
+reproduction.
+
+Two details worth stating:
+
+- The event is **appended** to the finished `trace.jsonl` rather than emitted through
+  the recorder. The comparison needs both traces complete, so by then the run's own
+  trace is closed; this is honestly a post-hoc annotation and is recorded as one.
+- A plan using `Target.predicate` raises `ConfigError`. A callable is not serialized,
+  so the plan cannot be rebuilt faithfully and guessing would be worse than refusing.
+
+### D-92 — Executable documentation is opt-in
+*Affects `tests/test_docs_snippets.py`, `docs/FAQ.md`, phase 09.*
+
+`tests/test_docs_snippets.py` extracts fenced `python` blocks preceded by
+`<!-- test -->` and executes them. Marking is opt-in, not automatic: plenty of blocks
+in `docs/` are deliberately partial — a signature, a `...` stub, a shape being
+described rather than run — and forcing every block to execute would push the docs
+toward whatever happens to be runnable rather than whatever explains best.
+
+It earned its place immediately: the first marked block in `docs/FAQ.md` used
+`FaultOutcome.replace(...)`, which does not exist. A reader following that FAQ would
+have hit an `AttributeError` on their first custom fault.
+
+### D-93 — `docs/01`'s module map corrected
+*Affects `docs/01-ARCHITECTURE.md`, `CONTRIBUTING.md`, phase 09.*
+
+The map listed `faults/registry.py` and `faults/loop.py`, neither of which exists: the
+registry lives in `faults/base.py`, and `LoopTrapFault`, `RateLimitFault` and the
+timing faults are in `faults/tool.py`. `CONTRIBUTING.md` sent a new contributor to
+`faults/loop.py` for the same reason.
+
+The `dashboard/` entries stay: they are labelled "(phase 10)" and are a plan, not a
+claim about what is there.
+
+### D-94 — `replay` restores the inputs from `reproduce.scenario_yaml`
+*Affects `engine.py`, phase 09.*
+
+`replay` re-ran with `inputs=None`. The agent then fell back to whatever default its
+signature carried, and a run could **pass where the original failed** while reporting
+a clean reproduction — of a different experiment. Caught by running `alc replay`
+against a real stored run and noticing the exit code flip from 1 to 0.
+
+The inputs cannot live in `plan.json`: that file is exactly what `plan_hash` is
+computed over, and the hash is documented as proving plan identity and nothing else
+(`docs/04` §3). They go in `reproduce.scenario_yaml`, which the report schema already
+reserves for "inline YAML/JSON of the minimal scenario that reproduces this failure",
+along with `initial_state` minus the planted canary.
+
+A run recorded before this change replays without inputs, as it always did. There is
+no way to recover what it was asked, and inventing one would be worse.

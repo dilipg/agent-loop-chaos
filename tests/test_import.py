@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 import agent_loop_chaos
+from agent_loop_chaos.errors import ConfigError
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 API_DOC = REPO_ROOT / "docs" / "02-API.md"
@@ -91,27 +92,17 @@ def test_chaos_engine_is_implemented_as_of_m1() -> None:
     assert engine.is_active() is False
 
 
-@pytest.mark.parametrize(
-    "call",
-    [
-        pytest.param(
-            lambda: agent_loop_chaos.ChaosEngine(write_bundle=False).replay("d"),
-            id="replay (M9)",
-        ),
-    ],
-)
-def test_remaining_stubs_still_fail_loudly(call: object) -> None:
-    """A stub must raise. Silently returning `None` is forbidden by CLAUDE.md.
+def test_nothing_is_a_stub_any_more() -> None:
+    """Every name in `__all__` is implemented as of M9.
 
-    Each of these lands in a later milestone; until then, calling one must say so
-    rather than hand back a `None` that surfaces as a confusing error later.
-
-    `Scenario`, `ChaosSuite` and `load_suite` left this list in M4; the three judges
-    left it in M6; `RefinementLoop` and `LoopReport` left it in M7. `replay` belongs
-    to M9 per `docs/08-ROADMAP.md`, not M7 -- the stub said otherwise and was wrong.
+    This replaces the stub list. `Scenario`, `ChaosSuite` and `load_suite` left it in
+    M4, the three judges in M6, `RefinementLoop` and `LoopReport` in M7, and `replay`
+    in M9 -- which is where `docs/08-ROADMAP.md` always put it, whatever the stub's
+    own message claimed.
     """
-    with pytest.raises(NotImplementedError, match=r"M\d"):
-        call()  # type: ignore[operator]
+    engine = agent_loop_chaos.ChaosEngine(write_bundle=False)
+    with pytest.raises(ConfigError, match="plan"):
+        engine.replay("no-such-run-dir")
 
 
 @pytest.mark.parametrize(

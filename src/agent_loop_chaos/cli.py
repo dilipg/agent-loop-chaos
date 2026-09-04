@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -77,64 +78,168 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--out", help="output directory (default .chaos)")
     run.add_argument(
-        "--trace-level", dest="trace_level", choices=("minimal", "standard", "verbose")
+        "--trace-level",
+        dest="trace_level",
+        choices=("minimal", "standard", "verbose"),
+        help="how much payload detail to record (default: standard)",
     )
     run.add_argument("--filter", help="glob over scenario ids")
+    run.add_argument(
+        "--quiet", "-q", action="store_true", help="summary only, no per-scenario lines"
+    )
+    run.add_argument("--preset", help="run a named preset instead of a scenario file")
+    run.add_argument(
+        "--allow-side-effects",
+        dest="allow_side_effects",
+        help="comma-separated tools a real-action fault may target (SAFETY.md section 1)",
+    )
+    run.add_argument(
+        "--suggest-fixes",
+        dest="suggest_fixes",
+        action="store_true",
+        help="ask the judge for a ranked fix list (one extra model call per failure)",
+    )
     run.add_argument(
         "--entrypoint",
         help="override every scenario's entrypoint (MODULE:ATTR); how the same suite "
         "is run against a corrected tree",
     )
-    run.add_argument("--fail-fast", dest="fail_fast", action="store_true")
-    run.add_argument("--no-baseline", dest="no_baseline", action="store_true")
-    run.add_argument("--dry-run", dest="dry_run", action="store_true")
+    run.add_argument(
+        "--fail-fast",
+        dest="fail_fast",
+        action="store_true",
+        help="stop after the first failing scenario",
+    )
+    run.add_argument(
+        "--no-baseline",
+        dest="no_baseline",
+        action="store_true",
+        help="skip the unfaulted reference run",
+    )
+    run.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="arm every fault but fire none; the run must classify as a clean baseline",
+    )
     run.add_argument("--json", action="store_true", help="emit one JSON object and nothing else")
     run.add_argument("--rounds", type=int, help="run the refinement loop for N rounds")
     run.add_argument(
-        "--stop-when", dest="stop_when", choices=("all_pass", "no_new_failures", "rounds")
+        "--stop-when",
+        dest="stop_when",
+        choices=("all_pass", "no_new_failures", "rounds"),
+        help="when to stop a --rounds loop (default: no_new_failures)",
     )
     run.add_argument("--dashboard", action="store_true", help="serve the live dashboard (M10)")
-    run.add_argument("--port", type=int, default=7717)
+    run.add_argument("--port", type=int, default=7717, help="dashboard port (M10)")
     run.add_argument("--linger", type=int, help="seconds to keep serving after the run")
 
-    replay = sub.add_parser("replay", help="re-run a stored plan")
-    replay.add_argument("run_dir")
-    replay.add_argument("--seed", type=int)
+    replay = sub.add_parser(
+        "replay",
+        help="re-run a stored plan",
+        description="Rebuild a run's fault plan from its plan.json and run it again.",
+        epilog=(
+            "example:\n"
+            "  alc replay .chaos/tool.drop_key/run-7d303952 \\\n"
+            "      --entrypoint examples.trip_planner.app:build_app\n\n"
+            "The plan hash covers the plan, not the experiment: your agent's source, "
+            "the model and the fixtures all sit outside it. Replay compares the "
+            "observed crossing sequence against the original and reports divergence "
+            "rather than pretending the reproduction was faithful."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    replay.add_argument("run_dir", help="a run directory containing plan.json")
+    replay.add_argument("--seed", type=int, help="override the recorded seed")
+    replay.add_argument("--entrypoint", help="the agent to re-run, as MODULE:ATTR (required)")
+    replay.add_argument("--out", help="output directory (default: alongside the original)")
+    replay.add_argument("--json", action="store_true", help="emit one JSON object")
 
     judge = sub.add_parser("judge", help="re-judge a run without re-running the agent")
     judge.add_argument("run_dir")
-    judge.add_argument("--judge", dest="judge_kind", choices=("rules", "slm", "ensemble"))
-    judge.add_argument("--model")
+    judge.add_argument(
+        "--judge",
+        dest="judge_kind",
+        choices=("rules", "slm", "ensemble"),
+        help="which judge to re-judge with (default: rules)",
+    )
+    judge.add_argument("--model", help="model id for the SLM judge")
     judge.add_argument("--base-url", dest="base_url", help="judge endpoint")
-    judge.add_argument("--transport", choices=("openai", "ollama", "anthropic"))
-    judge.add_argument("--allow-remote-judge", dest="allow_remote_judge", action="store_true")
+    judge.add_argument(
+        "--transport",
+        choices=("openai", "ollama", "anthropic"),
+        help="judge wire protocol",
+    )
+    judge.add_argument(
+        "--allow-remote-judge",
+        dest="allow_remote_judge",
+        action="store_true",
+        help="consent to a non-loopback endpoint receiving payloads and source (D-22)",
+    )
 
     explain = sub.add_parser("explain", help="human-readable narrative to stdout")
     explain.add_argument("run_dir")
 
     report = sub.add_parser("report", help="render a run or suite directory")
     report.add_argument("path")
-    report.add_argument("--format", choices=("md", "json", "html"), default="md")
+    report.add_argument(
+        "--format",
+        choices=("md", "json", "html"),
+        default="md",
+        help="output format; html arrives in M10 (default: md)",
+    )
     report.add_argument("-o", "--output", help="write to a file instead of stdout")
-    report.add_argument("--max-trace-events", dest="max_trace_events", type=int)
+    report.add_argument(
+        "--max-trace-events",
+        dest="max_trace_events",
+        type=int,
+        help="cap the trace excerpt at N events",
+    )
 
-    validate = sub.add_parser("validate", help="validate a report or a suite file")
+    validate = sub.add_parser(
+        "validate",
+        help="validate a report or a suite file",
+        description="Check a report.json or a suite file against its JSON Schema.",
+        epilog="example:\n  alc validate .chaos/tool.drop_key/run-7d30/report.json",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    validate.add_argument("--json", action="store_true", help="emit one JSON object")
     validate.add_argument("path")
 
     list_faults = sub.add_parser("list-faults", help="list the registered fault kinds")
-    list_faults.add_argument("--json", action="store_true")
+    list_faults.add_argument("--json", action="store_true", help="emit one JSON object")
 
-    sub.add_parser("init", help="scaffold a chaos/ directory and an example scenario")
+    init = sub.add_parser(
+        "init",
+        help="scaffold a chaos/ directory and an example scenario",
+        description="Write chaos/quickstart.yaml and chaos/README.md into this directory.",
+        epilog="example:\n  alc init && alc run chaos/quickstart.yaml",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    init.add_argument("--dir", default="chaos", help="where to scaffold (default: chaos)")
+    init.add_argument("--force", action="store_true", help="overwrite existing files")
 
     dashboard = sub.add_parser("dashboard", help="serve the read-only trace dashboard (M10)")
     dashboard.add_argument("--out", help="run directory to serve")
-    dashboard.add_argument("--port", type=int, default=7717)
-    dashboard.add_argument("--host", default="127.0.0.1")
-    dashboard.add_argument("--open", action="store_true")
-    dashboard.add_argument("--poll-ms", dest="poll_ms", type=int, default=250)
-    dashboard.add_argument("--max-events", dest="max_events", type=int)
-    dashboard.add_argument("--no-sse", dest="no_sse", action="store_true")
-    dashboard.add_argument("--once", action="store_true")
+    dashboard.add_argument("--port", type=int, default=7717, help="port to serve on")
+    dashboard.add_argument("--host", default="127.0.0.1", help="bind address; loopback by default")
+    dashboard.add_argument(
+        "--open", action="store_true", help="open a browser when the server starts"
+    )
+    dashboard.add_argument(
+        "--poll-ms",
+        dest="poll_ms",
+        type=int,
+        default=250,
+        help="how often to re-read the run directory",
+    )
+    dashboard.add_argument(
+        "--max-events", dest="max_events", type=int, help="cap the events held in the page"
+    )
+    dashboard.add_argument(
+        "--no-sse", dest="no_sse", action="store_true", help="poll instead of streaming"
+    )
+    dashboard.add_argument("--once", action="store_true", help="render a static snapshot and exit")
 
     return parser
 
@@ -162,7 +267,10 @@ def _list_faults(*, as_json: bool) -> int:
             }
             for info in infos
         ]
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        # An object, not a bare array: `--json` is documented as one JSON *object*
+        # (docs/02-API.md section 10), and an object leaves room to add a field
+        # without breaking every consumer's parser.
+        print(json.dumps({"faults": payload, "count": len(payload)}, indent=2, sort_keys=True))
         return EXIT_OK
 
     width = max((len(info.kind) for info in infos), default=0)
@@ -216,10 +324,23 @@ def _run(args: argparse.Namespace) -> int:
     if args.rounds:
         return _run_loop(args, ChaosSuite(scenarios), out_dir)
 
+    colour = use_colour() and not args.json
+    quiet = getattr(args, "quiet", False)
+    total = len(scenarios)
+    done = 0
+
     def report(result: Any) -> None:
-        if not args.json:
-            print(result.summary_line())
-        _warn_if_nothing_fired(result)
+        nonlocal done
+        done += 1
+        if not args.json and not quiet:
+            mark = "pass" if result.success else "fail"
+            print(_paint(result.summary_line(), mark, colour=colour))
+        elif not args.json and total > 5:
+            # Progress on stderr, so `alc run > out.txt` still shows movement and
+            # `--json` piping stays clean.
+            print(f"  [{done}/{total}] {result.scenario_id}", file=sys.stderr)
+        if not quiet:
+            _warn_if_nothing_fired(result)
 
     results = run_suite(
         scenarios,
@@ -235,6 +356,8 @@ def _run(args: argparse.Namespace) -> int:
     )
 
     write_suite_json(out_dir, results, seed=args.seed or 0)
+    if not args.json and not quiet:
+        _print_summary(results, out_dir, colour=colour)
     if args.json:
         print(
             json.dumps(
@@ -486,25 +609,227 @@ def _validate(args: argparse.Namespace) -> int:
     """
     from .schema import validate_obj
 
+    as_json = getattr(args, "json", False)
     path = Path(args.path)
     if not path.is_file():
         raise ConfigError(f"no such file: {path}")
+
     if path.suffix.lower() in {".yaml", ".yml"}:
         from .scenarios import load_suite
 
-        load_suite(path)
-        print(f"{path}: valid suite")
+        suite = load_suite(path)
+        if as_json:
+            print(
+                json.dumps(
+                    {
+                        "path": str(path),
+                        "kind": "suite",
+                        "valid": True,
+                        "errors": [],
+                        "scenarios": len(suite.scenarios),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        else:
+            print(f"{path}: valid suite ({len(suite.scenarios)} scenarios)")
         return EXIT_OK
 
     document = json.loads(path.read_text(encoding="utf-8"))
     name = "scenario" if "scenarios" in document else "report"
     errors = validate_obj(document, name)  # type: ignore[arg-type]
+    if as_json:
+        print(
+            json.dumps(
+                {"path": str(path), "kind": name, "valid": not errors, "errors": errors},
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return EXIT_FAILED if errors else EXIT_OK
     if errors:
         for error in errors:
             print(f"{path}: {error}", file=sys.stderr)
         return EXIT_FAILED
     print(f"{path}: valid {name}")
     return EXIT_OK
+
+
+QUICKSTART = """# Your first chaos scenario.
+#
+#   alc run chaos/quickstart.yaml --judge rules
+#
+# Point `entrypoint` at your agent. A callable whose first parameter is named
+# `engine` is treated as a *builder*: it is handed the ChaosEngine and returns the
+# real agent, which is how your tools get wrapped so a tool fault can reach them.
+scenarios:
+  - id: quickstart.drop_required_key
+    description: A field the agent reads simply stops being returned.
+    entrypoint: your_package.agent:build
+    inputs: { question: "what is the weather in Paris?" }
+    expected_behavior: graceful_degradation
+    expect:
+      # The answer must not state a number no tool produced...
+      no_unsourced_numbers: { enabled: true }
+      # ...and must say what it could not determine.
+      output_matches: ["(?i)unavailab|missing|could not"]
+    faults:
+      - type: ToolCorruptionFault
+        target: { tool: get_weather }
+        trigger: { on_call: 1 }
+        params: { mutation_type: drop_key, keys: [temp_c] }
+"""
+
+SCAFFOLD_README = """# chaos/
+
+    alc run chaos/quickstart.yaml --judge rules
+
+Edit `entrypoint` and the tool name in `quickstart.yaml` to match your agent. Every
+failure writes an `AGENT_TASK.md` under `.chaos/` — hand it to a coding agent as-is.
+`alc list-faults` shows what else you can inject.
+"""
+
+
+def _init(args: argparse.Namespace) -> int:
+    """Scaffold a chaos directory, refusing to clobber anything.
+
+    Args:
+        args: Parsed arguments.
+
+    Returns:
+        `EXIT_OK`, or `EXIT_USAGE` when a file already exists and `--force` was not
+        given. Overwriting someone's edited scenario silently is the one thing a
+        scaffolding command must never do.
+    """
+    root = Path(args.dir)
+    files = {root / "quickstart.yaml": QUICKSTART, root / "README.md": SCAFFOLD_README}
+    existing = [p for p in files if p.exists()]
+    if existing and not args.force:
+        for path in existing:
+            print(f"alc init: {path} already exists", file=sys.stderr)
+        print("alc init: nothing written; pass --force to overwrite", file=sys.stderr)
+        return EXIT_USAGE
+
+    root.mkdir(parents=True, exist_ok=True)
+    for path, body in files.items():
+        path.write_text(body, encoding="utf-8")
+        print(f"  wrote {path}")
+    print(f"\nNext: edit {root / 'quickstart.yaml'} to point at your agent, then\n")
+    print(f"  alc run {root / 'quickstart.yaml'} --judge rules\n")
+    return EXIT_OK
+
+
+def _replay(args: argparse.Namespace) -> int:
+    """Re-run a stored plan.
+
+    Args:
+        args: Parsed arguments.
+
+    Returns:
+        `EXIT_OK` when the replayed run passed, `EXIT_FAILED` otherwise.
+
+    Raises:
+        ConfigError: When the run directory or the entrypoint cannot be used.
+    """
+    from .engine import ChaosEngine
+    from .loop import resolve_entrypoint
+
+    run_dir = Path(args.run_dir)
+    if not (run_dir / "plan.json").is_file():
+        raise ConfigError(f"no plan.json in {run_dir}; nothing to replay")
+    if not args.entrypoint:
+        raise ConfigError("replay needs the agent to re-run: pass --entrypoint MODULE:ATTR")
+
+    engine = ChaosEngine(
+        seed=args.seed if args.seed is not None else 1337,
+        out_dir=Path(args.out) if args.out else run_dir.parent.parent,
+        judge=getattr(args, "judge", None) or "rules",
+        strict_schema=False,
+    )
+    result = engine.replay(run_dir, target=resolve_entrypoint(args.entrypoint, engine))
+
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2, sort_keys=True, default=str))
+    else:
+        print(result.summary_line())
+        for note in result.schema_errors:
+            if note.startswith("replay_divergence"):
+                print(f"  warning: {note}", file=sys.stderr)
+    return EXIT_OK if result.success else EXIT_FAILED
+
+
+#: ANSI codes, used only when `use_colour()` says a human is watching.
+_COLOURS = {"pass": "\x1b[32m", "fail": "\x1b[31m", "dim": "\x1b[2m", "off": "\x1b[0m"}
+
+
+def use_colour() -> bool:
+    """Decide whether to emit ANSI escapes.
+
+    Colour helps a person scan thirty scenarios and corrupts a pipe. `NO_COLOR` is
+    honoured unconditionally -- https://no-color.org -- because a user who set it has
+    already told us the answer.
+
+    Returns:
+        True only on a TTY with `NO_COLOR` unset.
+    """
+    if os.environ.get("NO_COLOR"):
+        return False
+    return bool(getattr(sys.stdout, "isatty", lambda: False)())
+
+
+def _paint(text: str, kind: str, *, colour: bool) -> str:
+    """Wrap text in an ANSI colour, or leave it alone.
+
+    Args:
+        text: What to print.
+        kind: A key of `_COLOURS`.
+        colour: Whether colour is wanted.
+
+    Returns:
+        The text, coloured or not.
+    """
+    if not colour or kind not in _COLOURS:
+        return text
+    return f"{_COLOURS[kind]}{text}{_COLOURS['off']}"
+
+
+def _print_summary(results: Sequence[Any], out_dir: Path, *, colour: bool) -> None:
+    """Print the block a person reads after a suite finishes.
+
+    Totals, the failure-mode histogram, and the work orders -- in that order, because
+    the work orders are the product and a reader who stops early should still have
+    seen them.
+
+    Args:
+        results: Every scenario's result.
+        out_dir: Where the bundles were written.
+        colour: Whether to colour the totals.
+    """
+    failed = [r for r in results if not r.success]
+    passed = len(results) - len(failed)
+    print()
+    print(
+        f"  {_paint(f'{passed} passed', 'pass', colour=colour)}, "
+        f"{_paint(f'{len(failed)} failed', 'fail' if failed else 'dim', colour=colour)}"
+        f" of {len(results)} scenario(s)"
+    )
+    if failed:
+        modes: dict[str, int] = {}
+        for result in failed:
+            modes[result.failure_mode] = modes.get(result.failure_mode, 0) + 1
+        print()
+        for mode, count in sorted(modes.items(), key=lambda kv: (-kv[1], kv[0])):
+            print(f"    {count:>3}  {mode}")
+
+    tasks = [r.artifacts["agent_task"] for r in results if r.artifacts.get("agent_task")]
+    if tasks:
+        print(f"\n  {len(tasks)} work order(s) written. Hand one to a coding agent as-is:")
+        for path in tasks[:5]:
+            print(f"    {path}")
+        if len(tasks) > 5:
+            print(f"    ... and {len(tasks) - 5} more under {out_dir}")
+    print()
 
 
 def _judge_options(args: argparse.Namespace) -> dict[str, Any]:
@@ -633,6 +958,36 @@ def _explain(args: argparse.Namespace) -> int:
         print(f"    {symptom.get('severity'):<8} {symptom.get('code')} @ seq {seqs}")
     if not report.get("symptoms"):
         print("    (none fired)")
+
+    # The diff is what makes this readable without opening JSON: it shows exactly
+    # what the agent was handed that it was not expecting.
+    diffs = [
+        (fault, fire)
+        for fault in report.get("injected_faults") or []
+        for fire in (fault.get("fires") or [])
+        if fire.get("json_patch")
+    ]
+    if diffs:
+        print("\n  what changed:")
+        for fault, fire in diffs[:3]:
+            print(f"    {fault.get('fault_id')} {fault.get('type')} on {fire.get('name')!r}")
+            for op in (fire.get("json_patch") or [])[:6]:
+                value = op.get("value")
+                shown = (
+                    "" if op.get("op") == "remove" else f" = {json.dumps(value, default=str)[:60]}"
+                )
+                print(f"      {op.get('op'):<7} {op.get('path')}{shown}")
+
+    hint = report.get("refinement_hint")
+    print("\n  refinement hint:")
+    print(f"    {hint}" if hint else "    (none produced)")
+    if report.get("root_cause_hypothesis"):
+        print(f"\n  hypothesis: {report['root_cause_hypothesis']}")
+
+    task = (report.get("artifacts") or {}).get("agent_task")
+    if task:
+        print(f"\n  work order: {task}")
+    print()
     return EXIT_OK
 
 
@@ -677,6 +1032,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "validate": _validate,
         "explain": _explain,
         "judge": _judge,
+        "replay": _replay,
+        "init": _init,
     }
     handler = handlers.get(args.command)
     if handler is not None:

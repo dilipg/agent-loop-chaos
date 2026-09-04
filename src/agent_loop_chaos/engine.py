@@ -20,8 +20,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import hashlib
 import inspect
+import json
 import logging
+import platform
 import time
 import traceback
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -141,6 +144,10 @@ class _RunState:
     harness_raised_seqs: set[int] = field(default_factory=set)
     keys_removed: set[str] = field(default_factory=set)
     keys_retyped: set[str] = field(default_factory=set)
+    #: sha256 of the entrypoint's source, for `reproduce.env` (D-31).
+    entrypoint_sha256: str = ""
+    #: What the agent was asked, so `replay` can ask it the same thing.
+    inputs: Any = None
     history: dict[str, list[Any]] = field(default_factory=dict)
     pre_fault_history: dict[str, list[Any]] = field(default_factory=dict)
     # Tool-layer results only. `history` is keyed by crossing name across every
@@ -2362,12 +2369,136 @@ class ChaosEngine:
             The new `ChaosResult`, with `attempt` incremented.
 
         Raises:
-            NotImplementedError: Until M9. M7 ships the plan-hash tamper
-                check that lets `replay` refuse rather than guess (D-31).
+            ConfigError: When the run directory has no `plan.json`, or when the plan
+                used a `Target.predicate` -- a callable cannot be serialized, so its
+                plan cannot be faithfully rebuilt and guessing would be worse than
+                refusing (D-31).
         """
-        raise NotImplementedError(
-            "ChaosEngine.replay arrives in M9 (prompts/09-cli-and-release.md)"
+        run_dir = Path(run_dir)
+        plan_path = run_dir / "plan.json"
+        if not plan_path.is_file():
+            raise ConfigError(f"no plan.json in {run_dir}; nothing to replay")
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+
+        for spec in plan.get("faults") or []:
+            if (spec.get("target") or {}).get("predicate"):
+                raise ConfigError(
+                    f"fault {spec.get('fault_id')} used a Target.predicate, which is a "
+                    "callable and is not serialized. This plan cannot be replayed "
+                    "faithfully; re-run the scenario instead (D-31)."
+                )
+
+        previous: dict[str, Any] = {}
+        report_path = run_dir / "report.json"
+        if report_path.is_file():
+            previous = json.loads(report_path.read_text(encoding="utf-8"))
+
+        self.clear_faults()
+        from .faults.base import fault_from_dict
+        from .targeting import Target, Trigger
+
+        for spec in plan.get("faults") or []:
+            target_spec = dict(spec.get("target") or {})
+            trigger_spec = dict(spec.get("trigger") or {})
+            self.register_fault(
+                fault_from_dict(dict(spec)),
+                target=Target(**target_spec) if target_spec else None,
+                trigger=Trigger(**trigger_spec) if trigger_spec else None,
+                fault_id=spec.get("fault_id"),
+            )
+
+        if target is None:
+            raise ConfigError(
+                "replay needs the agent to re-run: pass `target=`, or use "
+                "`alc replay <run_dir> --entrypoint module:attr`"
+            )
+
+        stored = previous.get("reproduce", {}).get("scenario_yaml")
+        recorded: dict[str, Any] = {}
+        if stored:
+            try:
+                recorded = json.loads(stored)
+            except ValueError:  # pragma: no cover - hand-edited report
+                recorded = {}
+
+        result = self.run(
+            target,
+            inputs=recorded.get("inputs"),
+            initial_state=recorded.get("initial_state"),
+            scenario_id=previous.get("scenario_id") or plan.get("scenario_id"),
+            expected_behavior=plan.get("expected_behavior", "graceful_degradation"),
+            must_not=plan.get("must_not") or (),
+            seed=int(plan.get("seed", self.seed)),
+            attempt=int(previous.get("attempt", 1)) + 1,
         )
+        self._check_replay_drift(result, previous, run_dir)
+        return result
+
+    def _check_replay_drift(
+        self, result: ChaosResult, previous: Mapping[str, Any], run_dir: Path
+    ) -> None:
+        """Compare what happened against what the original run recorded (D-31).
+
+        A matching `plan_hash` proves the plan was rebuilt, not that the experiment
+        was. The agent's source, the model and the tool fixtures all sit outside the
+        hash, and triggers are relative to the agent's own call sequence -- so drift
+        relocates every fault while the hash still matches. The comparison is on the
+        observed crossing sequence, which is what a trigger actually indexes into.
+
+        Args:
+            result: The replayed result, annotated in place.
+            previous: The original `report.json`, empty when it was not kept.
+            run_dir: The original run directory, for the message.
+        """
+        notes: list[str] = []
+        env = (previous.get("reproduce") or {}).get("env") or {}
+        now = (result.reproduce or {}).get("env") or {}
+        for key, label in (
+            ("entrypoint_source_sha256", "the agent's source"),
+            ("library_version", "the library version"),
+            ("adapter", "the adapter"),
+        ):
+            before, after = env.get(key), now.get(key)
+            if before and after and before != after:
+                notes.append(f"{label} changed ({before[:12]} -> {after[:12]})")
+
+        try:
+            before_seq = crossing_signature(_read_trace(run_dir / "trace.jsonl"))
+            after_seq = crossing_signature(_read_trace(Path(result.artifacts.get("trace") or "")))
+        except OSError:
+            before_seq = after_seq = []
+        if before_seq and after_seq and before_seq != after_seq:
+            notes.append(
+                f"the crossing sequence changed ({len(before_seq)} -> {len(after_seq)} "
+                "crossings); triggers are relative to it, so the faults did not land "
+                "where they did originally"
+            )
+
+        if not notes:
+            return
+        detail = "; ".join(notes)
+        result.schema_errors.append(f"replay_divergence: {detail}")
+
+        # The run is over and its trace is closed, so this is appended rather than
+        # emitted. It is genuinely a post-hoc annotation: the comparison needs the
+        # finished trace on both sides.
+        trace_path = Path(result.artifacts.get("trace") or "")
+        if trace_path.is_file():
+            event = {
+                "schema_version": "1.0",
+                "seq": _next_seq(trace_path),
+                "ts": _utc_now(),
+                "run_id": result.run_id,
+                "kind": "replay_divergence",
+                "level": "minimal",
+                "layer": "engine",
+                "payload": {"replayed_from": str(run_dir), "notes": notes},
+            }
+            with trace_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(event, default=str) + "\n")
+        if result.artifacts.get("report"):
+            Path(result.artifacts["report"]).write_text(result.to_json(), encoding="utf-8")
+        log.warning("replay diverged from %s: %s", run_dir, detail)
 
     def _prepare(
         self,
@@ -2533,6 +2664,8 @@ class ChaosEngine:
             baseline=baseline,
             entrypoint=entrypoint,
         )
+        state.entrypoint_sha256 = entrypoint_fingerprint(target)
+        state.inputs = inputs
         state.expect = (
             expect
             if isinstance(expect, Expect)
@@ -2633,6 +2766,8 @@ class ChaosEngine:
             baseline=baseline,
             entrypoint=entrypoint,
         )
+        state.entrypoint_sha256 = entrypoint_fingerprint(target)
+        state.inputs = inputs
         state.expect = (
             expect
             if isinstance(expect, Expect)
@@ -3043,6 +3178,15 @@ class ChaosEngine:
                 "cmd": f"alc replay {run_dir}",
                 "seed": ctx.seed,
                 "plan_path": str(run_dir / "plan.json") if self.write_bundle else None,
+                # What `plan_hash` cannot cover, so a replay can tell the experiment
+                # drifted even when the plan matched (D-31).
+                "scenario_yaml": _reproduce_scenario(state),
+                "env": {
+                    "library_version": __version__,
+                    "python": platform.python_version(),
+                    "entrypoint_source_sha256": state.entrypoint_sha256,
+                    "adapter": adapter.name,
+                },
             },
             artifacts={
                 "report": str(run_dir / "report.json"),
@@ -3180,6 +3324,136 @@ class ChaosEngine:
         if not last_call:
             return None
         return {**last_call, "verdict": verdict.to_dict()}
+
+
+def _next_seq(trace_path: Path) -> int:
+    """The next sequence number for a trace being appended to.
+
+    Args:
+        trace_path: The `trace.jsonl`.
+
+    Returns:
+        One past the highest `seq` already recorded.
+    """
+    return max((int(e.get("seq", 0)) for e in _read_trace(trace_path)), default=0) + 1
+
+
+def _reproduce_scenario(state: _RunState) -> str | None:
+    """Serialize what the agent was asked, for `reproduce.scenario_yaml`.
+
+    A replay that re-runs with different inputs is not a replay: the agent falls back
+    to whatever default its signature carries and the run can pass where the original
+    failed, reporting a clean reproduction of a different experiment. The plan cannot
+    carry this -- `plan_hash` is computed over the plan and is documented as proving
+    plan identity and nothing else -- so it goes in the field the report schema
+    already reserves for it.
+
+    Args:
+        state: The run state.
+
+    Returns:
+        Compact JSON of `{inputs, initial_state}`, or `None` when neither was given.
+    """
+    payload: dict[str, Any] = {}
+    if state.inputs is not None:
+        payload["inputs"] = state.inputs
+    planted = {k: v for k, v in (state.planted_state or {}).items() if k != "_alc_canary"}
+    if planted:
+        payload["initial_state"] = planted
+    if not payload:
+        return None
+    try:
+        return json.dumps(payload, sort_keys=True, default=str)
+    except (TypeError, ValueError):  # pragma: no cover - exotic inputs
+        return None
+
+
+def _read_trace(path: Path) -> list[dict[str, Any]]:
+    """Load a `trace.jsonl`.
+
+    Args:
+        path: The file.
+
+    Returns:
+        The events, or an empty list when the file is absent or unreadable.
+    """
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, ValueError):
+        return []
+    out: list[dict[str, Any]] = []
+    for line in lines:
+        try:
+            out.append(json.loads(line))
+        except ValueError:  # pragma: no cover - a truncated final line
+            continue
+    return out
+
+
+def entrypoint_fingerprint(target: Any) -> str:
+    """Hash an entrypoint's source, so a replay can tell the agent changed.
+
+    `plan_hash` covers the plan, not the experiment: the agent's own body sits
+    outside it, and a trigger like `on_call: 1` is relative to that body's call
+    sequence. An agent edited between a run and its replay relocates every fault
+    while the plan hash matches exactly (D-31).
+
+    Args:
+        target: The agent callable, or anything else.
+
+    Returns:
+        A sha256 hex digest of the source, or the empty string when there is none --
+        a builtin, a C extension, or a callable defined in a REPL. Recording nothing
+        beats crashing a run over provenance metadata.
+    """
+    import inspect
+
+    fn = target
+    for attribute in ("__wrapped__", "__func__"):
+        fn = getattr(fn, attribute, fn)
+    try:
+        source = inspect.getsource(fn)
+    except (OSError, TypeError):
+        return ""
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+
+def crossing_signature(trace: Sequence[Mapping[str, Any]]) -> list[list[Any]]:
+    """Project a trace to the crossing sequence a replay compares against.
+
+    `(layer, name, phase, call_index)` per D-31. Timing, payloads and seq numbers are
+    excluded: they vary between two identical runs and comparing them would report
+    divergence on every replay.
+
+    Args:
+        trace: The loaded trace.
+
+    Returns:
+        One entry per intercepted crossing, in order.
+    """
+    out: list[list[Any]] = []
+    for event in trace:
+        layer = event.get("layer")
+        if layer in (None, "engine") or not event.get("name"):
+            continue
+        if event.get("kind") not in _CROSSING_KINDS:
+            continue
+        out.append([layer, str(event.get("name")), event.get("phase"), event.get("call_index")])
+    return out
+
+
+#: Events that mark an interception. `_post`-side kinds only, so one crossing counts
+#: once whether or not the pre side emitted.
+_CROSSING_KINDS = frozenset(
+    {
+        "tool_call_requested",
+        "llm_request",
+        "node_entered",
+        "edge_taken",
+        "state_mutated",
+        "checkpoint_saved",
+    }
+)
 
 
 def _narrate(fired: Sequence[FaultRecord]) -> str:

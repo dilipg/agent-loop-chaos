@@ -16,7 +16,7 @@ make check          # ruff, mypy --strict, pytest, schema parity
 ## Adding a fault
 
 1. Subclass `Fault` in the right family module (`faults/tool.py`, `faults/llm.py`,
-   `faults/state.py`, `faults/loop.py`, `faults/injection.py`). Give it `kind`,
+   `faults/state.py`, `faults/injection.py`). Give it `kind`,
    `accepts` — the `(layer, phase)` pairs it handles — and `apply`.
 2. Decorate with `@register_fault` so it lands in `FAULT_REGISTRY`.
 3. Operate on a deep copy. Never mutate the caller's object. If a value cannot be

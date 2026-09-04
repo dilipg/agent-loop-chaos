@@ -26,13 +26,16 @@ src/agent_loop_chaos/
 ├── targeting.py           Target, Trigger, matches(), should_fire()
 ├── mutations.py           pure payload mutators, MUTATIONS registry
 ├── faults/
-│   ├── base.py            Fault ABC, FaultOutcome, FaultRecord
-│   ├── tool.py            tool-execution faults
-│   ├── llm.py             LLM/prompt faults
-│   ├── state.py           graph-state faults
-│   ├── loop.py            LoopTrapFault, RateLimit/latency/timing faults
+│   ├── base.py            Fault ABC, FaultOutcome, FaultRecord, MutationLog,
+│   │                      FAULT_REGISTRY, register_fault(), fault_from_dict()
+│   ├── tool.py            tool-execution faults: corruption, error, latency,
+│   │                      timeout, rate limit, argument tamper, LoopTrapFault
+│   ├── llm.py             LLM/prompt and context faults
+│   ├── state.py           graph-state and routing faults
 │   ├── injection.py       PromptInjectionFault + payload corpus
-│   └── registry.py        FAULT_REGISTRY, fault_from_dict()
+│   ├── _messages.py       message-shape normalization shared by the llm faults
+│   ├── injection_corpus.json
+│   └── noise_corpus.json
 ├── trace.py               EventKind, Event, TraceRecorder, JsonlSink, MemorySink
 ├── probes.py              Probe ABC, PROBES, run_probes(trace) -> list[Symptom]
 ├── metrics.py             step/tool/llm/token/retry counters, baseline delta

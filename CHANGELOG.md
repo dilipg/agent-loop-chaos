@@ -9,6 +9,83 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+Nothing yet.
+
+## 0.1.0 — 2026-09-04
+
+First release. The engine, 27 faults, 20 probes, the assertions layer, the judges, the
+refinement loop, the LangGraph and vanilla adapters, the CLI and the demo agent.
+
+### What it does
+
+Injects a fault into a running agent loop, decides deterministically whether the agent
+handled it, and writes the finding as an `AGENT_TASK.md` a coding agent can execute
+without asking a question.
+
+- **One `Crossing` dataclass** unifies six interception layers (tool, llm, state, node,
+  edge, checkpoint) x three phases, which is why one engine serves all of them and the
+  core never learns which adapter is in play.
+- **`success` is computed, never asserted by a model.** 20 probes and the assertions
+  layer are authoritative; judges narrate. A judge that contradicts the probes loses,
+  and the disagreement is recorded in `verdict.judge_disagreement`.
+- **A probe never fires on what the harness injected** (four attribution rules), which
+  is why a correct agent can pass every scenario -- and why
+  `examples/trip_planner_fixed` finding zero failures means something.
+- **Determinism is a feature.** All randomness goes through `seeding.rng(seed, purpose)`
+  keyed on a hashed `fault_key`, so reordering a suite cannot re-key another fault's
+  stream. `docs/DECISIONS.md` D-07 states the boundary precisely rather than implying it.
+- **Zero required dependencies except `jsonschema`.** LangGraph, httpx, pyyaml and the
+  model SDKs are optional extras, and a test proves importing the package pulls none of
+  them in.
+
+### CLI
+
+`alc run | replay | judge | explain | report | validate | list-faults | init`. Exit
+codes `0` pass, `1` failures, `2` usage, `3` internal, `4` tampering. `--json` prints
+exactly one JSON object and nothing else. Colour only on a TTY, and `NO_COLOR` is
+honoured.
+
+### Measured on the demo agent
+
+`examples/trip_planner` (twelve planted weaknesses) vs `examples/trip_planner_fixed`,
+same 29-scenario suite: **17 failures with 6 distinct failure modes**, versus **0**.
+
+```
+crash_unhandled_exception        7      prompt_injection_followed        1
+silent_wrong_answer              5      secret_leak                      1
+empty_final_answer               2      hallucination_on_corrupt_data    1
+```
+
+Twelve scenarios pass on the buggy tree. A suite that failed everything would be
+measuring itself.
+
+### Conformance
+
+`examples/patterns/` covers eight agent shapes -- ReAct text loop, OpenAI tool-calling
+loop, async with a `gather` fan-out, class with state on `self`, supervisor delegating
+to specialists, fixed pipeline with no loop, streaming accumulator,
+retrieve-rerank-generate -- each with a naive tree and a hardened twin. All sixteen run
+through one battery in CI. Nine library bugs were found this way; five of them failed
+on the *correct* tree rather than the buggy one.
+
+### Known gaps
+
+- `CheckpointRollbackFault` cannot fire under LangGraph: `intercept_checkpoints=True`
+  is accepted and the adapter creates no checkpoint crossings (D-82).
+- Two of the demo's twelve planted weaknesses are not caught by any scenario, and are
+  listed as uncaught rather than omitted (D-89).
+- `--jobs > 1` is accepted and ignored; suites run serially.
+- `--format html` and `alc dashboard` arrive in 0.2.0.
+
+### Schemas
+
+`chaos_report` 1.3, `trace_event` 1.0, `judge_verdict`, `scenario`, `suite` 1.1. All
+five ship inside the wheel and are importable without the source tree.
+
+<details>
+<summary>Milestone-by-milestone detail</summary>
+
+
 ### M8 — the demo agent, the pattern pool, and nine library fixes
 
 **The proof.** `examples/trip_planner` is a four-node LangGraph app with twelve
@@ -332,3 +409,5 @@ Schema: report `schema_version` 1.1 → 1.2. `judge_meta` gains `evidence_droppe
   Wheel installs are unaffected. Develop on 3.10–3.13, the supported matrix.
 - Nothing in this release does anything yet. Faults, engine behaviour, probes,
   judges and adapters arrive in M1–M6.
+
+</details>

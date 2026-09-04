@@ -64,7 +64,17 @@ def test_list_faults_is_implemented_and_exits_zero(
     assert "fault kinds registered" in capsys.readouterr().out
 
 
-IMPLEMENTED_COMMANDS = {"list-faults"}
+# M9 implemented every documented command except `dashboard`, which is M10.
+IMPLEMENTED_COMMANDS = {
+    "run",
+    "replay",
+    "judge",
+    "explain",
+    "report",
+    "validate",
+    "list-faults",
+    "init",
+}
 
 
 def test_an_unimplemented_command_never_raises() -> None:

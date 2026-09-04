@@ -143,6 +143,7 @@
   "reproduce": {
     "cmd": "<path>",
     "plan_path": "<path>",
+    "scenario_yaml": "{\"inputs\": \"Pack list for Paris\"}",
     "seed": 1337
   },
   "scenario_id": "weather.tool_contract.unit_swap",
