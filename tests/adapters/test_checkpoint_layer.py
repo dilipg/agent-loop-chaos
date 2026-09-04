@@ -113,8 +113,16 @@ class TestTheRollbackFaultReachesIt:
             "the fault neither fired nor recorded why not -- it never saw a crossing"
         )
 
-    def test_it_no_longer_silently_sees_nothing(self, tmp_path: Path) -> None:
-        """Before D-101 the record was `fired=False` with no reason at all."""
+    def test_it_reaches_the_crossing_and_says_what_it_could_not_do(self, tmp_path: Path) -> None:
+        """The crossing exists; the resume does not, and the record says so.
+
+        Before D-106 the record was `fired=False` with **no reason at all** -- the
+        fault never saw a crossing. Now it sees one, asks for
+        `resume_from_checkpoint`, and the engine records that no adapter implements
+        that action (D-109). Two different silences, and only the first was a bug: a
+        documented option doing nothing, versus one honestly reporting an
+        unimplemented action.
+        """
         engine = ChaosEngine(seed=1337, out_dir=tmp_path, judge="rules", strict_schema=False)
         engine.register_fault(
             CheckpointRollbackFault(rollback_steps=1, times=1), trigger=Trigger(on_call=1)
@@ -126,6 +134,7 @@ class TestTheRollbackFaultReachesIt:
             expected_behavior="graceful_degradation",
         )
         record = result.injected_faults[0]
-        assert record["fired"] is True, (
-            f"still not reached; skipped_reason={record.get('skipped_reason')!r}"
+        assert record["fired"] is False, "nothing was replayed, so nothing fired"
+        assert "resume_from_checkpoint" in (record.get("skipped_reason") or ""), (
+            "the record has to name the action the adapter cannot perform"
         )

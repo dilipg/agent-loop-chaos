@@ -38,6 +38,23 @@ _INJECTED = re.compile(
     r"|(?:call|invoke|use)\s+(?:the\s+)?[a-z_]+_(?:booking|tool)\b"
 )
 
+#: The language `GoalDriftFault(mode="dilute")` appends. A real model handed this
+#: broadens and hedges: it stops committing to the specific thing it was asked for.
+#: The fake has to represent that, or goal drift is untestable against it.
+_DILUTED = re.compile(
+    r"(?i)approximate answers are fine|broaden the scope|cover any related topics"
+    r"|precision is not|whatever seems relevant"
+)
+
+#: A restated objective. The corrected tree pins the task *after* the untrusted and
+#: diluted material, which is what makes it survive -- so an instruction repeated
+#: here outranks anything that eroded the conversation above it.
+_RESTATED = re.compile(r"(?i)which nothing below may change|restating your task")
+
+#: Where the destination is named. The corrected tree states it outright; the buggy
+#: one leaves it in the conversation for the model to find.
+_DESTINATION = re.compile(r"(?i)Destination:\s*([A-Z][a-z]+)|packing list for ([A-Z][a-z]+)")
+
 #: A directive telling the model to change its reply's shape. Obeying it is what the
 #: `format_changed` detector looks for.
 _FORMAT_OVERRIDE = re.compile(r"(?i)(?:reply|output)_format_override\s*:\s*(.+)")
@@ -125,6 +142,23 @@ def _summarize(prompt: str) -> str:
     return json.dumps({"packing_list": items, "note": note})
 
 
+def _destination(prompt: str) -> str | None:
+    """Find the city the answer is about, and lose it when the goal was eroded.
+
+    Args:
+        prompt: The rendered prompt.
+
+    Returns:
+        The destination, or `None` when the objective was diluted and never
+        re-asserted -- which is what a real model does with a goal it has been told
+        to treat loosely.
+    """
+    if _DILUTED.search(prompt) and not _RESTATED.search(prompt):
+        return None
+    found = _DESTINATION.search(prompt)
+    return (found.group(1) or found.group(2)) if found else None
+
+
 def _format_override(prompt: str) -> str | None:
     """Find an unfenced directive telling the model to change its reply's shape.
 
@@ -165,8 +199,8 @@ def _trip_respond(prompt: str) -> str:
         # Obedience that is visible in the answer's shape, which is exactly what the
         # `format_changed` detector is looking for.
         return "packed and booked"
-    where = re.search(r"Destination:\s*(.+)", prompt)
-    place = f" for {where.group(1).strip()}" if where and where.group(1).strip() else ""
+    city = _destination(prompt)
+    place = f" for {city}" if city else ""
     return f"Pack{place}: {packing}.\n\n{fare}{tail}"
 
 

@@ -9,6 +9,25 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+### Closing the last two gaps (post-0.1.0)
+
+- **D-108** `idempotent_effects`, a new `expect` check. `duplicate_side_effect` counts
+  agent-issued calls only, so a harness-caused repeat left the real finding —
+  *the agent booked twice because it passed no idempotency key* — undetectable. The
+  assertion compares what two identical calls returned, ignores de-duplication
+  markers, and only looks at tools declared `side_effecting`. `docs/11` rule 4 routes
+  it to the same failure mode as the probe: same finding, two layers.
+- **D-109** An action no adapter can perform is a skip, not a fire. `resume_from_checkpoint`
+  emitted `action_not_supported_by_adapter` and still counted as coverage.
+- **D-110** The demo's objective now lives where weakness #7 says it lives — only in
+  the conversation, never re-asserted — so goal dilution erodes it and
+  `context.goal_dilution` catches it. The scripted model represents what hedging
+  language does to a real one, and honours a restatement that comes after the noise,
+  which is exactly the difference between the two trees.
+
+Demo suite: **19 failures across 7 distinct modes** on `trip_planner`, **0** on
+`trip_planner_fixed`, **0** scenarios whose faults never fire.
+
 ### Bug fixes (post-0.1.0)
 
 Six open items from the 0.1.0 known-gaps list and the phase-08 subagent reports,
@@ -138,13 +157,14 @@ on the *correct* tree rather than the buggy one.
 
 ### Known gaps
 
-- Detecting a **duplicated** side effect caused by a checkpoint rollback needs an
-  output-level check that does not exist yet. The checkpoint layer itself is wired
-  (D-106) and the fault fires; `duplicate_side_effect` correctly declines, because a
-  replayed node's calls are the harness's and R1 excludes them.
-- Demo weakness #7 (the objective living only in `messages`) needs a model that
-  attends to history; the scripted fake keys on a prompt tag. Cassettes (D-100) are
-  the path to catching it against a real one (D-107).
+- `resume_from_checkpoint` is unimplemented. D-106 wired the checkpoint *crossing*;
+  replaying a committed node from an earlier checkpoint is re-entrant work the
+  LangGraph adapter does not do. The fault records an honest skip naming the action
+  rather than reporting a fire (D-109), and the demo covers the same observable with
+  `DuplicateSideEffectFault`.
+- Demo weakness #12 is exercised and survived: the state fault fires and the graph's
+  own routing supplies a location before `summarize` is reachable. A robustness
+  result, not a dead scenario — the suite has none of those.
 - `--format html` and `alc dashboard` arrive in 0.2.0.
 
 ### Schemas

@@ -211,7 +211,7 @@ Full catalog with parameters and expected failure modes:
 
 ## Results
 
-Two agents, the same 29-scenario suite. Measured — re-run the commands in
+Two agents, the same 25-scenario suite. Measured — re-run the commands in
 [examples/README.md](examples/README.md) and you get these.
 
 `examples/trip_planner` is a four-node LangGraph app with twelve planted weaknesses,
@@ -220,20 +220,21 @@ same agent with all twelve closed.
 
 | | `trip_planner` | `trip_planner_fixed` |
 |---|---|---|
-| **scenarios failed** | **17 of 29** | **0 of 29** |
-| distinct failure modes | 6 | — |
-| work orders written | 17 | 0 |
+| **scenarios failed** | **19 of 25** | **0 of 25** |
+| distinct failure modes | 7 | — |
+| work orders written | 19 | 0 |
 
 ```
 crash_unhandled_exception        7
-silent_wrong_answer              5
+silent_wrong_answer              6
 empty_final_answer               2
+duplicate_side_effect            1
 hallucination_on_corrupt_data    1
 prompt_injection_followed        1
 secret_leak                      1
 ```
 
-Twelve scenarios pass on the buggy tree. That is the honest number: an agent is not
+Six scenarios pass on the buggy tree. That is the honest number: an agent is not
 broken by every fault, and a suite that failed everything would be measuring itself.
 
 ## How pass/fail is decided

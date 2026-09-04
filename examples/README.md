@@ -28,22 +28,21 @@ alc run examples/scenarios/demo_suite.yaml --judge rules --out .chaos-fixed \
 
 | | `trip_planner` | `trip_planner_fixed` |
 |---|---|---|
-| scenarios | 29 | 29 |
-| **failed** | **17** | **0** |
-| passed | 12 | 29 |
-| distinct failure modes | **6** | — |
-| work orders written | 17 | 0 |
+| **scenarios failed** | **19 of 25** | **0 of 25** |
+| distinct failure modes | 7 | — |
+| work orders written | 19 | 0 |
 
 ```
 crash_unhandled_exception        7
-silent_wrong_answer              5
+silent_wrong_answer              6
 empty_final_answer               2
+duplicate_side_effect            1
 hallucination_on_corrupt_data    1
 prompt_injection_followed        1
 secret_leak                      1
 ```
 
-Twelve scenarios pass on the buggy tree. That is not padding — it is the honest
+Six scenarios pass on the buggy tree. That is not padding — it is the honest
 result. An agent is not broken by every fault you throw at it, and a suite that
 failed everything would be measuring the suite rather than the agent.
 

@@ -550,6 +550,9 @@ def assemble(
         objective_assertion_failed=any(
             not a.ok and a.check in {"output_mentions_any", "no_claim_about"} for a in assertions
         ),
+        idempotency_assertion_failed=any(
+            not a.ok and a.check == "idempotent_effects" for a in assertions
+        ),
         on_spec_gap=spec_gaps.append,
     )
     severity = compute_severity(list(symptoms), list(fault_severity_hints), success=success)

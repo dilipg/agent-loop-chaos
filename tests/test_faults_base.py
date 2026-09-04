@@ -328,3 +328,45 @@ class TestANoopOutcomeIsNotAFire:
             target=Target(tool="lookup"),
         )
         assert result.injected_faults[0]["fired"] is True
+
+
+class TestAnUnsupportedActionIsNotAFire:
+    """An action the adapter cannot perform did not happen, so it did not fire.
+
+    `resume_from_checkpoint` has no implementation: the engine emits `fault_skipped`
+    with `action_not_supported_by_adapter` and carries on. The fault record still said
+    `fired: true`, so `suite.json` counted coverage for an injection that did nothing
+    -- the same dishonesty D-95 fixed for a no-op outcome, arriving by another path.
+
+    Needs a real checkpoint crossing to reach the action at all, so it needs a graph
+    with a checkpointer.
+    """
+
+    @staticmethod
+    def _run(tmp_path: Any) -> Any:
+        pytest.importorskip("langgraph")
+        from langgraph.checkpoint.memory import MemorySaver
+
+        from agent_loop_chaos import ChaosEngine
+        from agent_loop_chaos.adapters.langgraph import instrument_graph
+        from agent_loop_chaos.faults import CheckpointRollbackFault
+        from agent_loop_chaos.targeting import Trigger
+        from tests.fakes.lg_agent import build
+
+        engine = ChaosEngine(
+            seed=1337, out_dir=tmp_path, write_bundle=False, strict_schema=False, judge="rules"
+        )
+        engine.register_fault(CheckpointRollbackFault(rollback_steps=1), trigger=Trigger(on_call=1))
+        compiled = build(lambda prompt: "warm").compile(checkpointer=MemorySaver())
+        graph = instrument_graph(compiled, engine, intercept_checkpoints=True)
+        return engine.run(graph, inputs={"query": "x"}, scenario_id="unsupported")
+
+    def test_it_is_recorded_as_skipped(self, tmp_path: Any) -> None:
+        record = self._run(tmp_path).injected_faults[0]
+        assert record["fired"] is False, "the adapter did nothing; that is not a fire"
+        assert record["skipped_reason"], "the reason has to say the adapter cannot do it"
+        assert "adapter" in record["skipped_reason"]
+
+    def test_the_reason_names_the_action(self, tmp_path: Any) -> None:
+        reason = self._run(tmp_path).injected_faults[0]["skipped_reason"]
+        assert "resume_from_checkpoint" in reason

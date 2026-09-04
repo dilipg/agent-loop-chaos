@@ -1551,3 +1551,79 @@ Weakness #7 (the objective living only in `messages`) still needs a model that a
 to history; the scripted fake keys on a prompt tag. D-100's cassettes are the path:
 record a real model once against the demo suite and the scenario becomes reproducible.
 Not done, and not claimed.
+
+### D-108 — `idempotent_effects`: the assertion that catches a double booking
+*Affects `assertions.py`, `engine.py`, `outcomes.py`, `docs/11` §6, `scenario.schema.json`.*
+
+`duplicate_side_effect` counts **agent-issued** invocations only, so when the harness
+repeats a call — a checkpoint rollback, a `DuplicateSideEffectFault` — the probe
+correctly stays silent (R1). That is right for a probe, and it left the actual finding
+undetectable: the agent booked twice because it passed no idempotency key.
+
+The finding is not *that* the call repeated; the harness did that on purpose. It is
+that repeating it produced **two distinct effects**, which is a property of the
+agent's design and is visible in what came back. So it is an assertion, not a probe:
+it does not care who issued the calls, only what they returned.
+
+`idempotent_effects: true` checks every tool declared `side_effecting: true`; a list
+restricts it. Two calls, identical arguments, distinct results ⇒ fail. Three things
+keep it from firing where it should not:
+
+- Only **declared** side-effecting tools. A read-only tool returning different results
+  twice is ordinary, and an *undeclared* tool is left alone rather than guessed at.
+- Different arguments are different operations. Booking two flights is two bookings.
+- De-duplication markers (`duplicate`, `cached`, `already_exists`, …) are stripped
+  before comparing. A response differing only in "was this a repeat?" is the tool
+  reporting that it de-duplicated, which is the behaviour we want.
+
+`docs/11` rule 4 now routes both the probe and the assertion to `duplicate_side_effect`,
+because they are the same finding seen from two layers. `synthesize_auto_expect` adds
+the check whenever a rollback or duplicate fault fired — the fault implies the question.
+
+The engine also had to record **each repeated invocation with its own result**;
+`_invoke_repeatedly` recorded one entry, and a single record cannot show two effects.
+
+### D-109 — An action no adapter can perform is a skip, not a fire
+*Affects `engine.py`, refines D-95.*
+
+`resume_from_checkpoint` has no implementation: the engine emits `fault_skipped` with
+`action_not_supported_by_adapter` and carries on. The fault record still said
+`fired: true`, so `suite.json` counted coverage for an injection that did nothing —
+the same dishonesty D-95 fixed for a no-op outcome, arriving by another path.
+
+`UNSUPPORTED_ACTIONS` is checked where the fire is recorded, not where the action is
+resolved: terminal actions resolve after that loop, and by then the fire is already
+counted. The `skipped_reason` names the action, so a reader learns *why* rather than
+seeing a silent `fired: false`.
+
+**What is still unimplemented:** the resume itself. D-106 wired the checkpoint
+*crossing*; replaying a committed node from an earlier checkpoint is re-entrant work
+the LangGraph adapter does not do. `resume.checkpoint_rollback` is replaced in the
+demo suite by `resume.duplicate_hold`, which uses `DuplicateSideEffectFault` to
+produce the same observable — the booking step runs twice — and is caught by D-108.
+
+### D-110 — The demo's objective lives where the weakness says it lives
+*Affects `examples/trip_planner/`, `examples/fake_model.py`, closes D-89 and D-107.*
+
+Weakness #7 is "the objective lives only in `messages`, never re-asserted". The buggy
+tree did not implement it: its prompts never mentioned the objective at all, so
+`GoalDriftFault` had nothing to erode and `context.goal_dilution` passed.
+
+Now the buggy tree replays the conversation into each prompt and takes the destination
+from it — no node re-asserts it from `state["query"]`. The corrected tree pins the
+task after the untrusted material, which is what makes it survive.
+
+The scripted model had to represent what dilution does to a real one. `dilute` appends
+hedging language ("Approximate answers are fine", "broaden the scope"); a real model
+handed that stops committing to the specific thing it was asked for. The fake drops
+the destination when the objective was diluted **and never restated** — and honours a
+restatement that comes after the noise, which is the entire difference between the two
+trees.
+
+Weakness #12 stays uncaught and is described as such. The state fault *fires* — it
+lands, and the agent survives it, because the graph's own routing supplies a location
+before `summarize` is reachable. A weakness the suite exercises and the agent
+withstands is a robustness result; the suite has zero scenarios whose faults never fire.
+
+Demo suite: **19 failures across 7 distinct modes** on `trip_planner`, **0** on
+`trip_planner_fixed`.

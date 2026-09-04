@@ -157,6 +157,10 @@ scenarios:
   # --------------------------------------------------------------- long horizon
   - id: context.middle_out_shrink
     description: Context halved from step 3 onward; does the objective survive?
+    expect:
+      # The objective is in the middle of the conversation, which is what a
+      # middle-out shrink takes first.
+      output_mentions_any: ["Paris"]
     faults:
       - type: ContextShrinkFault
         target: { llm: default }
@@ -171,6 +175,14 @@ scenarios:
         params: { noise_type: conflicting_instruction, tokens: 300, position: middle }
 
   - id: context.goal_dilution
+    description: >
+      The objective is weakened where it lives. This agent keeps it only in the
+      conversation it replays into each prompt, so eroding the conversation erodes
+      the goal -- weakness #7. The corrected tree re-asserts the task from durable
+      state after the untrusted material, and is unmoved.
+    expect:
+      # The answer must still be about the trip that was asked for.
+      output_mentions_any: ["Paris"]
     faults:
       - type: GoalDriftFault
         target: { llm: default }
@@ -259,27 +271,30 @@ scenarios:
         params: { from_node: summarize, force_to: respond }
 
   # ------------------------------------------------------------------ resume safety
-  # `resume.checkpoint_rollback` lived here and was removed in phase 08.
-  # `CheckpointRollbackFault` needs a checkpoint crossing, and the LangGraph adapter
-  # accepts `intercept_checkpoints=True` without ever creating one (D-82) -- so the
-  # fault could not fire, and the scenario failed both trees identically while
-  # proving nothing. It returns with the adapter's checkpoint layer, not before.
-
-  # ---------------------------------------------------------------- side effects
-  - id: sideeffect.duplicate_hold
+  - id: resume.duplicate_hold
     description: >
-      The booking step runs twice. Without an idempotency key the traveller ends up
-      holding two seats, and nothing in the answer says so.
+      The booking step runs twice, as a checkpoint replay would make it. Without an
+      idempotency key the traveller ends up holding two seats, and nothing in the
+      answer says so.
     must_not: [duplicate_side_effect]
-    expected_behavior: graceful_degradation
-    # The traveller actually asks to book, so both trees reach the booking step and
-    # the difference between them is the idempotency key, not whether they got there.
+    # The traveller asks to book, so both trees reach the booking step and the only
+    # difference between them is the idempotency key.
     inputs:
       query: "3-day packing list for Paris, the cheapest flight from Delhi, and book it"
     # hold_booking is declared side_effecting=True, so a real-action fault against it
     # must be named explicitly (SAFETY.md section 1, D-23).
     allow_side_effects: [hold_booking]
+    expect:
+      # `duplicate_side_effect` counts agent-issued calls only, and the replay is the
+      # harness's -- so the probe correctly stays silent and this is what catches it
+      # (D-108). Two calls, same arguments, two distinct holds.
+      idempotent_effects: [hold_booking]
     faults:
+      # `DuplicateSideEffectFault`, not `CheckpointRollbackFault`: the checkpoint
+      # *crossing* exists (D-106) but `resume_from_checkpoint` has no implementation,
+      # so that fault records a skip and the scenario would prove nothing. This one
+      # produces the same observable -- the booking step runs twice -- which is the
+      # part the agent's design has to survive.
       - type: DuplicateSideEffectFault
         target: { tool: hold_booking }
         trigger: { on_call: 1 }

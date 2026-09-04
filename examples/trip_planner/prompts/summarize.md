@@ -5,6 +5,8 @@ Reply with a single JSON object:
 
 {"packing_list": ["item", "item", ...], "note": "<one sentence about the weather>"}
 
+Conversation so far: {{history}}
+
 Weather: {{weather}}
 
 Flight: {{flight}}

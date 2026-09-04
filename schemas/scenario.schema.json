@@ -376,6 +376,20 @@
               "items": {
                 "type": "string"
               }
+            },
+            "idempotent_effects": {
+              "description": "Require that repeating a side-effecting call with identical arguments produced one effect rather than several. `true` checks every tool declared `side_effecting: true`; a list restricts it to those tools. This is the assertion-layer counterpart to the `duplicate_side_effect` probe, which counts agent-issued invocations only -- so when the harness itself repeats a call (a checkpoint rollback, a duplicate-side-effect fault) the probe correctly stays silent and this catches the finding. See docs/DECISIONS.md D-108.",
+              "oneOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
             }
           }
         }

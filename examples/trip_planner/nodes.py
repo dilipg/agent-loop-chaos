@@ -33,6 +33,22 @@ class TripState(TypedDict, total=False):
     attempts: int
 
 
+def _history(state: TripState) -> str:
+    """Render the conversation so far, for the prompt.
+
+    The objective lives here and nowhere else: no node re-asserts it from
+    `state["query"]`. That is the weakness -- anything that erodes the conversation
+    erodes the goal, and the agent has no durable copy to fall back on.
+
+    Args:
+        state: The graph state.
+
+    Returns:
+        The messages, newest last.
+    """
+    return " | ".join(str(m) for m in (state.get("messages") or []))
+
+
 def _content(reply: Any) -> str:
     """Pull the text out of whatever the client returned.
 
@@ -107,6 +123,7 @@ def build_nodes(model: Any, tools: dict[str, Any]) -> dict[str, Any]:
         reply = model(
             _prompt(
                 "summarize",
+                history=_history(state),
                 weather=state.get("weather"),
                 flight=quote.get("cheapest"),
                 notes=quote.get("notes", ""),
@@ -131,7 +148,7 @@ def build_nodes(model: Any, tools: dict[str, Any]) -> dict[str, Any]:
             model(
                 _prompt(
                     "respond",
-                    location=state.get("location") or "",
+                    history=_history(state),
                     packing_list=state.get("packing_list"),
                     note=state.get("note", ""),
                     flight=cheapest,

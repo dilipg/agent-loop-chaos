@@ -1135,7 +1135,12 @@ class ChaosEngine:
             if outcome is None:
                 continue
 
-            if outcome.action == "noop" and not outcome.delay_ms and not armed.fault.noop_is_a_fire:
+            # Checked here rather than where a terminal action is resolved: that
+            # happens after this loop, and by then the fire is already recorded.
+            unsupported = outcome.action in UNSUPPORTED_ACTIONS
+            if unsupported or (
+                outcome.action == "noop" and not outcome.delay_ms and not armed.fault.noop_is_a_fire
+            ):
                 # The fault ran and correctly decided to do nothing -- inside its rate
                 # budget, at a node it does not target, on a response with no tool
                 # call. Counting that as a fire inflates `suite.json`'s coverage, which
@@ -1144,7 +1149,11 @@ class ChaosEngine:
                 # already reserves `skipped_reason` for exactly this, and the fault's
                 # own note is the reason.
                 if not armed.record.fired:
-                    armed.record.skipped_reason = outcome.note or "the fault applied no change"
+                    armed.record.skipped_reason = (
+                        f"the adapter cannot perform {outcome.action!r}"
+                        if unsupported
+                        else (outcome.note or "the fault applied no change")
+                    )
                 continue
 
             counters = state.ctx.counters
@@ -1695,7 +1704,21 @@ class ChaosEngine:
             except LimitExceeded:
                 raise
             except BaseException as exc:
-                return self._error_phase(crossing, exc, started)
+                return self._error_phase(crossing, _from_target(exc), started)
+            if repeat > 1:
+                # Every repeat past the first gets its own record, carrying *its* own
+                # result. `_post_phase` records the chosen one, so the ledger ends up
+                # with one entry per real invocation. Without this the extra calls are
+                # invisible and `idempotent_effects` cannot see two effects -- which
+                # is the whole finding when the agent passed no idempotency key.
+                self._record_call(
+                    self._state(),
+                    crossing,
+                    ok=True,
+                    duration_ms=0.0,
+                    result=results[-1],
+                    error=None,
+                )
         return self._post_phase(crossing, self._pick_repeat_result(crossing, results), started)
 
     async def _ainvoke_repeatedly(
@@ -3176,6 +3199,11 @@ class ChaosEngine:
             final_state=_visible_state(state.state_view),
             errors=[str(error.get("type"))] if error else [],
             keys_removed=facts.keys_removed,
+            # Per-call detail, so `idempotent_effects` can ask what a repeated
+            # side-effecting call actually produced. `tool_results` is a flat list
+            # with no way to tell which tool returned what, or with which arguments.
+            tool_invocations=list(state.tool_records),
+            tool_registry=dict(self._tools),
         )
         assertions = []
         if state.expect is not None:
@@ -3573,6 +3601,13 @@ def _from_target(exc: BaseException) -> BaseException:
     with contextlib.suppress(AttributeError):
         object.__setattr__(exc, "_alc_from_target", True)
     return exc
+
+
+#: Actions no adapter can currently perform. A fault asking for one changes nothing,
+#: so it is recorded as a skip rather than a fire -- the same reasoning as D-95.
+#: `resume_from_checkpoint` needs a replay the LangGraph adapter does not implement:
+#: the checkpoint *crossing* exists (D-106), the resume does not.
+UNSUPPORTED_ACTIONS: frozenset[str] = frozenset({"resume_from_checkpoint"})
 
 
 #: Frames that own nothing. A failure inside them belongs to their caller.
