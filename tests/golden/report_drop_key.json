@@ -156,7 +156,7 @@
   },
   "scenario_id": "weather.tool_contract.drop_key",
   "schema_errors": [],
-  "schema_version": "1.2",
+  "schema_version": "1.3",
   "seed": 1337,
   "severity": "high",
   "success": false,

@@ -131,6 +131,7 @@ def build_nodes(model: Any, tools: dict[str, Any]) -> dict[str, Any]:
             model(
                 _prompt(
                     "respond",
+                    location=state.get("location") or "",
                     packing_list=state.get("packing_list"),
                     note=state.get("note", ""),
                     flight=cheapest,

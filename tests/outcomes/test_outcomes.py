@@ -492,3 +492,55 @@ def test_severity_takes_the_max_of_symptoms_and_fault_hints() -> None:
     assert compute_severity([sym("token_blowup", "medium")], ["critical"], success=False) == (
         "critical"
     )
+
+
+class TestRetriedThenSucceededIsReachable:
+    """An agent that retries a failed tool and succeeds must be classified as such.
+
+    `classify_behavior` has a `retry_succeeded` input and `assemble` takes the
+    parameter, but the engine computed `recovered` for the auto-assertions and never
+    passed it on. So `observed_behavior` could never be `retried_then_succeeded`, and
+    every scenario declaring `expected_behavior: retry_then_succeed` failed a *correct*
+    agent -- the failure lands on the well-behaved tree, which is the worst place for
+    it to hide.
+    """
+
+    @staticmethod
+    def _agent(engine: Any) -> Any:
+        state = {"tries": 0}
+
+        @engine.tool(name="quote", side_effecting=False)
+        def quote() -> dict[str, Any]:
+            return {"price_usd": 612}
+
+        def run(question: Any = None) -> str:
+            for _attempt in range(3):
+                try:
+                    return f"The fare is ${quote()['price_usd']}."
+                except Exception:  # a bounded retry is the point of the agent
+                    state["tries"] += 1
+            return "The fare is unavailable."
+
+        return run
+
+    def test_a_bounded_retry_that_succeeds_is_retried_then_succeeded(self, tmp_path: Any) -> None:
+        from agent_loop_chaos import ChaosEngine
+        from agent_loop_chaos.faults import ToolErrorFault
+        from agent_loop_chaos.targeting import Target, Trigger
+
+        engine = ChaosEngine(
+            seed=1337, out_dir=tmp_path, write_bundle=False, strict_schema=False, judge="rules"
+        )
+        engine.register_fault(
+            ToolErrorFault(error_type="http_500", message="upstream unavailable"),
+            target=Target(tool="quote"),
+            trigger=Trigger(on_call=1, max_fires=1),
+        )
+        result = engine.run(
+            self._agent(engine),
+            inputs={"question": "fare?"},
+            scenario_id="retry",
+            expected_behavior="retry_then_succeed",
+        )
+        assert result.verdict["observed_behavior"] == "retried_then_succeeded"
+        assert result.success is True

@@ -11,7 +11,8 @@ what was unavailable.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+import re
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Annotated, Any, TypedDict
 
@@ -33,7 +34,14 @@ _PROMPTS = Path(__file__).parent / "prompts"
 #: Exception names worth retrying. Anything else is permanent and retrying it is a
 #: retry storm with extra steps.
 _TRANSIENT = ("TimeoutError", "ConnectionError", "TransientError", "RateLimit")
-_MAX_TRIES = 2
+#: 5xx and 429 are worth another attempt; a 4xx is the caller's fault and retrying it
+#: is a retry storm with extra steps. The status is in the message because that is
+#: where a client library usually leaves it.
+#: …and the words a client library uses when it does not give you a number.
+_TRANSIENT_STATUS = re.compile(
+    r"\b(?:429|5\d\d)\b|unavailable|temporar|timed out|too many requests", re.IGNORECASE
+)
+_MAX_TRIES = 3
 
 
 class TripState(TypedDict, total=False):
@@ -50,6 +58,7 @@ class TripState(TypedDict, total=False):
     degraded: list[str]
     signature: str
     last_signature: str
+    tried: str
     messages: Annotated[list[Any], add_messages]
     attempts: int
 
@@ -94,13 +103,30 @@ def call_tool(fn: Callable[..., Any], *args: Any, engine: Any = None, **kwargs: 
             return fn(*args, **kwargs)
         except Exception as exc:
             last = exc
-            if not any(marker in type(exc).__name__ for marker in _TRANSIENT):
+            transient = any(marker in type(exc).__name__ for marker in _TRANSIENT) or bool(
+                _TRANSIENT_STATUS.search(str(exc))
+            )
+            if not transient:
                 break
             if engine is not None and attempt + 1 < _MAX_TRIES:
-                engine.note(f"degraded: retrying after {type(exc).__name__}")
+                engine.note(f"retrying after {type(exc).__name__}")
     raise DataUnavailable(
         getattr(fn, "__name__", "tool"), f"{type(last).__name__}: {last}"
     ) from last
+
+
+def _content(reply: Any) -> str:
+    """Pull the text out of whatever the client returned.
+
+    Args:
+        reply: An envelope mapping, or a bare string.
+
+    Returns:
+        The message text, empty when there was none.
+    """
+    if isinstance(reply, Mapping):
+        return str(reply.get("content") or "")
+    return "" if reply is None else str(reply)
 
 
 def _parse_json(reply: Any, field: str) -> Any:
@@ -116,9 +142,9 @@ def _parse_json(reply: Any, field: str) -> Any:
     Raises:
         DataUnavailable: When the reply was cut short or is not JSON.
     """
-    if isinstance(reply, dict) and reply.get("finish_reason") not in (None, "stop"):
+    if isinstance(reply, Mapping) and reply.get("finish_reason") not in (None, "stop"):
         raise DataUnavailable(field, f"the model stopped early ({reply['finish_reason']})")
-    content = reply.get("content", "") if isinstance(reply, dict) else str(reply)
+    content = _content(reply)
     try:
         return json.loads(content)
     except (ValueError, TypeError) as exc:
@@ -177,11 +203,15 @@ def build_nodes(model: Any, tools: dict[str, Any], engine: Any = None) -> dict[s
         try:
             rows = validate_weather(call_tool(weather_tool, location, engine=engine), engine=engine)
         except DataUnavailable as exc:
+            # A validation failure is permanent: the tool answered, and what it
+            # returned is unusable. Retrying re-reads the same bad payload and burns
+            # steps. Only a transient *error* is worth another attempt, and
+            # `call_tool` has already made those.
             return {
                 "weather": None,
                 "degraded": _degrade(state, str(exc)),
                 "signature": f"weather:{location}",
-                "last_signature": state.get("signature", ""),
+                "last_signature": f"weather:{location}",
             }
         return {
             "weather": rows,
@@ -203,6 +233,8 @@ def build_nodes(model: Any, tools: dict[str, Any], engine: Any = None) -> dict[s
                 engine=engine,
             )
         except DataUnavailable as exc:
+            if exc.terminal:
+                raise
             return {"flights": None, "degraded": _degrade(state, str(exc))}
         return {
             "flights": quote,
@@ -249,6 +281,7 @@ def build_nodes(model: Any, tools: dict[str, Any], engine: Any = None) -> dict[s
             "packing_list": None,
             "note": "",
             "attempts": attempts,
+            "tried": state.get("signature", ""),
             "degraded": _degrade(state, "the summarizer did not return a usable list"),
         }
 
@@ -258,7 +291,10 @@ def build_nodes(model: Any, tools: dict[str, Any], engine: Any = None) -> dict[s
         cheapest = quote.get("cheapest") or {}
         degraded = list(state.get("degraded") or [])
 
-        if cheapest.get("flight_id"):
+        wants_booking = any(
+            word in str(state.get("query", "")).lower() for word in ("book", "hold", "reserve")
+        )
+        if wants_booking and cheapest.get("flight_id"):
             # Keyed on the flight and the traveller, so a replayed step, a retry or a
             # checkpoint rollback all land on the same hold instead of a second one.
             key = f"{cheapest['flight_id']}:{state.get('query', '')[:32]}"
@@ -283,22 +319,37 @@ def build_nodes(model: Any, tools: dict[str, Any], engine: Any = None) -> dict[s
             reasons = f" ({'; '.join(degraded)})" if degraded else ""
             return {
                 "answer": (
-                    f"I could not produce {missing} for this trip{reasons}. "
+                    f"I could not produce {missing} for the trip to "
+                    f"{state.get('location') or 'your destination'}{reasons}. "
                     "Nothing here is estimated -- please retry, or give me a different city."
                 ),
                 "degraded": degraded,
             }
 
-        reply = model(
-            _prompt(
-                "respond",
-                objective=state.get("query", ""),
-                packing_list=items,
-                note=state.get("note", ""),
-                flight=cheapest,
+        written = _content(
+            model(
+                _prompt(
+                    "respond",
+                    objective=state.get("query", ""),
+                    location=state.get("location") or "",
+                    packing_list=items,
+                    note=state.get("note", ""),
+                    flight=cheapest,
+                )
             )
-        )
-        return {"answer": reply.get("content", ""), "messages": [reply.get("content", "")]}
+        ).strip()
+        if not written:
+            return {
+                "answer": (
+                    f"For {state.get('location') or 'your trip'}: pack "
+                    f"{', '.join(items)}. The cheapest fare is "
+                    f"${cheapest.get('price_usd')} on {cheapest.get('carrier')}. "
+                    "The write-up step was unavailable, so this summary is assembled "
+                    "from the data directly."
+                ),
+                "degraded": _degrade(state, "the write-up step returned nothing"),
+            }
+        return {"answer": written, "messages": [written]}
 
     return {
         "plan": plan,

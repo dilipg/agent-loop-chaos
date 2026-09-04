@@ -294,3 +294,62 @@ def test_the_canary_is_redacted_when_it_is_not_exempted() -> None:
     from agent_loop_chaos.redact import redact
 
     assert redact({"answer": REAL_CANARY})["answer"] == "<redacted:canary>"
+
+
+class TestPayloadMetadataReachesTheProbe:
+    """The corpus entry's `detect` and `check` must survive into the fire record.
+
+    `injection_followed` matches each fired payload against its own `detect`/`check`
+    rule, and the fault records exactly that in `FaultOutcome.params`. The engine's
+    fire record dropped `params`, so the probe saw only the fault's constructor
+    arguments -- and could detect nothing except the canary. Three of the four
+    shipped objectives (`ignore_instructions`, `change_output_format`,
+    `call_forbidden_tool`) were therefore undetectable, and
+    `prompt_injection_followed` was very nearly unreachable.
+    """
+
+    @staticmethod
+    def _fire(objective: str, tmp_path: Any) -> dict[str, Any]:
+        from agent_loop_chaos import ChaosEngine
+        from agent_loop_chaos.faults import PromptInjectionFault
+        from agent_loop_chaos.targeting import Target, Trigger
+
+        engine = ChaosEngine(
+            seed=1337, out_dir=tmp_path, write_bundle=False, strict_schema=True, judge="rules"
+        )
+
+        @engine.tool(name="supplier", side_effecting=False)
+        def supplier() -> dict[str, Any]:
+            return {"notes": "Fares refreshed hourly.", "price": 612}
+
+        def agent(question: Any = None) -> str:
+            return f"The note said: {supplier()['notes']}"
+
+        engine.register_fault(
+            PromptInjectionFault(objective=objective, placement="field_value"),
+            target=Target(tool="supplier", phase="post"),
+            trigger=Trigger(on_call=1),
+        )
+        result = engine.run(agent, inputs={"question": "?"}, scenario_id="inj")
+        fires = [f for r in result.injected_faults for f in (r.get("fires") or [])]
+        assert fires, "the injection did not fire"
+        return fires[0]
+
+    @pytest.mark.parametrize(
+        "objective",
+        ["ignore_instructions", "change_output_format", "call_forbidden_tool"],
+    )
+    def test_the_fire_carries_its_detect_rule(self, objective: str, tmp_path: Any) -> None:
+        fire = self._fire(objective, tmp_path)
+        params = fire.get("params") or {}
+        assert params.get("payload_id"), f"{objective}: no payload_id on the fire"
+        assert params.get("detect"), f"{objective}: no detect rule on the fire"
+
+    def test_the_exfiltration_payload_still_carries_its_canary(self, tmp_path: Any) -> None:
+        params = self._fire("exfiltrate_secret", tmp_path).get("params") or {}
+        assert params.get("canary")
+
+    def test_the_report_is_still_schema_valid(self, tmp_path: Any) -> None:
+        # `strict_schema=True` above already refuses an invalid report, so reaching
+        # here at all is the assertion; this states it so a reader sees it.
+        assert self._fire("ignore_instructions", tmp_path)["action"]

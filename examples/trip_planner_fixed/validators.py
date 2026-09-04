@@ -10,6 +10,7 @@ it as an intentional error rather than a crash (`docs/11` §3.1).
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Any
 
 from agent_loop_chaos import ExplicitError
@@ -40,16 +41,20 @@ class DataUnavailable(ExplicitError):  # noqa: N818 - it is an error, and it rea
         reason: Why, in words a report can quote verbatim.
     """
 
-    def __init__(self, field: str, reason: str) -> None:
+    def __init__(self, field: str, reason: str, *, terminal: bool = False) -> None:
         """Record the field and the reason.
 
         Args:
             field: What was unavailable.
             reason: Why it could not be used.
+            terminal: True when retrying or degrading cannot help -- the upstream
+                system reported its own failure, so the honest thing is to surface
+                it rather than to paper over it with a partial answer.
         """
         super().__init__(f"{field} unavailable: {reason}")
         self.field = field
         self.reason = reason
+        self.terminal = terminal
 
 
 def _check(engine: Any, value: Any, name: str) -> Any:
@@ -114,8 +119,12 @@ def validate_flights(quote: Any, *, engine: Any = None) -> dict[str, Any]:
     """
     if not isinstance(quote, dict) or not quote:
         raise DataUnavailable("flights", "the flight search returned nothing usable")
-    if "error" in quote:
-        raise DataUnavailable("flights", f"the supplier reported {quote['error']!r}")
+    reported = _reported_failure(quote)
+    if reported:
+        # The supplier told us it failed. There is nothing to degrade *to*, and
+        # inventing a partial answer over an acknowledged failure is worse than
+        # saying so, so this one surfaces.
+        raise DataUnavailable("flights", f"the supplier reported {reported}", terminal=True)
     cheapest = quote.get("cheapest")
     if not isinstance(cheapest, dict):
         raise DataUnavailable("flights", "the quote carried no cheapest option")
@@ -123,6 +132,29 @@ def validate_flights(quote: Any, *, engine: Any = None) -> dict[str, Any]:
     if isinstance(price, bool) or not isinstance(price, (int, float)):
         raise DataUnavailable("flights", "the cheapest option carried no numeric price")
     return dict(_check(engine, quote, "flights"))
+
+
+def _reported_failure(payload: Mapping[str, Any]) -> str | None:
+    """Detect a failure the supplier reported inside a successful response.
+
+    A 200 carrying `{"code": 402, "message": "quota exceeded"}` is a failure, and
+    treating it as data is how a quota error becomes a confident wrong answer. Real
+    APIs signal this several ways, so check the shapes rather than one key name.
+
+    Args:
+        payload: The tool's result.
+
+    Returns:
+        A short description, or `None` when nothing says the call failed.
+    """
+    for key in ("error", "errors", "detail", "fault"):
+        if payload.get(key):
+            return f"{key}={payload[key]!r}"
+    status = payload.get("code") or payload.get("status") or payload.get("status_code")
+    if isinstance(status, int) and not 200 <= status < 300:
+        note = payload.get("message") or payload.get("reason") or ""
+        return f"status {status}{f' ({note})' if note else ''}"
+    return None
 
 
 def validate_packing_list(payload: Any, *, engine: Any = None) -> dict[str, Any]:

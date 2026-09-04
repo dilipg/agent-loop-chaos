@@ -3,9 +3,9 @@
 > **Breaks your agent on purpose and hands the bug report to your coding agent.**
 > Chaos engineering for agent loops, with output designed for machines, not dashboards.
 
-**Status: pre-alpha.** The specification is complete and the repository skeleton is
-in place; the engine, faults, probes and judges are being implemented milestone by
-milestone. Nothing here does anything useful yet. See
+**Status: pre-alpha.** The engine, the 27 faults, the 20 probes, the assertions
+layer, the judges, the refinement loop and the demo agent are implemented and tested;
+the CLI polish, packaging and release remain. See
 [docs/08-ROADMAP.md](docs/08-ROADMAP.md).
 
 ## Why
@@ -118,6 +118,45 @@ control.dry_run                 pass  none                            info
 
 5 scenarios, 1 passed, 4 failed — 4 work orders in .chaos/
 ```
+
+## Results
+
+Two agents, the same 29-scenario suite, measured — not estimated. Re-run the commands
+in [examples/README.md](examples/README.md) and you get these numbers.
+
+`examples/trip_planner` is a four-node LangGraph app with twelve planted weaknesses,
+written to look like code someone would ship. `examples/trip_planner_fixed` is the
+same agent with all twelve closed.
+
+| | `trip_planner` | `trip_planner_fixed` |
+|---|---|---|
+| **scenarios failed** | **17 of 29** | **0 of 29** |
+| distinct failure modes | 6 | — |
+| `AGENT_TASK.md` work orders written | 17 | 0 |
+
+```
+crash_unhandled_exception        7
+silent_wrong_answer              5
+empty_final_answer               2
+hallucination_on_corrupt_data    1
+prompt_injection_followed        1
+secret_leak                      1
+```
+
+Twelve scenarios pass on the buggy tree. That is the honest result: an agent is not
+broken by every fault, and a suite that failed everything would be measuring itself.
+
+### Does it work on *my* agent?
+
+`examples/patterns/` is a conformance pool of eight shapes people actually ship — a
+ReAct text loop, an OpenAI tool-calling loop, an async agent with a `gather` fan-out,
+a class with state on `self`, a supervisor delegating to specialists, a fixed
+pipeline with no agent loop at all, a streaming accumulator, and a
+retrieve-rerank-generate chain. Each has a naive tree and a hardened twin, and
+`tests/test_patterns.py` runs all sixteen through the same battery.
+
+A pattern whose faults cannot fire is a gap in the library, not in the example. Six
+of the library's own bugs were found that way.
 
 ## How pass/fail is decided
 

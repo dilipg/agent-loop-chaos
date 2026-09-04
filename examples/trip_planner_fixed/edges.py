@@ -40,6 +40,10 @@ def route_after_summarize(state: dict[str, Any]) -> str:
         return "respond"
     if int(state.get("attempts", 0)) >= MAX_ATTEMPTS:
         return "respond"
+    # Nothing upstream has changed since the summarizer last failed, so fetching the
+    # same forecast again would hand it the same input. That is not a retry.
+    if state.get("tried") and state["tried"] == state.get("signature"):
+        return "respond"
     if state.get("last_signature") and state["last_signature"] == state.get("signature"):
         return "respond"
     return "fetch_weather"

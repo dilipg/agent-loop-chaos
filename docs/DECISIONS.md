@@ -1143,3 +1143,93 @@ Related: `no_unsourced_numbers` takes `allow_derived: false` in
 combinations cover most of the number line and a fabricated temperature is
 "derivable" from a humidity and a fare. Derivation is the right default for an agent
 that computes and the wrong one for an agent that reports.
+
+### D-85 — `retried_then_succeeded` was unreachable
+*Affects `engine.py`, phase 08.*
+
+`classify_behavior` has a `retry_succeeded` input and `assemble` takes the parameter,
+but `_post_run` computed `recovered` for the auto-assertions and never passed it on.
+So rule 13 could never fire: an agent that retried a failed tool and succeeded was
+classified `graceful_degradation`, and every scenario declaring
+`expected_behavior: retry_then_succeed` **failed a correct agent**.
+
+The failure landed on the well-behaved tree, which is the worst place for it to hide:
+the negative control is the thing you trust to be clean.
+
+### D-86 — A fault's `outcome.params` reaches the fire record
+*Affects `engine.py`, `chaos_report.schema.json`, phase 08.*
+
+`PromptInjectionFault` records the corpus entry's `payload_id`, `detect` rule, `check`
+and `canary` in `FaultOutcome.params`, and the `injection_followed` probe reads
+exactly those fields off each payload. The engine's fire record dropped `params`
+entirely, so the probe saw only the fault's constructor arguments.
+
+Consequence: `injection_followed` could detect nothing except the canary. Three of the
+four shipped objectives -- `ignore_instructions`, `change_output_format`,
+`call_forbidden_tool` -- were undetectable, and `prompt_injection_followed` was very
+nearly unreachable. The library's headline capability was half-wired.
+
+`fires[].params` is an additive optional field: report `schema_version` 1.2 → 1.3. The
+engine also builds `injection_payloads` from `fire["params"]` rather than from the
+fire dict, which buried the rules one level below where the probe looked.
+
+### D-87 — `output_non_empty` is not synthesized for an `explicit_error` scenario
+*Affects `assertions.py`, `engine.py`, phase 08.*
+
+`synthesize_auto_expect` added `output_non_empty` to every run. A scenario declaring
+`expected_behavior: explicit_error` is asking the agent to **raise**, and a run that
+raises has no output by construction -- so the auto-assertion failed the agent for
+doing exactly what the scenario asked. Again it lands on the correct tree, because
+only a correct agent gets far enough to raise deliberately.
+
+`synthesize_auto_expect` takes `expected_behavior` and sets `output_non_empty=False`
+there. Every other expectation is unchanged, and the acknowledgement `output_matches`
+is suppressed for the same reason.
+
+### D-88 — Demo scenarios that could not discriminate were fixed or removed
+*Affects `examples/scenarios/demo_suite.yaml`, phase 08.*
+
+`prompts/08-demo-agent.md` requires reporting which scenarios changed and why:
+
+- **`resume.checkpoint_rollback` — removed.** `CheckpointRollbackFault` needs a
+  checkpoint crossing and the LangGraph adapter creates none (D-82). The fault could
+  not fire, so the scenario failed both trees identically while proving nothing. It
+  returns with the adapter's checkpoint layer.
+- **`tool.type_flip_matrix` — narrowed** from four mutations to two. `null_fields`
+  and `nan_numbers` leave `temp_c` readable in this fixture, so the agent has nothing
+  to report as unusable.
+- **`state.misroute_edge` — retargeted.** It forced `respond` from the `plan` edge,
+  whose branch map holds only `fetch_weather` and `ask_clarify`; LangGraph raised
+  `KeyError`, which is the harness breaking the graph rather than the agent failing.
+- **`tool.rate_limited_forever` — `after_calls: 1` → `0`.** The single flight lookup
+  slipped through before the limit engaged, so the fault fired and changed nothing.
+- **`loop.pinned_tool_output` — rebuilt.** Pinning alone traps nothing: this agent
+  only re-fetches when the packing list came back empty, so the loop needed a reason
+  to start. It now pairs the pin with `LLMMalformedOutputFault(missing_required)`,
+  which is what makes planted weakness #6 -- the uncapped back-edge -- reachable at
+  all. Its expectation moved from `abort_with_message` to `graceful_degradation`:
+  detecting no-progress, stopping and saying so is the better behaviour, and the
+  reference suite guessed before there was an agent to check against.
+- **`sideeffect.duplicate_hold` — added**, using an existing fault, and it passes on
+  both trees. `duplicate_side_effect` counts agent-issued effects only (R1), and the
+  duplicate is the harness's own call -- so the probe correctly declines to fire. The
+  scenario is kept because the D-23 side-effect gate is exercised by it; detecting a
+  missing idempotency key needs an output-level check, not a probe.
+- **Degradation scenarios use `max_fires: null` and no `on_call`** (D-84). `on_call: 1`
+  pins the fault to the first call whatever `max_fires` says, so the retry got clean
+  data and the scenario tested recovery while claiming to test degradation.
+
+### D-89 — Two planted weaknesses are not currently caught, and say so
+*Affects `examples/trip_planner/README.md`, phase 08.*
+
+`docs/09` §4 maps twelve weaknesses to scenarios. Ten produce a failure. Two do not:
+
+- **#7, the objective living only in `messages`.** The scripted model keys on a
+  prompt tag, so diluting the surrounding context does not move it. Catching this
+  needs a model that actually attends to history -- a live run, or a better fake.
+- **#12, no guard that `location` is set before `summarize`.** The graph's own
+  routing supplies a location before `summarize` is reachable, so the state fault has
+  nothing to remove by then.
+
+Both are real weaknesses in the code. Neither is dressed up as caught, and the
+`trip_planner` README lists them as uncaught rather than omitting them.

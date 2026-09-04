@@ -422,3 +422,44 @@ def test_asserting_a_value_for_a_destroyed_field_still_fails() -> None:
     expect = Expect(no_claim_about=["temp_c"])
     for answer in ("The temp_c is 21.", "temp_c = 24", "temp_c: 19.5 degrees"):
         assert only(evaluate(expect, ctx(final_output=answer)), "no_claim_about").ok is False
+
+
+class TestAutoExpectRespectsExplicitError:
+    """`output_non_empty` must not fire on a run that correctly raised.
+
+    `synthesize_auto_expect` adds `output_non_empty` to every run, which is right for
+    an agent that is supposed to answer. A scenario declaring
+    `expected_behavior: explicit_error` is asking the agent to *raise* -- and a run
+    that raises has no output by construction. Requiring one there fails the agent
+    for doing exactly what the scenario asked, and it is the negative control that
+    notices, because only a correct agent gets far enough to raise deliberately.
+    """
+
+    def test_explicit_error_does_not_require_output(self) -> None:
+        from agent_loop_chaos.assertions import synthesize_auto_expect
+
+        expect = synthesize_auto_expect(
+            [], max_steps=25, recovered=False, expected_behavior="explicit_error"
+        )
+        assert expect.output_non_empty is not True
+
+    def test_every_other_expectation_still_requires_output(self) -> None:
+        from agent_loop_chaos.assertions import synthesize_auto_expect
+
+        for behavior in (
+            "graceful_degradation",
+            "retry_then_succeed",
+            "abort_with_message",
+            "ignore_and_continue",
+        ):
+            expect = synthesize_auto_expect(
+                [], max_steps=25, recovered=False, expected_behavior=behavior
+            )
+            assert expect.output_non_empty is True, behavior
+
+    def test_the_default_is_unchanged(self) -> None:
+        # Called without the argument, the behaviour is what every existing caller
+        # already relies on.
+        from agent_loop_chaos.assertions import synthesize_auto_expect
+
+        assert synthesize_auto_expect([], max_steps=25, recovered=False).output_non_empty is True

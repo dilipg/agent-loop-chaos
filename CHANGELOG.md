@@ -9,6 +9,63 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+### M8 — the demo agent, the pattern pool, and nine library fixes
+
+**The proof.** `examples/trip_planner` is a four-node LangGraph app with twelve
+planted weaknesses; `examples/trip_planner_fixed` closes all twelve. Same 29-scenario
+suite against both:
+
+| | buggy | fixed |
+|---|---|---|
+| failed | **17** | **0** |
+| distinct failure modes | **6** | — |
+
+`crash_unhandled_exception` 7, `silent_wrong_answer` 5, `empty_final_answer` 2,
+`hallucination_on_corrupt_data` 1, `prompt_injection_followed` 1, `secret_leak` 1.
+
+**The pattern pool.** `examples/patterns/` — eight agent shapes people actually ship
+(ReAct text loop, OpenAI tool-calling loop, async with a `gather` fan-out, class with
+state on `self`, supervisor delegating to specialists, fixed pipeline with no loop,
+streaming accumulator, retrieve-rerank-generate), each with a naive tree and a
+hardened twin. `tests/test_patterns.py` runs all sixteen through one battery: the
+fault must fire, the naive tree must fail, the hardened tree must pass, no probe may
+fire on a clean run, the report must be schema-valid, and the run must reproduce.
+
+Also `examples/vanilla_agent.py`, `examples/scenarios/{demo_suite,quickstart}.yaml`,
+`alc run --entrypoint`, and READMEs carrying the measured numbers.
+
+**Nine library bugs, every one found by running real agents rather than reading code:**
+
+- **D-79** `max_fires: null` is legal per the schema and the reference suite uses it;
+  `Trigger` typed it `int`, so a schema-valid suite crashed the engine.
+- **D-80** No state fault could ever fire: the engine names its one state crossing
+  after the node, and the matcher compared `state_key` against that name. Every unit
+  test passed, because each built a crossing shaped the way nothing emits.
+- **D-81** The grounding check could not fire on the case it exists for. Every layer's
+  results went into one history, so a model's own response was a "source" and any
+  number it invented sourced itself.
+- **D-82** A checkpointed LangGraph app could not run at all: `intercept_checkpoints`
+  needs a `thread_id` the engine never passed.
+- **D-83** `initial_state` was shallow-copied, so an agent appending to a scratchpad
+  mutated the scenario. `RefinementLoop` rounds began from different states while
+  being reported as the same scenario at the same seed.
+- **D-85** `retried_then_succeeded` was unreachable: `recovered` was computed and
+  never passed to the classifier, so every `retry_then_succeed` scenario failed a
+  *correct* agent.
+- **D-86** `injection_followed` could detect nothing but the canary. The fault records
+  each payload's `detect`/`check` rule; the engine's fire record dropped it. Three of
+  the four shipped injection objectives were undetectable.
+- **D-87** `output_non_empty` was synthesized even for `explicit_error` scenarios,
+  failing an agent for raising exactly as asked.
+- Plus `redact_source` gaps and the demo-suite scenario repairs in **D-84**, **D-88**,
+  **D-89**.
+
+Five of the nine failed on the *correct* tree rather than the buggy one — the negative
+control is where a false positive hides, which is why `docs/07` §2 makes it mandatory.
+
+Schema: report `schema_version` 1.2 → 1.3, adding optional `injected_faults[].fires[].params`.
+
+
 ### M7 — the refinement loop
 
 - `loop.py`: `RefinementLoop`, `LoopReport`, `RoundResult`, and the shared `run_suite`

@@ -807,6 +807,7 @@ def synthesize_auto_expect(
     *,
     max_steps: int | None = None,
     recovered: bool = False,
+    expected_behavior: str = "graceful_degradation",
 ) -> Expect:
     """Build the default expectations from what the faults actually did (§4.4).
 
@@ -820,6 +821,11 @@ def synthesize_auto_expect(
         recovered: Whether a later call to the failed tool succeeded. A bounded retry
             that *succeeded* has nothing to acknowledge -- demanding it anyway is a
             false positive, and it made the `good_agent` control unpassable.
+        expected_behavior: The scenario's expectation. A scenario asking the agent to
+            **raise** cannot also require it to answer: a run that raises has no
+            output by construction, and demanding one fails the agent for doing
+            exactly what was asked. Only a correct agent gets far enough to raise
+            deliberately, so this false positive lands on the negative control.
 
     Returns:
         The synthesized `Expect`. Empty when no fault had a data effect.
@@ -851,11 +857,13 @@ def synthesize_auto_expect(
             else:
                 numeric_touched = True
 
+    answers = expected_behavior != "explicit_error"
     expect = Expect(
         no_claim_about=sorted(set(removed)) or None,
         no_unsourced_numbers=bool(removed or numeric_touched) or None,
-        output_matches=[_ACKNOWLEDGEMENT] if (raised and not recovered) else None,
+        output_matches=([_ACKNOWLEDGEMENT] if (raised and not recovered and answers) else None),
         must_not_call_tools=sorted(set(forbidden_tools)) or None,
         max_steps=max_steps if loop_trap else None,
+        output_non_empty=answers,
     )
     return expect

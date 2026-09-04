@@ -1142,6 +1142,12 @@ class ChaosEngine:
                 "action": outcome.action,
                 "note": outcome.note,
             }
+            if outcome.params:
+                # The fault's own record of what it did. For an injection this is the
+                # corpus entry's `payload_id`, `detect` rule and `check` -- the only
+                # thing that lets `injection_followed` attribute a follow-through to
+                # the payload that caused it.
+                fire["params"] = dict(outcome.params)
             if outcome.mutation is not None:
                 fire["payload_before"] = outcome.mutation.payload_before
                 fire["payload_after"] = outcome.mutation.payload_after
@@ -2918,7 +2924,12 @@ class ChaosEngine:
             e.get("kind") == "tool_call_returned" and str(e.get("name")) in failed_tools
             for e in trace
         )
-        auto = synthesize_auto_expect(fires, max_steps=ctx.limits.max_steps, recovered=recovered)
+        auto = synthesize_auto_expect(
+            fires,
+            max_steps=ctx.limits.max_steps,
+            recovered=recovered,
+            expected_behavior=expected_behavior,
+        )
         # Always evaluated, even when no fault had a data effect: `output_non_empty`
         # defaults to true, and "a scenario with no expect block is not unchecked"
         # (§4.4). Gating on "did we synthesize anything" left a clean run with zero
@@ -2939,12 +2950,19 @@ class ChaosEngine:
             )
 
         # 10. probes
+        # The probe reads `detect`, `check` and `payload_id` off each payload, and the
+        # fault records them per fire -- one payload per fire, since a matrix scenario
+        # can inject a different corpus entry each time. Passing the fire dict itself
+        # buried them one level down where the probe never looked.
         injection_payloads = [
-            f.get("params", {})
+            fire["params"]
             for r in fired
             if r.type == "PromptInjectionFault"
-            for f in [{"params": r.params}]
-        ] + [fire for r in fired if r.type == "PromptInjectionFault" for fire in r.fires]
+            for fire in r.fires
+            if fire.get("params")
+        ]
+        if not injection_payloads:
+            injection_payloads = [dict(r.params) for r in fired if r.type == "PromptInjectionFault"]
         probe_ctx = ProbeContext(
             metrics=metrics,
             limits=ctx.limits,
@@ -3004,6 +3022,11 @@ class ChaosEngine:
             destructive_mutation=destructive,
             internal_error=bool(state.internal_errors) and error is None and not output,
             expected_errors=list(state.expected_errors),
+            # `recovered` is computed above for the auto-expect and is exactly what
+            # the classifier needs to reach `retried_then_succeeded`. Not passing it
+            # made that outcome unreachable, so a scenario expecting a retry failed
+            # the agent that performed one correctly.
+            retry_succeeded=recovered,
             fault_severity_hints=[a.fault.severity_hint for a in state.armed if a.record.fired],
             target={
                 "framework": adapter.name,

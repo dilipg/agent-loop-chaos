@@ -50,7 +50,7 @@
       "type": "string",
       "pattern": "^\\d+\\.\\d+$",
       "examples": [
-        "1.2"
+        "1.3"
       ]
     },
     "run_id": {
@@ -485,6 +485,10 @@
                 },
                 "rng_draws": {
                   "type": "integer"
+                },
+                "params": {
+                  "type": "object",
+                  "description": "Action parameters the fault recorded for this fire, and the metadata a probe needs to attribute it -- an injection payload's `payload_id`, `detect` rule, `check` and `canary`. Without these the `injection_followed` probe can detect nothing but the canary (docs/DECISIONS.md D-86)."
                 }
               }
             }

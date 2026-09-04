@@ -33,7 +33,7 @@ __all__ = [
     "extract_code_pointers",
 ]
 
-SCHEMA_VERSION = "1.2"
+SCHEMA_VERSION = "1.3"
 
 
 def empty_verdict(expected_behavior: ExpectedBehavior = "graceful_degradation") -> dict[str, Any]:

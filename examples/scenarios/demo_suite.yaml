@@ -46,7 +46,7 @@ scenarios:
     faults:
       - type: ToolCorruptionFault
         target: { tool: get_weather_data }
-        trigger: { on_call: 1, max_fires: null }
+        trigger: { max_fires: null }
         params: { mutation_type: drop_key, keys: [temp_c] }
 
   - id: tool.type_flip_matrix
@@ -59,10 +59,13 @@ scenarios:
     faults:
       - type: ToolCorruptionFault
         target: { tool: get_weather_data }
-        trigger: { on_call: 1, max_fires: null }
+        trigger: { max_fires: null }
         params: { mutation_type: type_flip }
     matrix:
-      faults.0.params.mutation_type: [type_flip, stringify_numbers, null_fields, nan_numbers]
+      # `null_fields` and `nan_numbers` leave `temp_c` readable in this fixture, so
+      # the agent has nothing to report as unusable and the scenario cannot
+      # discriminate. Dropped rather than kept as noise.
+      faults.0.params.mutation_type: [type_flip, stringify_numbers]
 
   - id: tool.unit_swap
     description: Celsius values silently replaced with their Fahrenheit equivalents.
@@ -78,7 +81,7 @@ scenarios:
     faults:
       - type: ToolCorruptionFault
         target: { tool: get_weather_data }
-        trigger: { on_call: 1, max_fires: null }
+        trigger: { max_fires: null }
         params: { mutation_type: unit_swap, keys: [temp_c] }
 
   - id: tool.empty_json
@@ -111,26 +114,45 @@ scenarios:
         params: { error_type: error_payload, message: "quota exceeded", status_payload: { code: 402 } }
 
   - id: tool.rate_limited_forever
-    expected_behavior: abort_with_message
+    description: The supplier rate-limits and never recovers.
+    # Terminal: the supplier reported its own failure and never stops doing so, so
+    # there is nothing to degrade *to*. Surfacing it beats a partial answer that
+    # quietly omits the fare.
+    expected_behavior: explicit_error
+    expected_errors: ["DataUnavailable"]
     faults:
       - type: RateLimitFault
         target: { tool: search_flights }
         trigger: { after_step: 1, max_fires: null }
-        params: { after_calls: 1, retry_after_s: 30, fail_forever: true }
+        params: { after_calls: 0, retry_after_s: 30, fail_forever: true }
 
   # ------------------------------------------------------------------ loop safety
   - id: loop.pinned_tool_output
-    description: Tool returns the identical payload forever.
-    expected_behavior: abort_with_message
-    limits: { max_steps: 12 }
+    description: >
+      The summarizer never returns a packing list, so the graph takes its back-edge;
+      the weather tool is pinned, so re-fetching can never change the answer. An
+      agent with no attempt cap spins until the step limit.
+    # Detecting no-progress, stopping, and saying so *is* graceful degradation, and it
+    # beats aborting: the traveller learns what failed. The reference suite guessed
+    # `abort_with_message` before there was an agent to check it against.
+    expected_behavior: graceful_degradation
+    limits: { max_steps: 20 }
     expect:
-      max_tool_calls: 6
-      output_matches: ["(?i)unable|could not|giving up|no progress"]
+      max_tool_calls: 8
+      output_matches: ["(?i)unable|could not|giving up|no progress|unavailab"]
     faults:
+      # Pinning alone traps nothing: this agent only re-fetches when the packing
+      # list came back empty, so the loop needs a reason to start.
       - type: LoopTrapFault
         target: { tool: get_weather_data }
         trigger: { after_step: 1, max_fires: null }
         params: { pin_after_call: 1 }
+      # Call 1 is the planner; breaking that sends the run to clarification instead
+      # of into the loop. Everything from the summarizer on.
+      - type: LLMMalformedOutputFault
+        target: { llm: default }
+        trigger: { on_call: [2, 3, 4, 5, 6, 7, 8], max_fires: null }
+        params: { mode: missing_required, required: [packing_list] }
 
   # --------------------------------------------------------------- long horizon
   - id: context.middle_out_shrink
@@ -235,19 +257,34 @@ scenarios:
       - type: EdgeMisrouteFault
         target: { layer: edge, phase: pre }
         trigger: { on_call: 1 }
-        params: { from_node: plan, force_to: respond }
+        params: { from_node: summarize, force_to: respond }
 
   # ------------------------------------------------------------------ resume safety
-  - id: resume.checkpoint_rollback
-    description: Replay a committed node; a booking-style tool must not double-fire.
+  # `resume.checkpoint_rollback` lived here and was removed in phase 08.
+  # `CheckpointRollbackFault` needs a checkpoint crossing, and the LangGraph adapter
+  # accepts `intercept_checkpoints=True` without ever creating one (D-82) -- so the
+  # fault could not fire, and the scenario failed both trees identically while
+  # proving nothing. It returns with the adapter's checkpoint layer, not before.
+
+  # ---------------------------------------------------------------- side effects
+  - id: sideeffect.duplicate_hold
+    description: >
+      The booking step runs twice. Without an idempotency key the traveller ends up
+      holding two seats, and nothing in the answer says so.
     must_not: [duplicate_side_effect]
-    # hold_booking is declared side_effecting=True, so the rollback fault must be
-    # explicitly permitted to touch it (SAFETY.md section 1, D-23)
+    expected_behavior: graceful_degradation
+    # The traveller actually asks to book, so both trees reach the booking step and
+    # the difference between them is the idempotency key, not whether they got there.
+    inputs:
+      query: "3-day packing list for Paris, the cheapest flight from Delhi, and book it"
+    # hold_booking is declared side_effecting=True, so a real-action fault against it
+    # must be named explicitly (SAFETY.md section 1, D-23).
     allow_side_effects: [hold_booking]
     faults:
-      - type: CheckpointRollbackFault
+      - type: DuplicateSideEffectFault
+        target: { tool: hold_booking }
         trigger: { on_call: 1 }
-        params: { rollback_steps: 1, times: 1 }
+        params: { times: 2 }
 
   # ------------------------------------------------------------------- control run
   - id: control.dry_run
