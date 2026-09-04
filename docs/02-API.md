@@ -539,9 +539,28 @@ alc dashboard [--out DIR] [--port 7717] [--host 127.0.0.1] [--open]
               [--poll-ms 250] [--max-events N] [--no-sse] [--once]
 ```
 
-`dashboard`, `--dashboard`, and `--format html` arrive in phase 10; everything else
-is v0.1. `alc dashboard` is stdlib-only and read-only — see
-`docs/10-DASHBOARD.md`.
+`alc dashboard` is stdlib-only and read-only: it serves a `.chaos` directory over
+loopback, tails `trace.jsonl` as it is written, and never writes into a run
+directory. `--once` renders the current state as one JSON object and exits, for a CI
+smoke test. `alc run --dashboard` serves alongside the suite in a daemon thread and
+cannot change its exit code — a bind failure prints to stderr and the run continues.
+`alc report … --format html` writes one self-contained file with the data inlined and
+no external asset of any kind. See `docs/10-DASHBOARD.md`.
+
+The dashboard's public names, importable without starting a server:
+
+```python
+from agent_loop_chaos.dashboard import RunDirWatcher          # tails a .chaos directory
+from agent_loop_chaos.dashboard import api                    # the endpoints, as pure functions
+from agent_loop_chaos.dashboard.server import DashboardServer # the transport
+from agent_loop_chaos.dashboard.export import export_html, build_blob
+```
+
+`api` exposes `suite(watcher)`, `runs(watcher)`, `run(watcher, run_id)`,
+`events(watcher, run_id, …)`, `artifact(watcher, run_id, name)` and `health(watcher)`,
+plus `ARTIFACTS` — the literal allow-list of serveable file names. A `run_id` is
+resolved by lookup in the watcher's discovered map, never by joining request input
+onto a path, and `payloads/` is not serveable.
 
 Exit codes: `0` all passed, `1` at least one scenario failed, `2` configuration or
 usage error, `3` internal error. `--json` prints one JSON object to stdout and

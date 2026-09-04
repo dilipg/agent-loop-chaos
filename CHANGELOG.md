@@ -9,6 +9,39 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+### M10 — the live trace dashboard (post-0.1.0)
+
+A local, stdlib-only, read-only web view that tails `trace.jsonl` while a suite is
+running. No Flask, no npm, no build step, no external asset: installing the library is
+enough to run `alc dashboard`.
+
+- `agent_loop_chaos.dashboard.watcher.RunDirWatcher` — discovers run directories two
+  levels deep and tails each `trace.jsonl` by byte offset, holding a partial final
+  line until its newline arrives, resetting on a shrunk file, emitting
+  `__unparseable__` for a corrupt line rather than dying, and keeping a sparse
+  `seq -> byte offset` index so `from=<seq>` seeks instead of re-reading.
+- `dashboard/api.py` — the eight endpoints as pure functions, testable with no server.
+  A `run_id` is matched against `^[A-Za-z0-9._-]{1,64}$` **and** resolved by lookup in
+  the discovered map; artifact names come from a literal six-entry allow-list;
+  `payloads/` is unreachable and a symlink out of the run directory is refused.
+- `dashboard/server.py` — `ThreadingHTTPServer`, `Cache-Control: no-store` on
+  everything, SSE with a 15 s heartbeat and a bounded per-client queue that drops a
+  fallen-behind viewer with a `desync` frame instead of buffering forever, `--no-sse`,
+  and port fallback (explicit `--port` fails instead of wandering).
+- `dashboard/static/index.html` — one file: runs, timeline, and a detail pane with
+  Event / Diff / Prompt / State / Verdict / Task tabs. Fault rows are accented and
+  full-width, the row list is windowed so a 20 000-event trace stays usable, and
+  evidence `seq` links jump the timeline. Every payload-derived string goes through
+  `textContent`, and zero-width and bidi characters render as visible chips (D-38).
+- `alc dashboard`, `alc run --dashboard [--linger S]`, and `alc report --format html`
+  — the last writes a single self-contained file with the data inlined, re-redacted,
+  and `</` escaped so a payload cannot end the script element it sits in.
+- **D-112** `suite.json` is 1.1 for every run, not only a refinement loop. `alc run`
+  used to write it a second time itself, clobbering the live document with a 1.0 one.
+- **D-113** The seek index stored the end-of-chunk offset for every line in one read.
+  Live tailing hid it; a bulk read of a finished trace indexed every line past the
+  event it named, and `from=19000` came back empty.
+
 ### `resume_from_checkpoint` implemented (post-0.1.0)
 
 **D-111** — the replay happens at the node boundary, not in the checkpointer.

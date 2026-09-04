@@ -712,11 +712,12 @@ def write_suite_json(
 ) -> str:
     """Write the suite-level summary.
 
-    Written at `schema_version` **1.0** here. Phase 07 makes it live and bumps it to
-    1.1 with `status`, `planned`, `current` and `round`; adding those now would ship
-    fields no consumer expects at this version (D-25). `judge_disagreement_rate` and
-    `judge_latency_ms_total` are additive and always present, so a 1.0 consumer that
-    ignores unknown keys is unaffected (D-70).
+    `schema_version` is **1.0** for a bare dump of results, and **1.1** as soon as a
+    caller tracks a suite -- `planned` or `loop` present -- which adds `status`,
+    `planned`, `current`, `round` and `rounds_planned`. From M10 `run_suite` always
+    passes `planned`, so every `alc run` publishes 1.1 (D-112). `judge_disagreement_rate`
+    and `judge_latency_ms_total` are additive and always present, so a 1.0 consumer
+    that ignores unknown keys is unaffected (D-70).
 
     Args:
         out_dir: The suite output directory.
@@ -784,6 +785,21 @@ def write_suite_json(
         ],
     }
 
+    if planned is not None or loop is not None:
+        # The live fields, written whenever a caller is tracking a suite rather than
+        # dumping one result set. A viewer needs the denominator before the suite
+        # finishes, and `status` is what tells it whether to keep polling
+        # (docs/10 section 2). They stay on the completed document too: a reader
+        # opening a finished directory wants the same shape.
+        payload["schema_version"] = "1.1"
+        payload["status"] = status
+        payload["planned"] = list(planned or [str(r.scenario_id) for r in results])
+        payload["current"] = current
+        payload["round"] = 1
+        payload["rounds_planned"] = rounds_planned
+        if status == "running":
+            payload["finished_at"] = None
+
     if loop is not None:
         # D-25 versions the field sets once: the loop fields and the live-progress
         # fields arrive together at 1.1, rather than being bolted onto 1.0.
@@ -801,5 +817,9 @@ def write_suite_json(
         payload["tamper"] = dict(loop.tamper)
 
     path = out_dir / "suite.json"
-    path.write_text(_json(payload, indent=2), encoding="utf-8")
+    # Temp file plus `os.replace`, because a viewer polls this several times a second
+    # and `write_text` is not atomic -- it would eventually read half a document.
+    temp = path.with_suffix(".json.tmp")
+    temp.write_text(_json(payload, indent=2), encoding="utf-8")
+    os.replace(temp, path)
     return str(path)

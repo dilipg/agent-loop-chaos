@@ -1657,3 +1657,37 @@ What catches the buggy tree is `idempotent_effects` (D-108) — two identical ca
 two distinct holds. `resume.checkpoint_rollback` is back in the demo suite under its
 own fault, failing the buggy tree with `duplicate_side_effect` and passing the fixed
 one.
+
+### D-112 — `suite.json` is 1.1 for every run, not only a refinement loop
+*2026-09-04. Affects `docs/10-DASHBOARD.md` §2, `docs/04-SCHEMAS.md` §2, phase 10.*
+
+`docs/10` §2 requires `suite.json` to be written at suite start and updated after
+every scenario, carrying `status` / `planned` / `current` so a viewer knows the
+denominator before the suite finishes. `run_suite` now does exactly that, which means
+the plain `alc run` path publishes 1.1 — the live fields are not a refinement-loop
+feature.
+
+`alc run` used to write `suite.json` a second time itself, after `run_suite` had
+already published the completed document. That trailing write passed no `planned`, so
+it clobbered the live 1.1 document with a 1.0 one and erased `status` at exactly the
+moment a viewer polls for it. The CLI's write is removed; `run_suite` owns the file.
+
+Additive, so a 1.0 consumer that ignores unknown keys is unaffected. The `rounds`,
+`flipped`, `regressions` and `tamper` fields stay loop-only: 1.1 without a `rounds`
+key is a single-round suite.
+
+### D-113 — The dashboard's seek index stores each line's own offset
+*2026-09-04. Affects `docs/10-DASHBOARD.md` §4, phase 10.*
+
+`RunDirWatcher` keys a sparse `seq -> byte offset` index every 500 events so a
+`from=<seq>` query seeks instead of re-reading. The first implementation stored
+`state.offset` at the moment the line was parsed — but `_read` advanced `offset` past
+the *whole* chunk before parsing any of it, so every line in one read indexed to the
+same end-of-chunk position. Live tailing hid it (one line per read); a bulk read of a
+finished 20 000-event trace indexed all of them past the events they name, and
+`from=19000` came back empty.
+
+`_read` now tracks each line's own start offset and passes it to `_append`. The
+regression test is the one from `docs/10` §10: ask a 20 000-event trace for a page at
+`seq 19 000` with retention set to 100, and assert both that the right events come
+back and that fewer than a quarter of the file's bytes were read to find them.
