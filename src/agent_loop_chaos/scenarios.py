@@ -94,15 +94,24 @@ class FaultSpec:
 class JudgeSpec:
     """Per-scenario judge configuration.
 
+    Fields mirror `scenario.schema.json`'s `judge` block, which sets
+    ``additionalProperties: false``.
+
     Attributes:
         kind: ``"rules"``, ``"slm"`` or ``"ensemble"``.
         model: The model id, for the SLM judge.
         base_url: The endpoint, normalized per transport (D-34).
+        transport: ``"openai"``, ``"ollama"`` or ``"anthropic"``.
+        temperature: Sampling temperature; 0 keeps a run reproducible (D-07).
+        offline_fallback: Fall back to `RuleJudge` rather than raising.
     """
 
     kind: str = "rules"
     model: str | None = None
     base_url: str | None = None
+    transport: str = "openai"
+    temperature: float = 0.0
+    offline_fallback: bool = True
 
 
 def _t(**kw: Any) -> dict[str, Any]:
@@ -568,6 +577,31 @@ def _merge_defaults(defaults: Mapping[str, Any], body: Mapping[str, Any]) -> dic
     return merged
 
 
+def _build(name: str, cls: Any, body: Any) -> Any:
+    """Construct a scenario sub-block, turning a bad key into a `ConfigError`.
+
+    A `TypeError` from a dataclass constructor names the argument but not the file,
+    the scenario, or the block -- which is most of what an author needs.
+
+    Args:
+        name: The block name, for the message.
+        cls: The dataclass to build.
+        body: The mapping from the scenario file, or `None`.
+
+    Returns:
+        The constructed object, or `None` when `body` is not a mapping.
+
+    Raises:
+        ConfigError: When a key is unknown to the block.
+    """
+    if not isinstance(body, Mapping):
+        return None
+    try:
+        return cls(**dict(body))
+    except TypeError as exc:
+        raise ConfigError(f"invalid `{name}` block: {exc}") from exc
+
+
 def _scenario_from_body(body: Mapping[str, Any]) -> Scenario:
     """Build a `Scenario` from a validated body.
 
@@ -589,14 +623,9 @@ def _scenario_from_body(body: Mapping[str, Any]) -> Scenario:
         resolved, skipped = resolve_preset(str(preset))
         faults = [*(spec.to_dict() for spec in resolved), *faults]
 
-    expect_body = data.pop("expect", None)
-    expect = Expect(**dict(expect_body)) if isinstance(expect_body, dict) else None
-
-    judge_body = data.pop("judge", None)
-    judge = JudgeSpec(**dict(judge_body)) if isinstance(judge_body, dict) else None
-
-    limits_body = data.pop("limits", None)
-    limits = Limits(**dict(limits_body)) if isinstance(limits_body, dict) else Limits()
+    expect = _build("expect", Expect, data.pop("expect", None))
+    judge = _build("judge", JudgeSpec, data.pop("judge", None))
+    limits = _build("limits", Limits, data.pop("limits", None)) or Limits()
 
     known = {
         "id",

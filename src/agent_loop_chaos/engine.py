@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import dataclasses
 import inspect
 import logging
 import time
@@ -1125,6 +1124,7 @@ class ChaosEngine:
 
             if outcome.mutation is not None:
                 self._record_mutation(armed, crossing, outcome.mutation, seq)
+                self._note_injected_values(state, outcome.mutation)
 
             if outcome.action in VALUE_ACTIONS:
                 value = outcome.value
@@ -1144,6 +1144,29 @@ class ChaosEngine:
         if terminal is not None:
             value = self._resolve_terminal(terminal[0], terminal[1], crossing, value)
         return value
+
+    @staticmethod
+    def _note_injected_values(state: _RunState, mutation: MutationLog) -> None:
+        """Record the scalars a fault introduced, for rule R2.
+
+        Without this, `values_injected` is always empty and a value the harness
+        planted counts as a legitimate source. `unit_swap` is the sharp case: it
+        changes the value and keeps the label, so the swapped number really is in the
+        payload the agent received, and `no_unsourced_numbers` would find it sourced.
+
+        Args:
+            state: The run state, whose facts are accumulated here.
+            mutation: What the fault changed.
+        """
+        before = set(_scalars(mutation.payload_before))
+        for value in _scalars(mutation.payload_after):
+            if value not in before:
+                state.facts_values.add(value)
+        for op in mutation.json_patch:
+            path = str(op.get("path", ""))
+            leaf = path.rsplit("/", 1)[-1]
+            if op.get("op") == "remove" and leaf and not leaf.isdigit():
+                state.keys_removed.add(leaf)
 
     def _rebind(self, crossing: Crossing, value: Any) -> None:
         """Feed a chained fault's output back into the crossing.
@@ -2585,8 +2608,11 @@ class ChaosEngine:
             for e in trace
         )
         auto = synthesize_auto_expect(fires, max_steps=ctx.limits.max_steps, recovered=recovered)
-        if any(getattr(auto, f.name) is not None for f in dataclasses.fields(auto)):
-            assertions.extend(evaluate(auto, evidence, source="auto"))
+        # Always evaluated, even when no fault had a data effect: `output_non_empty`
+        # defaults to true, and "a scenario with no expect block is not unchecked"
+        # (§4.4). Gating on "did we synthesize anything" left a clean run with zero
+        # assertions.
+        assertions.extend(evaluate(auto, evidence, source="auto"))
         for assertion in assertions:
             self._emit(
                 Event(
@@ -2739,6 +2765,26 @@ def _denormalize(original: Any, messages: Any) -> Any:
     if isinstance(original, str) and isinstance(messages, list):
         return "\n".join(str(m.get("content", "")) for m in messages if isinstance(m, Mapping))
     return messages
+
+
+def _scalars(value: Any) -> list[str]:
+    """Every scalar leaf of a payload, rendered as text.
+
+    Args:
+        value: Any nested structure.
+
+    Returns:
+        The leaves as strings.
+    """
+    if isinstance(value, dict):
+        return [leaf for child in value.values() for leaf in _scalars(child)]
+    if isinstance(value, (list, tuple)):
+        return [leaf for child in value for leaf in _scalars(child)]
+    if isinstance(value, bool) or value is None:
+        return []
+    if isinstance(value, (int, float, str)):
+        return [f"{value:g}" if isinstance(value, float) else str(value)]
+    return []
 
 
 def _visible_state(view: StateView | None) -> dict[str, Any]:

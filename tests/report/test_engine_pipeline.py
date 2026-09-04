@@ -168,3 +168,28 @@ def test_must_not_blocks_a_run_that_would_otherwise_pass(tmp_path: Path) -> None
         expected_behavior="ignore_and_continue",
     )
     assert result.success is False
+
+
+def test_unit_swap_is_detected_because_injected_values_are_recorded(tmp_path: Path) -> None:
+    """R2 needs `values_injected` populated, or the nastiest fault is undetectable.
+
+    `unit_swap` changes the value and keeps the label, so the swapped number *is* in
+    the payload the agent received. Unless the harness records that it planted it,
+    `no_unsourced_numbers` finds it sourced and the run passes -- which is exactly
+    the silent-wrong-answer case the catalog says this fault exists to prove.
+    """
+    eng = engine(tmp_path)
+    eng.register_fault(
+        ToolCorruptionFault(mutation_type="unit_swap", keys=["temp_c"]), target_tool="t"
+    )
+
+    @eng.tool
+    def t() -> dict[str, Any]:
+        return {"temp_c": 21}
+
+    def agent() -> str:
+        return f"It is {t()['temp_c']}C."
+
+    result = eng.run(agent)
+    assert result.success is False, "an unsourced swapped unit must not pass"
+    assert result.verdict["observed_behavior"] == "hallucinated"

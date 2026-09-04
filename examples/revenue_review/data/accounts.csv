@@ -1,0 +1,7 @@
+account_id,name,tier,region,mrr_usd,csm,renewal_month
+ACC-1001,Northwind Traders,enterprise,EMEA,48000,r.patel,2026-11
+ACC-1002,Contoso Freight,mid_market,NA,12500,j.okafor,2026-10
+ACC-1003,Fabrikam Robotics,enterprise,NA,61000,r.patel,2026-09
+ACC-1004,Tailspin Analytics,smb,APAC,2400,l.moreau,2026-12
+ACC-1005,Adventure Works,mid_market,EMEA,18750,j.okafor,2026-09
+ACC-1006,Wide World Importers,enterprise,APAC,55200,s.nakamura,2026-10

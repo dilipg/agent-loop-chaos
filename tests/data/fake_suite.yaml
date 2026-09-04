@@ -1,0 +1,63 @@
+# The fake-agent suite: the library's own regression guard.
+#
+# `good_agent` is the negative control and must pass every scenario here. If a new
+# probe makes it fail, the probe has a false positive and the probe is wrong until
+# proven otherwise (docs/07-TESTING.md §2). The buggy fakes are the positive
+# controls: a scenario that finds nothing in them proves nothing.
+defaults:
+  seed: 1337
+  expected_behavior: graceful_degradation
+
+scenarios:
+  - id: control.no_faults
+    description: The dry-run control. No fault fires, so the run must classify as a baseline.
+    entrypoint: tests.fakes.apps:build_good
+    inputs: null
+    expected_behavior: ignore_and_continue
+    faults: []
+
+  - id: tool.drop_required_key
+    description: A field the agent indexes into simply stops being returned.
+    entrypoint: tests.fakes.apps:build_naive
+    inputs: null
+    faults:
+      - type: ToolCorruptionFault
+        params:
+          mutation_type: drop_key
+          keys: [temp_c]
+        trigger:
+          on_call: 1
+
+  - id: tool.empty_json
+    description: The tool returns an empty object but still signals success.
+    entrypoint: tests.fakes.apps:build_naive
+    inputs: null
+    faults:
+      - type: ToolCorruptionFault
+        params:
+          mutation_type: empty_json
+        trigger:
+          on_call: 1
+
+  - id: tool.unit_swap
+    description: Celsius reported as Fahrenheit with the label unchanged.
+    entrypoint: tests.fakes.apps:build_naive
+    inputs: null
+    faults:
+      - type: ToolCorruptionFault
+        params:
+          mutation_type: unit_swap
+          keys: [temp_c]
+        trigger:
+          on_call: 1
+
+  - id: llm.prose_instead_of_json
+    description: A structured-output contract met with prose.
+    entrypoint: tests.fakes.apps:build_strict_json
+    inputs: null
+    faults:
+      - type: LLMMalformedOutputFault
+        params:
+          mode: prose_instead_of_json
+        trigger:
+          on_call: 1

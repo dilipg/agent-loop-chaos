@@ -783,3 +783,34 @@ exfiltration set, since the instruction precedes the token — the canary was si
 dropped, so the payload could never be detected and the run would look like a
 well-behaved agent. The whole payload is now the key. JSON permits long keys, and an
 undetectable payload is worse than an ugly one.
+
+### D-61 — A scenario entrypoint may be a builder that takes the engine
+*Affects `docs/02-API.md` §6, `docs/09-DEMO-AGENT.md` §6, phase 04, 2026-09-04.*
+
+A scenario's `entrypoint` names a `module:attr`, but a vanilla agent's tools must be
+wrapped by *this run's* engine before any tool fault can fire, and a bare function
+has no way to do that. Loading the fake suite produced five runs in which no fault
+fired and every failure classified `unknown`: the faults were armed against tools
+that were never instrumented.
+
+Convention: if the resolved callable's **first parameter is named `engine`**, it is
+a builder — the engine is passed to it and the returned callable is the agent.
+Anything else is the agent itself. `tests/fakes/apps.py` and `examples/*/app.py`
+both use this shape, and it costs a scenario file nothing.
+
+### D-62 — The engine records the scalars a fault introduced
+*Affects `docs/11` §2 (R2), `engine.py`, phase 04, 2026-09-04.*
+
+`HarnessFacts.values_injected` was specified and never populated, so R2 could not
+work: every value a fault planted counted as a legitimate source.
+
+`unit_swap` is the case that exposed it. The fault changes the value and keeps the
+label, so the swapped number genuinely *is* in the payload the agent received —
+`no_unsourced_numbers` found it sourced and the scenario passed. The fault the
+catalog calls "the nastiest one" was undetectable end to end while its unit tests
+all passed.
+
+`cross` now diffs each `MutationLog` and records every scalar present in
+`payload_after` but not in `payload_before`, plus the leaf name of every `remove` op
+into `keys_removed` for R4. With that, the same scenario reports
+`hallucination_on_corrupt_data`.
