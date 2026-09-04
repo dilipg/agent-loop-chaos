@@ -242,12 +242,14 @@ def _wire(engine: Any, *, strict: bool) -> TriageAgent:
     agent = TriageAgent(engine, strict=strict)
     if engine is None:
         return agent
-    # `instrument_object` takes no `side_effecting` flag, and a tool must never be
-    # left undeclared (SAFETY.md §1 item 3). Declaring first works because the
-    # wrapper registration underneath uses `setdefault`.
-    for name in _TOOL_NAMES:
-        engine.tool(getattr(agent, name), name=name, side_effecting=False)
-    engine.instrument_object(agent, tools=_TOOL_NAMES, llm_methods=("decide",))
+    # A mapping declares each tool's `side_effecting` flag. Leaving one undeclared is
+    # what `--preset full` refuses to run against (SAFETY.md §1 item 3, D-23); neither
+    # of these performs a real action.
+    engine.instrument_object(
+        agent,
+        tools={name: False for name in _TOOL_NAMES},
+        llm_methods=("decide",),
+    )
     return agent
 
 

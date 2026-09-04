@@ -609,3 +609,59 @@ class TestRaisedInIsPopulated:
 
         assert raised_in("") == "agent"
         assert raised_in("not a traceback at all") == "agent"
+
+
+class TestAFailedDispatchIsTheAgentsFault:
+    """A `TypeError` from binding a tool's signature is not a library bug.
+
+    When the engine calls a wrapped user callable and the arguments do not match, the
+    exception is raised at *our* call site, because the callee never entered. The
+    innermost frame with a real file is `engine.py`, so naive attribution files a bad
+    dispatch as `harness_error` -- and then `outcomes.py` classifies the run as the
+    library's failure rather than the agent's.
+
+    Surfaced by `MalformedToolCallFault(mode="missing_arg")` against
+    `examples/patterns/function_calling`, once the fault started reaching OpenAI-shaped
+    calls and the agent actually dispatched the broken one.
+    """
+
+    @staticmethod
+    def _run(tmp_path: Any) -> Any:
+        from agent_loop_chaos import ChaosEngine
+
+        engine = ChaosEngine(seed=1337, out_dir=tmp_path, write_bundle=False, judge="rules")
+
+        @engine.tool(name="get_invoice", side_effecting=False)
+        def get_invoice(invoice_id: str) -> dict[str, Any]:
+            return {"invoice_id": invoice_id, "amount_usd": 100}
+
+        def agent(question: Any = None) -> str:
+            # The agent dispatches without the required argument. Its bug, not ours.
+            return str(get_invoice())
+
+        return engine.run(agent, inputs={"question": "?"}, scenario_id="dispatch")
+
+    def test_it_is_attributed_to_the_agent(self, tmp_path: Any) -> None:
+        result = self._run(tmp_path)
+        assert result.error is not None
+        assert result.error["type"] == "TypeError"
+        assert result.error["raised_in"] == "agent"
+
+    def test_it_classifies_as_a_crash_not_a_harness_error(self, tmp_path: Any) -> None:
+        result = self._run(tmp_path)
+        assert result.verdict["observed_behavior"] == "crashed"
+        assert result.failure_mode != "harness_error"
+
+    def test_a_genuine_library_bug_is_still_attributed_to_the_harness(self) -> None:
+        """The tag must not blanket-excuse everything the engine touches."""
+        from agent_loop_chaos.engine import raised_in
+
+        internal = (
+            "Traceback (most recent call last):\n"
+            '  File "/x/src/agent_loop_chaos/engine.py", line 1, in _post_phase\n'
+            "    payload = _post_payload(crossing, result)\n"
+            '  File "/x/src/agent_loop_chaos/engine.py", line 9, in _post_payload\n'
+            "    boom()\n"
+            "AttributeError: a real library bug\n"
+        )
+        assert raised_in(internal) == "harness"

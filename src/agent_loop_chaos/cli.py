@@ -57,7 +57,12 @@ def build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", help="run a suite, a scenario, or a module:attr entrypoint")
     run.add_argument("target", help="suite.yaml | scenario.yaml | module:attr")
     run.add_argument("--seed", type=int, help="override the seed")
-    run.add_argument("--jobs", type=int, default=1, help="parallel scenarios")
+    run.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="run this many scenarios at once (ignored with --fail-fast, which needs an order)",
+    )
     run.add_argument("--judge", choices=("rules", "slm", "ensemble"), help="judge to use")
     run.add_argument("--model", help="model id for the SLM judge")
     run.add_argument("--base-url", dest="base_url", help="judge endpoint")
@@ -360,6 +365,7 @@ def _run(args: argparse.Namespace) -> int:
         seed=args.seed,
         no_baseline=args.no_baseline,
         fail_fast=args.fail_fast,
+        jobs=max(1, int(getattr(args, "jobs", 1) or 1)),
         judge=args.judge,
         judge_options=_judge_options(args),
         narrate_all=getattr(args, "narrate_all", False),

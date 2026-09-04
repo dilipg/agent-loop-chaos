@@ -636,3 +636,75 @@ def test_an_engine_bug_in_the_routing_layer_is_not_reported_as_an_agent_failure(
     assert result.error is None, "a library bug must not be attributed to the agent"
     assert result.final_output == "real value", "the call must pass through untouched"
     assert "internal_error" in {e["kind"] for e in eng_events(tmp_path, result)}
+
+
+class TestInstrumentObjectDeclaresSideEffects:
+    """`instrument_object` must be able to say which methods are side-effecting.
+
+    Its signature took `tools: Sequence[str]`, and the wrapper registered
+    `ToolInfo(side_effecting=None)` -- undeclared. `alc run --preset full` refuses to
+    start when any tool leaves it undeclared (`SAFETY.md` §1 item 3, D-23), so a
+    class-based agent instrumented this way could not use the preset at all, and the
+    D-23 glob rule had nothing to act on.
+
+    The workaround was to call `engine.tool(...)` first to seed the flag and rely on
+    `instrument_object`'s `setdefault` preserving it. A parameter is better than a
+    workaround nobody will find.
+    """
+
+    @staticmethod
+    def _agent() -> Any:
+        class Agent:
+            def lookup(self, city: str = "Paris") -> dict[str, Any]:
+                return {"city": city}
+
+            def book(self, city: str = "Paris") -> dict[str, Any]:
+                return {"held": city}
+
+            def run(self, question: Any = None) -> str:
+                self.lookup()
+                return "done"
+
+        return Agent()
+
+    def test_a_mapping_declares_each_tool(self) -> None:
+        from agent_loop_chaos import ChaosEngine
+
+        engine = ChaosEngine(write_bundle=False)
+        engine.instrument_object(self._agent(), tools={"lookup": False, "book": True})
+        assert engine._tools["lookup"].side_effecting is False
+        assert engine._tools["book"].side_effecting is True
+
+    def test_a_sequence_still_works_and_leaves_it_undeclared(self) -> None:
+        """The old call shape must keep working; this is an addition, not a swap."""
+        from agent_loop_chaos import ChaosEngine
+
+        engine = ChaosEngine(write_bundle=False)
+        engine.instrument_object(self._agent(), tools=["lookup"])
+        assert engine._tools["lookup"].side_effecting is None
+
+    def test_the_preset_gate_accepts_a_fully_declared_object(self) -> None:
+        from agent_loop_chaos import ChaosEngine
+
+        engine = ChaosEngine(write_bundle=False)
+        engine.instrument_object(self._agent(), tools={"lookup": False, "book": True})
+        # Raises when anything is undeclared; returning cleanly is the assertion.
+        engine.require_declared_side_effects()
+
+    def test_the_preset_gate_still_refuses_an_undeclared_one(self) -> None:
+        from agent_loop_chaos import ChaosEngine
+        from agent_loop_chaos.errors import ConfigError
+
+        engine = ChaosEngine(write_bundle=False)
+        engine.instrument_object(self._agent(), tools=["lookup"])
+        with pytest.raises(ConfigError, match="lookup"):
+            engine.require_declared_side_effects()
+
+    def test_an_explicit_declaration_is_not_overwritten(self) -> None:
+        from agent_loop_chaos import ChaosEngine
+
+        engine = ChaosEngine(write_bundle=False)
+        agent = self._agent()
+        engine.tool(agent.book, name="book", side_effecting=True)
+        engine.instrument_object(agent, tools=["book"])
+        assert engine._tools["book"].side_effecting is True

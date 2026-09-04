@@ -9,8 +9,10 @@ identically under both adapters. Nothing in this module imports a framework.
 
 from __future__ import annotations
 
+import copy
 import json
 import re
+from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from ..context import Crossing, FaultContext, Layer, Phase
@@ -510,6 +512,42 @@ _MALFORMED_MODES = frozenset(
 )
 _SCHEMA_MODES = frozenset({"wrong_schema", "extra_fields", "missing_required"})
 _EMPTY_MODES = frozenset({"empty_string", "whitespace", "null", "empty_tool_calls"})
+
+
+def _is_nested_call(call: Mapping[str, Any]) -> bool:
+    """Report whether a tool call uses the OpenAI `function` envelope.
+
+    OpenAI, Groq, vLLM and LM Studio all emit
+    ``{"id": …, "type": "function", "function": {"name": …, "arguments": "<json>"}}``.
+    Some clients and every older fixture use a flat ``{"name": …, "arguments": {…}}``.
+    Both are real; the fault has to write into whichever one it was handed.
+
+    Args:
+        call: One entry from `tool_calls`.
+
+    Returns:
+        True when name and arguments live under `function`.
+    """
+    return isinstance(call.get("function"), Mapping)
+
+
+def _decode_arguments(arguments: Any) -> Any:
+    """Read a call's arguments whether they arrived encoded or not.
+
+    Args:
+        arguments: A JSON string, a mapping, or `None`.
+
+    Returns:
+        The decoded mapping, or the value unchanged when it is not JSON.
+    """
+    if not isinstance(arguments, str):
+        return arguments
+    try:
+        return json.loads(arguments)
+    except ValueError:
+        return arguments
+
+
 _REFUSAL_STYLES = frozenset({"policy", "capability", "clarifying_question"})
 _TRUNCATION_CUTS = frozenset({"chars", "mid_json", "mid_sentence"})
 _TOOL_CALL_MODES = frozenset(
@@ -874,14 +912,28 @@ class LLMTruncationFault(Fault):
             body = text[:index]
 
         finish_reason = str(params.get("set_finish_reason", "length"))
+        # Keep the envelope the response arrived in. A real truncated reply is
+        # `{"content": "<partial>", "finish_reason": "length"}` -- flattening it to a
+        # bare string throws away the one field that says it *was* truncated, which
+        # is what `truncated_output_used` gates on and what a careful agent checks.
+        after: Any = body
+        if isinstance(crossing.result, Mapping):
+            key = (
+                "content"
+                if "content" in crossing.result
+                else next(
+                    (k for k in ("text", "output", "message") if k in crossing.result), "content"
+                )
+            )
+            after = {**dict(crossing.result), key: body, "finish_reason": finish_reason}
         return FaultOutcome(
             action="replace_result",
-            value=body,
+            value=after,
             note=(
                 f"truncated the response at {int(ratio * 100)}% ({cut}); "
                 f"finish_reason={finish_reason}"
             ),
-            mutation=MutationLog.of(crossing.result, body),
+            mutation=MutationLog.of(crossing.result, after),
             params={"cut": cut, "at_ratio": ratio, "finish_reason": finish_reason},
         )
 
@@ -947,6 +999,10 @@ class MalformedToolCallFault(Fault):
     def _calls_of(result: Any) -> list[dict[str, Any]] | None:
         """Extract the tool calls from a response, if there are any.
 
+        Deep-copied, because a nested call carries a `function` mapping that would
+        otherwise be shared with the caller's object -- and the library never mutates
+        what it was given.
+
         Args:
             result: The model response.
 
@@ -955,7 +1011,7 @@ class MalformedToolCallFault(Fault):
         """
         if isinstance(result, dict) and isinstance(result.get("tool_calls"), list):
             calls = result["tool_calls"]
-            return [dict(c) for c in calls if isinstance(c, dict)] or None
+            return [copy.deepcopy(c) for c in calls if isinstance(c, dict)] or None
         return None
 
     def apply(self, crossing: Crossing, ctx: FaultContext) -> FaultOutcome:
@@ -975,28 +1031,45 @@ class MalformedToolCallFault(Fault):
             return FaultOutcome(action="noop", note="the response requested no tool call")
 
         first = calls[0]
-        arguments = first.get("arguments")
+        # `slot` is where a dispatcher actually reads name and arguments. On the
+        # OpenAI wire shape that is `call["function"]`, not the call itself; writing
+        # to the top level there produces a stray key beside `function` that nothing
+        # reads -- a silent no-op that reports as coverage.
+        slot = first["function"] if _is_nested_call(first) else first
+        encoded = _is_nested_call(first) and isinstance(slot.get("arguments"), str)
+        arguments = _decode_arguments(slot.get("arguments"))
+
+        def _set_arguments(value: Any) -> None:
+            """Write arguments back in whatever encoding the call arrived in."""
+            slot["arguments"] = json.dumps(value, sort_keys=True) if encoded else value
+
         if mode == "unknown_tool":
-            first["name"] = self._plausible_name(str(first.get("name", "tool")), ctx)
+            slot["name"] = self._plausible_name(str(slot.get("name", "tool")), ctx)
         elif mode == "missing_arg" and isinstance(arguments, dict) and arguments:
-            first["arguments"] = {k: v for k, v in list(arguments.items())[1:]}
+            _set_arguments({k: v for k, v in list(arguments.items())[1:]})
         elif mode == "missing_arg":
-            first["arguments"] = {}
+            _set_arguments({})
         elif mode == "extra_arg":
             existing = arguments if isinstance(arguments, dict) else {}
-            first["arguments"] = {**existing, "verbose": True, "_trace": "trc_1"}
+            _set_arguments({**existing, "verbose": True, "_trace": "trc_1"})
         elif mode == "wrong_type":
-            first["arguments"] = {k: [v] for k, v in (arguments or {"location": "Paris"}).items()}
+            _set_arguments({k: [v] for k, v in (arguments or {"location": "Paris"}).items()})
         elif mode == "duplicate_call_id":
-            calls.append({**first, "name": first.get("name")})
+            calls.append(copy.deepcopy(first))
             calls[-1]["id"] = first.get("id")
         elif mode == "two_calls_same_tool":
-            calls.append(dict(first))
+            calls.append(copy.deepcopy(first))
             calls[-1]["id"] = f"{first.get('id', 'c')}b"
         elif mode == "args_as_string":
-            first["arguments"] = json.dumps(arguments or {}, sort_keys=True)
+            # On the wire `arguments` is *already* a string, so re-stringifying it
+            # changes nothing an agent would notice. The equivalent break there is to
+            # hand back an object where the contract says string, which is what a
+            # client's `json.loads` chokes on.
+            slot["arguments"] = (
+                arguments or {} if encoded else json.dumps(arguments or {}, sort_keys=True)
+            )
         else:  # null_args
-            first["arguments"] = None
+            slot["arguments"] = None
 
         base = crossing.result if isinstance(crossing.result, dict) else {}
         after = {**base, "tool_calls": calls}

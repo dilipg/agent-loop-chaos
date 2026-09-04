@@ -617,7 +617,12 @@ class ChaosEngine:
         return wrapped
 
     def wrap_callable(
-        self, fn: Callable[..., Any], *, layer: Layer, name: str
+        self,
+        fn: Callable[..., Any],
+        *,
+        layer: Layer,
+        name: str,
+        side_effecting: bool | None = None,
     ) -> Callable[..., Any]:
         """Wrap an arbitrary callable as an interception point.
 
@@ -625,13 +630,22 @@ class ChaosEngine:
             fn: The callable to wrap.
             layer: Which layer its crossings belong to.
             name: The name its crossings carry.
+            side_effecting: Whether the tool performs a real action. Leaving it
+                `None` is *undeclared*, not `False`: `--preset full` refuses to start
+                against an undeclared tool rather than guessing which ones move money
+                (D-23 item 3).
 
         Returns:
             The wrapped callable, preserving signature and coroutine-ness.
         """
         if layer == "tool":
             self._tools.setdefault(
-                name, ToolInfo(name=name, is_async=inspect.iscoroutinefunction(fn))
+                name,
+                ToolInfo(
+                    name=name,
+                    is_async=inspect.iscoroutinefunction(fn),
+                    side_effecting=side_effecting,
+                ),
             )
         return build_wrapper(self, fn, layer=layer, name=name)
 
@@ -692,7 +706,7 @@ class ChaosEngine:
         self,
         obj: Any,
         *,
-        tools: Sequence[str] = (),
+        tools: Sequence[str] | Mapping[str, bool] = (),
         llm_methods: Sequence[str] = (),
         nodes: Sequence[str] = (),
     ) -> Any:
@@ -703,7 +717,9 @@ class ChaosEngine:
 
         Args:
             obj: The instance to instrument.
-            tools: Method names to treat as tools.
+            tools: Method names to treat as tools. Pass a **mapping** of name to
+                `side_effecting` to declare each one -- a bare sequence leaves them
+                undeclared, which `--preset full` refuses to run against (D-23).
             llm_methods: Method names to treat as LLM calls.
             nodes: Method names to treat as graph nodes.
 
@@ -714,6 +730,7 @@ class ChaosEngine:
             ConfigError: When a named method does not exist.
         """
         cls_name = type(obj).__name__
+        effects: Mapping[str, bool] = tools if isinstance(tools, Mapping) else {}
         for names, layer in ((tools, "tool"), (llm_methods, "llm"), (nodes, "node")):
             for method_name in names:
                 bound = getattr(obj, method_name, None)
@@ -725,7 +742,12 @@ class ChaosEngine:
                 setattr(
                     obj,
                     method_name,
-                    self.wrap_callable(bound, layer=layer, name=crossing_name),  # type: ignore[arg-type]
+                    self.wrap_callable(
+                        bound,
+                        layer=layer,  # type: ignore[arg-type]
+                        name=crossing_name,
+                        side_effecting=effects.get(method_name),
+                    ),
                 )
         return obj
 
@@ -1523,7 +1545,7 @@ class ChaosEngine:
         except LimitExceeded:
             raise
         except BaseException as exc:
-            return self._error_phase(crossing, exc, started)
+            return self._error_phase(crossing, _from_target(exc), started)
         return self._guarded_post(crossing, result, started)
 
     def _guarded_post(self, crossing: Crossing, result: Any, started: float) -> Any:
@@ -1595,7 +1617,7 @@ class ChaosEngine:
         except LimitExceeded:
             raise
         except BaseException as exc:
-            return self._error_phase(crossing, exc, started)
+            return self._error_phase(crossing, _from_target(exc), started)
         return self._guarded_post(crossing, result, started)
 
     def _record_harness_invocation(self, crossing: Crossing, repeat: int) -> None:
@@ -1888,6 +1910,74 @@ class ChaosEngine:
         )
         return self._guarded_post(crossing, update, time.perf_counter())
 
+    def route_checkpoint(self, fn: Callable[[], Any], *, name: str, state: Any = None) -> Any:
+        """Route a checkpoint write through the plan.
+
+        A checkpoint crossing is `("checkpoint", "post")` only: it exists so a fault
+        can act on a *committed* node, and there is nothing to roll back to before
+        the write happens. The adapter calls this after the checkpointer's own `put`.
+
+        Args:
+            fn: Returns the checkpointer's result. Called only when the engine is
+                inactive, since the write has already happened by the time this runs.
+            name: The checkpoint's id.
+            state: The checkpoint payload, so a fault can inspect it.
+
+        Returns:
+            The checkpointer's result, possibly replaced by a fault.
+        """
+        if not self.is_active():
+            return fn()
+        run_state = self._state()
+        counters = run_state.ctx.counters
+        crossing = Crossing(
+            layer="checkpoint",
+            phase="post",
+            name=name,
+            state=state,
+            result=fn(),
+            step=counters.steps,
+            call_index=counters.next_call_index(f"checkpoint:{name}"),
+            span_id=run_state.ctx.next_span_id(),
+        )
+        self._emit(
+            Event(
+                kind="checkpoint_written",
+                level="standard",
+                layer="checkpoint",
+                phase="post",
+                name=name,
+                step=crossing.step,
+                call_index=crossing.call_index,
+                span_id=crossing.span_id,
+                payload={"checkpoint_id": name},
+            )
+        )
+        try:
+            return self.cross(crossing)
+        except _InjectedFailure as injected:
+            raise injected.original from None
+        except LimitExceeded:
+            raise
+        except Exception as exc:
+            self._internal_error(f"route_checkpoint[{name}]", exc)
+            return crossing.result
+
+    async def route_checkpoint_async(
+        self, fn: Callable[[], Any], *, name: str, state: Any = None
+    ) -> Any:
+        """Async twin of `route_checkpoint`.
+
+        Args:
+            fn: Returns the checkpointer's result.
+            name: The checkpoint's id.
+            state: The checkpoint payload.
+
+        Returns:
+            The checkpointer's result, possibly replaced by a fault.
+        """
+        return self.route_checkpoint(fn, name=name, state=state)
+
     def route_edge(
         self,
         fn: Callable[..., Any],
@@ -2013,6 +2103,14 @@ class ChaosEngine:
         crossing.result = result
         duration = (time.perf_counter() - started) * 1000
 
+        # The crossing runs *before* the event is emitted, so the payload records what
+        # the agent actually received rather than what the callable returned. D-18
+        # already says recorded results are post-fault; the trace event was the one
+        # place still showing the pre-fault value, which is why
+        # `truncated_output_used` could never see the `finish_reason` its own fault
+        # had just set. An injected raise propagates from here and emits no "returned"
+        # event, which is correct: the agent never received a result.
+        final = self.cross(crossing)
         self._emit(
             Event(
                 kind=_POST_EVENT.get(crossing.layer, "log"),  # type: ignore[arg-type]
@@ -2024,11 +2122,9 @@ class ChaosEngine:
                 call_index=crossing.call_index,
                 span_id=crossing.span_id,
                 duration_ms=round(duration, 3),
-                payload={"result": result},
+                payload=_post_payload(crossing, final),
             )
         )
-        final = self.cross(crossing)
-        # Recorded results are post-fault: what the agent actually saw (D-18).
         state.history.setdefault(crossing.name, []).append(final)
         self._record_call(state, crossing, ok=True, duration_ms=duration, result=final, error=None)
         return final
@@ -2879,7 +2975,11 @@ class ChaosEngine:
             A dict with the type, message and the tail of the traceback.
         """
         text = "".join(traceback.format_exception(exc))
-        injected = bool(getattr(exc, "_alc_injected", False))
+        # Both mean "not our bug": an injected raise is the fault working, and
+        # anything out of the invocation boundary is the code under test failing.
+        injected = bool(getattr(exc, "_alc_injected", False)) or bool(
+            getattr(exc, "_alc_from_target", False)
+        )
         return {
             "type": type(exc).__name__,
             "message": str(exc)[:1000],
@@ -3369,6 +3469,38 @@ def _next_seq(trace_path: Path) -> int:
     return max((int(e.get("seq", 0)) for e in _read_trace(trace_path)), default=0) + 1
 
 
+def _post_payload(crossing: Crossing, result: Any) -> dict[str, Any]:
+    """Build the payload for a post-crossing event.
+
+    An `llm_response` carries `finish_reason` when the response exposes one. The
+    `truncated_output_used` probe gates on exactly that key, and the payload used to
+    hold only `result` -- so the probe could not fire from a fault *or* from a real
+    model whose response genuinely ran out of room.
+
+    Nothing is invented: a bare string reply records no reason, because claiming
+    `stop` for a response that never said so would make the probe's silence a lie
+    rather than an absence of evidence.
+
+    Args:
+        crossing: The crossing being closed.
+        result: What the callable returned, after any fault.
+
+    Returns:
+        The event payload.
+    """
+    payload: dict[str, Any] = {"result": result}
+    if crossing.layer != "llm":
+        return payload
+    reason = None
+    if isinstance(result, Mapping):
+        reason = result.get("finish_reason") or result.get("stop_reason")
+    else:
+        reason = getattr(result, "finish_reason", None) or getattr(result, "stop_reason", None)
+    if reason is not None:
+        payload["finish_reason"] = str(reason)
+    return payload
+
+
 def _reproduce_scenario(state: _RunState) -> str | None:
     """Serialize what the agent was asked, for `reproduce.scenario_yaml`.
 
@@ -3419,6 +3551,28 @@ def _read_trace(path: Path) -> list[dict[str, Any]]:
         except ValueError:  # pragma: no cover - a truncated final line
             continue
     return out
+
+
+def _from_target(exc: BaseException) -> BaseException:
+    """Mark an exception as having come out of the code under test.
+
+    When the engine calls a wrapped user callable and the arguments do not match, the
+    `TypeError` is raised at *our* call site because the callee never entered -- so
+    the innermost real frame is `engine.py` and naive attribution files the agent's
+    bad dispatch as a library bug.
+
+    Args:
+        exc: The exception that escaped the invocation.
+
+    Returns:
+        The same exception, tagged.
+    """
+    # A BaseException subclass may define __slots__, in which case the marker cannot
+    # be attached. Attribution then falls back to reading the frames, which is the
+    # behaviour without the marker rather than a wrong answer.
+    with contextlib.suppress(AttributeError):
+        object.__setattr__(exc, "_alc_from_target", True)
+    return exc
 
 
 #: Frames that own nothing. A failure inside them belongs to their caller.
@@ -3556,7 +3710,7 @@ _CROSSING_KINDS = frozenset(
         "node_entered",
         "edge_taken",
         "state_mutated",
-        "checkpoint_saved",
+        "checkpoint_written",
     }
 )
 

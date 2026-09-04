@@ -50,6 +50,10 @@ PATH_KEYS: frozenset[str] = frozenset(
         "baseline_diff",
         "run_dir",
         "plan_path",
+        # The baseline block and the delta both carry paths into whatever run
+        # directory produced them, which differs between two runs of the same suite.
+        "report_path",
+        "diff_path",
         "cmd",
         "suite_path",
         # `code_pointers[].file` and `code_context[].file` are absolute paths into

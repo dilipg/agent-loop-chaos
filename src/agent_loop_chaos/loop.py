@@ -179,6 +179,19 @@ def resolve_entrypoint(entrypoint: Any, engine: Any) -> Any:
     return resolved
 
 
+def _baseline_key(scenario: Scenario) -> str:
+    """The cache key a scenario's baseline lives under.
+
+    Args:
+        scenario: The scenario.
+
+    Returns:
+        A key over the entrypoint and inputs -- the only two things that decide what
+        an unfaulted run produces.
+    """
+    return json.dumps([str(scenario.entrypoint), scenario.inputs], sort_keys=True, default=str)
+
+
 def _shared_baseline(cache: dict[str, Any], scenario: Scenario, out_dir: Path) -> Any:
     """Run the scenario's entrypoint unfaulted once, and reuse it.
 
@@ -194,7 +207,7 @@ def _shared_baseline(cache: dict[str, Any], scenario: Scenario, out_dir: Path) -
     """
     from .engine import ChaosEngine
 
-    key = json.dumps([str(scenario.entrypoint), scenario.inputs], sort_keys=True, default=str)
+    key = _baseline_key(scenario)
     if key in cache:
         return cache[key]
     try:
@@ -228,6 +241,7 @@ def run_suite(
     attempt: int = 1,
     no_baseline: bool = False,
     fail_fast: bool = False,
+    jobs: int = 1,
     judge: Any | str | None = None,
     judge_options: Mapping[str, Any] | None = None,
     narrate_all: bool = False,
@@ -247,7 +261,14 @@ def run_suite(
         attempt: Threaded into `run_id`; `RefinementLoop` passes the round number so
             re-running a scenario does not collide with its earlier bundle (D-04).
         no_baseline: Skip the unfaulted reference run.
-        fail_fast: Stop after the first failing scenario.
+        fail_fast: Stop after the first failing scenario. Forces serial execution,
+            since "stop at the first failure" needs an order to be first in.
+        jobs: How many scenarios to run at once. Scenarios are independent runs with
+            their own engine, and `run_id` derives from
+            `(seed, scenario_id, plan_hash, attempt)` rather than from order -- so a
+            verdict cannot depend on scheduling, and a test asserts that. Baselines
+            are computed serially first, because they are shared and would otherwise
+            race.
         judge: Judge selection, per `ChaosEngine(judge=…)`.
         judge_options: Extra keyword arguments for a constructed `SLMJudge`.
         narrate_all: Narrate passing runs too.
@@ -265,7 +286,8 @@ def run_suite(
     # the cost of every suite for an answer that cannot have changed.
     baselines: dict[str, Any] = {}
 
-    for scenario in scenarios:
+    def _one(scenario: Scenario) -> ChaosResult:
+        """Run a single scenario in its own engine."""
         engine = ChaosEngine(
             seed=seed if seed is not None else scenario.seed,
             out_dir=out_dir,
@@ -280,12 +302,7 @@ def run_suite(
         )
         for spec in scenario.faults:
             engine.register_fault(build_fault(spec), **target_kwargs(spec))
-
-        baseline = None
-        if not no_baseline and not scenario.dry_run:
-            baseline = _shared_baseline(baselines, scenario, out_dir)
-
-        result = engine.run(
+        return engine.run(
             resolve_entrypoint(scenario.entrypoint, engine),
             inputs=scenario.inputs,
             initial_state=dict(scenario.initial_state or {}) or None,
@@ -295,9 +312,33 @@ def run_suite(
             expect=scenario.expect,
             expected_errors=scenario.expected_errors,
             allow_side_effects=scenario.allow_side_effects,
-            baseline=baseline,
+            baseline=baselines.get(_baseline_key(scenario)),
             attempt=attempt,
         )
+
+    if not no_baseline:
+        # Serially, before anything runs in parallel: the cache is shared, and two
+        # workers racing to fill the same key would run the baseline twice and give
+        # two scenarios different references.
+        for scenario in scenarios:
+            if not scenario.dry_run:
+                _shared_baseline(baselines, scenario, out_dir)
+
+    if jobs > 1 and not fail_fast and len(scenarios) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            # Mapped in submission order, so the output does not depend on which
+            # worker finished first. `_ACTIVE` is a ContextVar, which is per-thread,
+            # so two runs cannot see each other's state.
+            results = list(pool.map(_one, scenarios))
+        for result in results:
+            if on_result is not None:
+                on_result(result)
+        return results
+
+    for scenario in scenarios:
+        result = _one(scenario)
         results.append(result)
         if on_result is not None:
             on_result(result)

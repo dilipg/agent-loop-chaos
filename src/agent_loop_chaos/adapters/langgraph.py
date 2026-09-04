@@ -14,7 +14,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import inspect
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from ..errors import AdapterError, MissingExtraError
@@ -352,6 +352,72 @@ def _wrap_branch(engine: ChaosEngine, source: str, router: Any) -> Any:
     return wrapper
 
 
+def _instrument_checkpointer(checkpointer: Any, engine: ChaosEngine) -> None:
+    """Route the checkpointer's writes through the plan.
+
+    A `put` is the only place the adapter can see a node commit, and a rollback has
+    to happen *after* a commit or there is nothing to roll back to. So the checkpoint
+    crossing lives here.
+
+    `intercept_checkpoints=True` was accepted and never used before this: the option
+    was documented, the fault declared `("checkpoint", "post")`, and no crossing was
+    ever created -- so `CheckpointRollbackFault` could not fire at all (D-82).
+
+    Args:
+        checkpointer: The graph's checkpointer, patched in place.
+        engine: The engine to route crossings through.
+    """
+    if getattr(checkpointer, _MARKER, False):
+        return
+    for method in ("put", "aput"):
+        original = getattr(checkpointer, method, None)
+        if original is None:
+            continue
+        setattr(checkpointer, method, _wrap_put(original, engine))
+    setattr(checkpointer, _MARKER, True)
+
+
+def _wrap_put(original: Any, engine: ChaosEngine) -> Any:
+    """Wrap a checkpointer's `put` as a `(checkpoint, post)` crossing.
+
+    The write happens first and the crossing observes it, because a fault that wants
+    to roll back needs something committed to roll back *to*. A fault that raises
+    here propagates, which is the same containment every other layer has.
+
+    Args:
+        original: The bound `put` or `aput`.
+        engine: The engine.
+
+    Returns:
+        A wrapper with the same call shape.
+    """
+    import functools
+
+    def _name(checkpoint: Any) -> str:
+        """A stable name for the crossing: the checkpoint's own id."""
+        if isinstance(checkpoint, Mapping):
+            return str(checkpoint.get("id") or "checkpoint")
+        return str(getattr(checkpoint, "id", "checkpoint"))
+
+    if inspect.iscoroutinefunction(original):
+
+        @functools.wraps(original)
+        async def awrapper(config: Any, checkpoint: Any, *args: Any, **kwargs: Any) -> Any:
+            written = await original(config, checkpoint, *args, **kwargs)
+            return await engine.route_checkpoint_async(
+                lambda: written, name=_name(checkpoint), state=checkpoint
+            )
+
+        return awrapper
+
+    @functools.wraps(original)
+    def wrapper(config: Any, checkpoint: Any, *args: Any, **kwargs: Any) -> Any:
+        written = original(config, checkpoint, *args, **kwargs)
+        return engine.route_checkpoint(lambda: written, name=_name(checkpoint), state=checkpoint)
+
+    return wrapper
+
+
 def _supply_thread_id(compiled: Any, engine: ChaosEngine) -> None:
     """Default the `configurable.thread_id` a checkpointer requires.
 
@@ -449,6 +515,8 @@ def instrument_graph(
     compiled = graph if is_compiled(graph) else graph.compile()
     if getattr(compiled, "checkpointer", None):
         _supply_thread_id(compiled, engine)
+        if intercept_checkpoints:
+            _instrument_checkpointer(compiled.checkpointer, engine)
     setattr(compiled, _MARKER, True)
     return compiled
 

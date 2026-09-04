@@ -1419,3 +1419,135 @@ raising: an extra call is a difference in the agent and belongs in a divergence
 report, not in a crash that hides every later finding.
 
 Entries are written sorted, because a cassette is committed and has to diff cleanly.
+
+### D-101 — `MalformedToolCallFault` reaches the OpenAI wire shape
+*Affects `faults/llm.py`, phase 9.2, supersedes nothing.*
+
+The fault read `call["name"]` and `call["arguments"]` at the top level of each entry
+in `tool_calls`. OpenAI, Groq, vLLM and LM Studio all nest them:
+
+    {"id": …, "type": "function", "function": {"name": …, "arguments": "<json string>"}}
+
+So every mode wrote a stray top-level key beside `function`, and a dispatcher reading
+`call["function"]["name"]` never saw it. The fault reported that it had fired and
+changed nothing the agent reads — coverage in `suite.json` for an injection that did
+not happen.
+
+The fault now writes into whichever slot it was handed, and encodes arguments back the
+way they arrived: `function.arguments` is a JSON *string* on the wire, so the mutation
+has to decode, change and re-encode. `args_as_string` inverts there — re-stringifying
+a string changes nothing an agent notices, so the equivalent break is handing back an
+object where the contract says string, which is what a client's `json.loads` chokes on.
+
+### D-102 — `finish_reason` reaches the trace, and post events record what the agent saw
+*Affects `engine.py`, `faults/llm.py`, phase 9.2.*
+
+`truncated_output_used` gates on `finish_reason == "length"` in the `llm_response`
+payload. The engine wrote that payload as `{"result": result}`, so the key was never
+present and the probe could not fire — not from `LLMTruncationFault`, whose
+`set_finish_reason` went into the fire record instead, and not from a **real** model
+whose response genuinely ran out of room.
+
+Three changes, each needed:
+
+1. The payload carries `finish_reason` when the response exposes one. Nothing is
+   invented: a bare string reply records none, because claiming `stop` for a response
+   that never said so makes the probe's silence a lie rather than an absence.
+2. `LLMTruncationFault` keeps the envelope it was given. Flattening
+   `{"content": …, "finish_reason": …}` to a bare string threw away the one field
+   saying the response *was* truncated.
+3. The post-crossing event is emitted **after** the crossing, so the payload is what
+   the agent received rather than what the callable returned. D-18 already says
+   recorded results are post-fault; the trace event was the last place still showing
+   the pre-fault value. An injected raise now emits no "returned" event, which is
+   correct — the agent never received a result.
+
+### D-103 — An exception from the invocation boundary belongs to the agent
+*Affects `engine.py`, phase 9.2, refines D-96.*
+
+When the engine calls a wrapped user callable and the arguments do not match, the
+`TypeError` is raised at *our* call site, because the callee never entered. The
+innermost real frame is `engine.py`, so D-96's attribution filed the agent's bad
+dispatch as `harness_error`.
+
+Anything escaping `fn(*args, **kwargs)` at an interception point is tagged
+`_alc_from_target` and attributed to the agent, alongside the existing `_alc_injected`
+tag. A genuine library bug — one raised inside our own frames, not out of the
+invocation — is still `harness`, and a test pins that.
+
+Surfaced by D-101: once `MalformedToolCallFault` started reaching OpenAI-shaped calls,
+`examples/patterns/function_calling` actually dispatched the broken one.
+
+### D-104 — `instrument_object` declares side effects
+*Affects `engine.py`, phase 9.2.*
+
+Its `tools` parameter took a sequence of names, and the wrapper registered
+`ToolInfo(side_effecting=None)` — *undeclared*, not `False`. `--preset full` refuses
+to start against an undeclared tool (`SAFETY.md` §1 item 3, D-23), so a class-based
+agent instrumented this way could not use the preset at all, and the D-23 glob rule
+had nothing to act on.
+
+`tools` now also accepts a mapping of name to `side_effecting`, and `wrap_callable`
+takes the flag. A bare sequence still leaves them undeclared, which is the honest
+default: the library must not guess which of someone's methods move money.
+
+`examples/patterns/class_based` dropped its workaround — it had been calling
+`engine.tool(...)` first to seed the flag and relying on `setdefault` preserving it.
+
+### D-105 — `--jobs` runs scenarios in parallel
+*Affects `loop.py`, `cli.py`, phase 9.2.*
+
+The flag was accepted, documented and ignored. That is the failure this library exists
+to catch: something reporting it did the thing while doing nothing. A user setting
+`--jobs 8` on a thirty-scenario suite saw no speed-up and no way to tell whether their
+agent was slow or the flag was a lie.
+
+`run_suite` takes `jobs` and uses a `ThreadPoolExecutor`. What makes it safe:
+
+- Scenarios are independent runs with their own engine, and `_ACTIVE` is a
+  `ContextVar`, which is per-thread — two runs cannot see each other's state.
+- `run_id` derives from `(seed, scenario_id, plan_hash, attempt)`, not from order, so
+  a verdict cannot depend on scheduling. A test asserts serial and parallel produce
+  byte-identical normalized reports.
+- Baselines are computed **serially first**. They are cached and shared, and two
+  workers racing to fill one key would run the baseline twice and hand two scenarios
+  different references.
+- `--fail-fast` forces serial: "stop at the first failure" needs an order to be first
+  in.
+
+`tests/normalize.py` gains `report_path` and `diff_path`, which are paths into
+whichever run directory produced them.
+
+### D-106 — The checkpoint layer is wired (closes D-82)
+*Affects `adapters/langgraph.py`, `engine.py`, phase 9.2.*
+
+`instrument_graph(..., intercept_checkpoints=True)` was accepted as a parameter and
+never used. The adapter created no checkpoint crossing, `CheckpointRollbackFault`
+declared `("checkpoint", "post")` and could not fire, and `resume.checkpoint_rollback`
+had to be dropped from the demo suite.
+
+The crossing lives at the checkpointer's `put`/`aput`: that is the only place the
+adapter can see a node commit, and a rollback needs something committed to roll back
+*to*. `ChaosEngine.route_checkpoint` is the entry point, `post`-phase only for the
+same reason.
+
+**What this does not fix:** detecting a *duplicated* side effect caused by the
+rollback. `duplicate_side_effect` counts agent-issued invocations only (R1), and a
+replayed node's calls are the harness's — so the probe correctly declines. Catching a
+missing idempotency key needs an output-level check, which does not exist yet. The
+layer works; the detector for that particular finding is still absent, and
+`resume.checkpoint_rollback` stays out of the demo suite until it exists.
+
+### D-107 — Demo weakness #12 is exercised but survivable, and #7 needs a live model
+*Affects `examples/trip_planner/README.md`, phase 9.2, refines D-89.*
+
+D-89 listed two of the twelve planted weaknesses as uncaught. After D-80 fixed state
+targeting, `state.drop_location` **fires** — the fault lands, and the agent survives
+it, because the graph's own routing supplies a location before `summarize` is
+reachable. That is a robustness result rather than a dead scenario, and the suite now
+has zero scenarios whose faults never fire.
+
+Weakness #7 (the objective living only in `messages`) still needs a model that attends
+to history; the scripted fake keys on a prompt tag. D-100's cassettes are the path:
+record a real model once against the demo suite and the scenario becomes reproducible.
+Not done, and not claimed.

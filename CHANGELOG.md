@@ -9,6 +9,37 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+### Bug fixes (post-0.1.0)
+
+Six open items from the 0.1.0 known-gaps list and the phase-08 subagent reports,
+resolved.
+
+- **D-101** `MalformedToolCallFault` could not reach the OpenAI wire shape. It wrote
+  `name`/`arguments` at the top level of each `tool_calls` entry; OpenAI, Groq, vLLM
+  and LM Studio all nest them under `function`. Every mode wrote a stray key a
+  dispatcher never reads — an injection that reported coverage and did nothing.
+- **D-102** `truncated_output_used` was unreachable. The probe gates on
+  `finish_reason` in the `llm_response` payload; the engine wrote only `result`, so
+  neither the fault nor a **real** truncated response could be seen. Post-crossing
+  events now also record what the agent *received* rather than what the callable
+  returned, which D-18 already said they should.
+- **D-103** A `TypeError` from binding a tool's signature was filed as a library bug,
+  because the callee never enters and the innermost frame is ours. Anything escaping
+  the invocation boundary is now attributed to the agent.
+- **D-104** `instrument_object` could not declare `side_effecting`, so a class-based
+  agent instrumented that way could never run under `--preset full`.
+- **D-105** `--jobs` was accepted, documented and ignored. It now runs scenarios in a
+  thread pool, with a test asserting serial and parallel produce byte-identical
+  reports. Baselines are computed serially first; `--fail-fast` forces serial.
+- **D-106** `intercept_checkpoints=True` was accepted and never used, so
+  `CheckpointRollbackFault` could not fire at all. The crossing now lives at the
+  checkpointer's `put`.
+- **D-107** After the state-targeting fix, `state.drop_location` fires and the agent
+  survives it. The demo suite now has **zero** scenarios whose faults never fire.
+
+Demo suite unchanged where it matters: 17 failures, 6 distinct modes on
+`trip_planner`; 0 on `trip_planner_fixed`.
+
 ### Hardening (post-0.1.0)
 
 The three weakest parts of 0.1.0, addressed. Six more library bugs fell out of doing
@@ -107,11 +138,13 @@ on the *correct* tree rather than the buggy one.
 
 ### Known gaps
 
-- `CheckpointRollbackFault` cannot fire under LangGraph: `intercept_checkpoints=True`
-  is accepted and the adapter creates no checkpoint crossings (D-82).
-- Two of the demo's twelve planted weaknesses are not caught by any scenario, and are
-  listed as uncaught rather than omitted (D-89).
-- `--jobs > 1` is accepted and ignored; suites run serially.
+- Detecting a **duplicated** side effect caused by a checkpoint rollback needs an
+  output-level check that does not exist yet. The checkpoint layer itself is wired
+  (D-106) and the fault fires; `duplicate_side_effect` correctly declines, because a
+  replayed node's calls are the harness's and R1 excludes them.
+- Demo weakness #7 (the objective living only in `messages`) needs a model that
+  attends to history; the scripted fake keys on a prompt tag. Cassettes (D-100) are
+  the path to catching it against a real one (D-107).
 - `--format html` and `alc dashboard` arrive in 0.2.0.
 
 ### Schemas
