@@ -178,12 +178,17 @@ class ChaosResult:
         Returns:
             The report as a JSON string, with sorted keys and `allow_nan=False`.
         """
+        # `default=str` because `final_output` and `llm_exchanges` hold whatever the
+        # agent produced -- a LangChain message, a dataclass, a client object. A
+        # report that refused to serialize one of those would lose the whole finding
+        # over a field that is only ever read as evidence.
         return json.dumps(
             self.to_dict(),
             indent=indent,
             sort_keys=True,
             ensure_ascii=False,
             allow_nan=False,
+            default=str,
         )
 
     @classmethod

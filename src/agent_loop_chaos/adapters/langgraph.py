@@ -18,6 +18,7 @@ from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 from ..errors import AdapterError, MissingExtraError
+from ._lc_messages import from_langchain, to_langchain
 
 if TYPE_CHECKING:  # pragma: no cover - types only
     from ..context import RunContext
@@ -27,9 +28,11 @@ __all__ = [
     "LangGraphAdapter",
     "branch_slots",
     "instrument_graph",
+    "instrument_model",
     "is_compiled",
     "langgraph_version",
     "node_slots",
+    "wrap_langchain_tools",
 ]
 
 # Set on a wrapper so a second `instrument_graph` is a no-op. Double wrapping would
@@ -468,3 +471,339 @@ class LangGraphAdapter:
             `None`; the engine tracks state at node boundaries instead.
         """
         return None
+
+
+# The six invocation methods plus `bind_tools`, per `docs/06` §1.5.
+_INTERCEPTED = ("invoke", "ainvoke", "stream", "astream", "batch", "abatch")
+
+
+class _InstrumentedModel:
+    """A proxy that forwards everything and intercepts the invocation methods.
+
+    Forwarding matters as much as intercepting: a model that quietly lost a
+    provider-specific attribute, or `bind_tools`, would break the agent for a reason
+    unrelated to any fault -- and the report would blame the agent.
+    """
+
+    def __init__(self, model: Any, engine: ChaosEngine, name: str = "default") -> None:
+        """Wrap a chat model.
+
+        Args:
+            model: The model to proxy.
+            engine: The engine to route crossings through.
+            name: The LLM alias targets use and the trace records.
+        """
+        object.__setattr__(self, "_alc_model", model)
+        object.__setattr__(self, "_alc_engine", engine)
+        object.__setattr__(self, "_alc_name", name)
+
+    def __getattr__(self, item: str) -> Any:
+        """Forward anything not intercepted.
+
+        Args:
+            item: The attribute name.
+
+        Returns:
+            The underlying model's attribute.
+        """
+        return getattr(object.__getattribute__(self, "_alc_model"), item)
+
+    def __repr__(self) -> str:
+        """Readable representation naming the wrapped model.
+
+        Returns:
+            e.g. ``<instrumented FakeChatModel as 'default'>``.
+        """
+        model = object.__getattribute__(self, "_alc_model")
+        name = object.__getattribute__(self, "_alc_name")
+        return f"<instrumented {type(model).__name__} as {name!r}>"
+
+    def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
+        """Bind tools and keep the result instrumented.
+
+        A bound copy that lost its instrumentation would silently stop being watched,
+        and agents bind tools as a matter of course -- this is the common path, not an
+        edge case.
+
+        Args:
+            tools: The tools to bind.
+            **kwargs: Forwarded to the model.
+
+        Returns:
+            An instrumented proxy around the bound model.
+        """
+        model = object.__getattribute__(self, "_alc_model")
+        engine = object.__getattribute__(self, "_alc_engine")
+        name = object.__getattribute__(self, "_alc_name")
+        return _InstrumentedModel(model.bind_tools(tools, **kwargs), engine, name)
+
+    def invoke(self, messages: Any, *args: Any, **kwargs: Any) -> Any:
+        """Route a synchronous invocation through the plan.
+
+        Args:
+            messages: The conversation.
+            *args: Forwarded.
+            **kwargs: Forwarded.
+
+        Returns:
+            The model's response, possibly faulted.
+        """
+        return self._route("invoke", messages, args, kwargs)
+
+    async def ainvoke(self, messages: Any, *args: Any, **kwargs: Any) -> Any:
+        """Route an asynchronous invocation through the plan.
+
+        Args:
+            messages: The conversation.
+            *args: Forwarded.
+            **kwargs: Forwarded.
+
+        Returns:
+            The model's response, possibly faulted.
+        """
+        return await self._aroute("ainvoke", messages, args, kwargs)
+
+    def batch(self, messages: Any, *args: Any, **kwargs: Any) -> Any:
+        """Route a batch invocation.
+
+        Args:
+            messages: The batch.
+            *args: Forwarded.
+            **kwargs: Forwarded.
+
+        Returns:
+            The responses.
+        """
+        return self._route("batch", messages, args, kwargs)
+
+    async def abatch(self, messages: Any, *args: Any, **kwargs: Any) -> Any:
+        """Route an asynchronous batch invocation.
+
+        Args:
+            messages: The batch.
+            *args: Forwarded.
+            **kwargs: Forwarded.
+
+        Returns:
+            The responses.
+        """
+        return await self._aroute("abatch", messages, args, kwargs)
+
+    def stream(self, messages: Any, *args: Any, **kwargs: Any) -> Any:
+        """Materialize the stream, fault it once, and re-yield it as one chunk.
+
+        v0.1 limitation, recorded in the trace rather than pretended away: per-chunk
+        faults would need a streaming-aware fault protocol that does not exist, and
+        faulting a partial chunk would produce findings about the harness's own
+        chunking rather than about the agent.
+
+        Args:
+            messages: The conversation.
+            *args: Forwarded.
+            **kwargs: Forwarded.
+
+        Yields:
+            One chunk carrying the whole faulted response.
+        """
+        engine = object.__getattribute__(self, "_alc_engine")
+        model = object.__getattribute__(self, "_alc_model")
+        name = object.__getattribute__(self, "_alc_name")
+        engine.note(
+            f"stream() on {name!r} was materialized and faulted once, then re-yielded "
+            "as a single chunk (v0.1 limitation: no per-chunk faults)"
+        )
+
+        def materialize(payload: Any, *inner: Any, **kw: Any) -> Any:
+            return _join_chunks(list(model.stream(payload, *inner, **kw)))
+
+        yield self._route("stream", messages, args, kwargs, call=materialize)
+
+    async def astream(self, messages: Any, *args: Any, **kwargs: Any) -> Any:
+        """Async twin of `stream`, with the same materializing limitation.
+
+        Args:
+            messages: The conversation.
+            *args: Forwarded.
+            **kwargs: Forwarded.
+
+        Yields:
+            One chunk carrying the whole faulted response.
+        """
+        engine = object.__getattribute__(self, "_alc_engine")
+        model = object.__getattribute__(self, "_alc_model")
+        name = object.__getattribute__(self, "_alc_name")
+        engine.note(
+            f"astream() on {name!r} was materialized and faulted once, then re-yielded "
+            "as a single chunk (v0.1 limitation: no per-chunk faults)"
+        )
+
+        async def materialize(payload: Any, *inner: Any, **kw: Any) -> Any:
+            return _join_chunks([chunk async for chunk in model.astream(payload, *inner, **kw)])
+
+        yield await self._aroute("astream", messages, args, kwargs, call=materialize)
+
+    def _route(
+        self,
+        method: str,
+        messages: Any,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        call: Callable[..., Any] | None = None,
+    ) -> Any:
+        """Route one synchronous model call.
+
+        Args:
+            method: Which method was called.
+            messages: The conversation.
+            args: Extra positional arguments.
+            kwargs: Extra keyword arguments.
+            call: Override the underlying callable, used by `stream`.
+
+        Returns:
+            The response.
+        """
+        engine = object.__getattribute__(self, "_alc_engine")
+        model = object.__getattribute__(self, "_alc_model")
+        name = object.__getattribute__(self, "_alc_name")
+        target = call or getattr(model, method)
+        return engine.route_sync(
+            _with_lc_messages(target, messages),
+            layer="llm",
+            name=name,
+            args=(from_langchain(messages), *args),
+            kwargs=kwargs,
+        )
+
+    async def _aroute(
+        self,
+        method: str,
+        messages: Any,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        call: Callable[..., Any] | None = None,
+    ) -> Any:
+        """Route one asynchronous model call.
+
+        Args:
+            method: Which method was called.
+            messages: The conversation.
+            args: Extra positional arguments.
+            kwargs: Extra keyword arguments.
+            call: Override the underlying callable, used by `astream`.
+
+        Returns:
+            The response.
+        """
+        engine = object.__getattribute__(self, "_alc_engine")
+        model = object.__getattribute__(self, "_alc_model")
+        name = object.__getattribute__(self, "_alc_name")
+        target = call or getattr(model, method)
+        return await engine.route_async(
+            _with_lc_messages(target, messages),
+            layer="llm",
+            name=name,
+            args=(from_langchain(messages), *args),
+            kwargs=kwargs,
+        )
+
+
+def _with_lc_messages(target: Callable[..., Any], original: Any) -> Callable[..., Any]:
+    """Adapt a model call to receive normalized messages and pass LangChain ones.
+
+    Faults operate on the normalized form -- that is what makes one fault catalog
+    serve both adapters -- but the model wants its own message classes back. The
+    conversion happens here rather than in the engine, so the core never learns what
+    a `HumanMessage` is.
+
+    Args:
+        target: The underlying model method.
+        original: The messages as the caller passed them, used to decide whether
+            conversion is wanted at all.
+
+    Returns:
+        A callable taking normalized messages.
+    """
+    wants_objects = not isinstance(original, str) and not (
+        isinstance(original, list) and all(isinstance(m, dict) for m in original)
+    )
+
+    def call(messages: Any, *args: Any, **kwargs: Any) -> Any:
+        payload = to_langchain(messages) if wants_objects and messages else messages
+        return target(payload, *args, **kwargs)
+
+    return call
+
+
+def _join_chunks(chunks: list[Any]) -> Any:
+    """Concatenate streamed chunks into a single response.
+
+    Args:
+        chunks: What the stream yielded.
+
+    Returns:
+        One chunk carrying the joined content, or `None` for an empty stream.
+    """
+    if not chunks:
+        return None
+    first = chunks[0]
+    if not hasattr(first, "content"):
+        return "".join(str(chunk) for chunk in chunks)
+    joined = "".join(str(getattr(chunk, "content", "")) for chunk in chunks)
+    try:
+        return type(first)(content=joined)
+    except Exception:
+        return joined
+
+
+def instrument_model(model: Any, engine: ChaosEngine, *, name: str = "default") -> Any:
+    """Wrap a chat model so its calls become `(llm, …)` crossings.
+
+    Args:
+        model: The chat model.
+        engine: The engine to route through.
+        name: The LLM alias targets use and the trace records.
+
+    Returns:
+        A proxy forwarding everything it does not intercept.
+    """
+    if isinstance(model, _InstrumentedModel):
+        return model
+    return _InstrumentedModel(model, engine, name)
+
+
+def wrap_langchain_tools(tools: Sequence[Any], engine: ChaosEngine) -> list[Any]:
+    """Instrument LangChain tools in place.
+
+    LangChain dispatches on a tool's `name`, and rebuilding the object would lose the
+    schema it derived from the function's signature. So the tool's underlying
+    callables are replaced and the tool object is handed back -- the same reasoning as
+    `_wrap_node`.
+
+    Args:
+        tools: The tools to instrument.
+        engine: The engine to route through.
+
+    Returns:
+        The same tool objects, instrumented.
+    """
+    out: list[Any] = []
+    for tool in tools:
+        if getattr(tool, _MARKER, False):
+            out.append(tool)
+            continue
+        name = str(getattr(tool, "name", getattr(tool, "__name__", "tool")))
+        # Exactly one sync and one async slot. A LangChain tool exposes `func` *and*
+        # `_run`, both routing to the same callable, so wrapping every match counts
+        # one invocation twice and every call-count probe reads double.
+        for group in (("func", "_run"), ("coroutine", "_arun")):
+            for attribute in group:
+                inner = getattr(tool, attribute, None)
+                if inner is None or not callable(inner):
+                    continue
+                with contextlib.suppress(AttributeError, TypeError, ValueError):
+                    setattr(tool, attribute, engine.wrap_callable(inner, layer="tool", name=name))
+                    break
+        with contextlib.suppress(AttributeError, TypeError, ValueError):
+            setattr(tool, _MARKER, True)
+        out.append(tool)
+    return out

@@ -874,3 +874,33 @@ LangGraph compares a node's `config` annotation against the real `RunnableConfig
 type object. A correctly typed node in such a module is reported as wrongly typed.
 `tests/fakes/lg_agent.py` therefore omits postponed evaluation, deliberately, and
 says so.
+
+### D-67 — The trace and the report serialize with `default=str`
+*Affects `trace.py`, `report.py`, phase 05, 2026-09-04.*
+
+A payload can hold anything the agent passed around: a LangChain message, a
+dataclass, a database handle. Serializing without a fallback made the trace sink
+raise mid-run, at which point it was dropped from the fan-out **with its file handle
+still open** -- so one unserializable value cost both the rest of the trace and a
+leaked descriptor. The report failed the same way, losing an entire finding over a
+`final_output` that is only ever read as evidence.
+
+Both now pass `default=str`. A stringified value is a small loss; a dropped trace is
+a total one. The sink is also closed before being dropped.
+
+### D-68 — LangChain conversion lives in the proxy, not the engine
+*Affects `adapters/langgraph.py`, `adapters/_lc_messages.py`, phase 05, 2026-09-04.*
+
+LLM faults operate on the normalized message form, which is what lets one fault
+catalog serve both adapters. The vanilla normalizer does not recognise LangChain
+message objects, so routing them unconverted left `crossing.messages` empty and every
+`pre`-phase LLM fault silently operated on nothing -- `ContextNoiseFault` inserted its
+text into an empty list and the model received one message instead of two.
+
+The conversion therefore happens in `_InstrumentedModel`: normalized dicts go to the
+plan, and the underlying call is wrapped to convert back before touching the model.
+The engine never learns what a `HumanMessage` is.
+
+Related: `wrap_langchain_tools` wraps exactly one sync and one async slot. A
+LangChain tool exposes `func` *and* `_run` routing to the same callable, so wrapping
+every match counted one invocation twice and every call-count probe read double.

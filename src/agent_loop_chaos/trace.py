@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import threading
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
@@ -35,6 +36,8 @@ __all__ = [
     "TraceRecorder",
     "truncate_payload",
 ]
+
+log = logging.getLogger("agent_loop_chaos")
 
 SCHEMA_VERSION = "1.1"
 
@@ -221,8 +224,13 @@ class JsonlSink:
         Args:
             event: The serialized event.
         """
+        # `default=str` because a payload can hold anything the agent passed around --
+        # a LangChain message, a dataclass, a connection object. A trace that raised
+        # on one of those would drop its sink mid-run and leave the file open, which
+        # is a worse failure than a stringified value.
         self._handle.write(
-            json.dumps(event, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n"
+            json.dumps(event, ensure_ascii=False, sort_keys=True, allow_nan=False, default=str)
+            + "\n"
         )
         self._handle.flush()
 
@@ -368,7 +376,11 @@ class TraceRecorder:
         for sink in list(self.sinks):
             try:
                 sink.write(serialized)
-            except Exception:
+            except Exception:  # a broken sink must not break the run, but it must
+                # still be closed: dropping it while its file handle is open leaks it.
+                log.exception("trace sink %s failed; dropping it", type(sink).__name__)
+                with contextlib.suppress(Exception):
+                    sink.close()
                 self.sinks.remove(sink)
         return serialized
 
