@@ -5,9 +5,14 @@
 
 PY := python3
 PKG := src/agent_loop_chaos
+# Where `make venv` creates the environment. Override it to put the venv outside a
+# synced directory: on macOS, iCloud's Desktop & Documents sync hides `.pth` files and
+# CPython's site.py then skips them, which silently un-installs an editable install.
+# `make doctor` explains it. The checkout itself can stay wherever it is.
+VENV ?= .venv
 
 .DEFAULT_GOAL := help
-.PHONY: help check lint fmt typecheck test cov schema golden-update demo build clean
+.PHONY: help check lint fmt typecheck test cov schema golden-update demo build clean venv doctor
 
 help:  ## list targets
 	@grep -hE '^[a-z-]+:.*?##' $(MAKEFILE_LIST) | sort | \
@@ -47,6 +52,15 @@ demo:  ## run the demo suite against the buggy example agent (M8+)
 build:  ## build the sdist and wheel, then twine check
 	$(PY) -m build
 	twine check dist/*
+
+venv:  ## create $(VENV) and install the package in editable mode with [dev]
+	$(PY) -m venv $(VENV)
+	$(VENV)/bin/pip install -e ".[dev]"
+	@echo
+	@echo "  . $(VENV)/bin/activate"
+
+doctor:  ## explain a development environment that looks broken but is not
+	@$(PY) tools/doctor.py
 
 clean:  ## remove build, cache and coverage artefacts
 	rm -rf dist build .pytest_cache .mypy_cache .ruff_cache htmlcov .coverage coverage.xml

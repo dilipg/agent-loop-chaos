@@ -14,21 +14,34 @@ git --version
 claude --version
 ```
 
-**macOS trap, worth knowing before it costs you an hour.** macOS sets the
-`UF_HIDDEN` file flag on files written into `.venv`, and current CPython silently
-skips `.pth` files that are flagged hidden. An editable install therefore stops
-resolving with no diagnostic beyond `ModuleNotFoundError: No module named
-'agent_loop_chaos'`, even though `pip install -e` reported success. It can appear
-mid-session, because the flag is applied after the file is written.
+**macOS trap, worth knowing before it costs you an hour.** If the checkout is under
+iCloud's "Desktop & Documents" sync, the file provider sets the `UF_HIDDEN` flag on
+files it manages, and CPython's `site.py` silently **skips hidden `.pth` files**. An
+editable install therefore stops resolving with no diagnostic beyond
+`ModuleNotFoundError: No module named 'agent_loop_chaos'`, even though
+`pip install -e` reported success. It appears mid-session, because the flag is applied
+after the file is written.
 
 ```bash
-ls -lO .venv/lib/python3.*/site-packages/*.pth   # look for "hidden"
-chflags nohidden .venv/lib/python3.*/site-packages/*.pth
+make doctor          # names the condition and the fix, or says nothing is wrong
 ```
 
-`pytest` is immune to this (`pythonpath = ["src"]` in `pyproject.toml`), but the
-`alc` console script is not. Python 3.14 is affected the same way and is outside the
-supported matrix; develop on 3.10-3.13.
+`chflags nohidden` clears the flag and the provider re-applies it, so it is not a fix.
+**The fix is to put the virtualenv outside the synced tree.** The checkout can stay
+exactly where it is: only `.pth` files are skipped, never source files.
+
+```bash
+make venv VENV=~/.venvs/agent-loop-chaos
+. ~/.venvs/agent-loop-chaos/bin/activate
+```
+
+`~/Documents` is not a symlink when this sync is on -- the provider syncs in place --
+so looking for one proves nothing. `defaults read com.apple.finder FXICloudDriveDocuments`
+returning `1` is the tell, and `make doctor` reads it.
+
+`pytest` is immune either way (`pythonpath = ["src", "."]` in `pyproject.toml`); the
+`alc` console script is not. This is not version-specific: 3.14 behaves the same, and
+works fine once the venv is outside the synced tree.
 
 `tools/verify_pack.py` runs on a bare interpreter — the cross-file drift checks are
 pure stdlib. To also get schema validation and the `suite_demo.yaml` checks (three

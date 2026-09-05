@@ -1967,3 +1967,32 @@ All references now use the scaffolded name, and a test extracts every `chaos/*.y
 path the README mentions and asserts `alc init` actually writes it. The regex excludes
 `.chaos/` — the *output* directory — which is a different thing that happens to end in
 the same letters.
+
+### D-125 — The venv leaves the synced tree, not the checkout
+*2026-09-05. Affects `RUNBOOK.md`, `CONTRIBUTING.md`, `Makefile`.*
+
+With iCloud's "Desktop & Documents" sync on, the file provider sets `UF_HIDDEN` on
+files it manages, and CPython's `site.py` skips hidden `.pth` files. An editable
+install inside a synced directory therefore stops resolving mid-session, with no
+diagnostic beyond `ModuleNotFoundError: No module named 'agent_loop_chaos'` — which
+looks exactly like a broken install and is not one.
+
+The RUNBOOK already warned about this and had both halves wrong. It blamed macOS
+generally rather than the file provider, and it prescribed `chflags nohidden`, which
+clears the flag for as long as it takes the provider to re-apply it. It also blamed
+Python 3.14; 3.14 is fine, and this build's release gate runs on it.
+
+**Only `.pth` files are skipped, never source files**, so the checkout does not have to
+move — the *virtualenv* does. `make venv VENV=~/.venvs/agent-loop-chaos` puts it
+outside the synced tree and the problem is gone permanently.
+
+`tools/doctor.py` (`make doctor`) names the condition when it sees it: it lists the
+hidden `.pth` files, says the flag will come back, and prints the fix. It also warns
+when a venv merely *sits* under a synced directory with nothing hidden yet, because
+that is the same problem waiting. `~/Documents` is not a symlink when this sync is on —
+the provider syncs in place — so the doctor reads
+`defaults read com.apple.finder FXICloudDriveDocuments` rather than looking for one.
+
+`pytest` was never affected (`pythonpath = ["src", "."]`), which is exactly why this
+survived eleven phases: `make check` stayed green the whole time and only the `alc`
+console script broke.

@@ -10,6 +10,7 @@ applies to humans too.
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
+make doctor          # confirms the environment resolves; explains it if not
 make check          # ruff, mypy --strict, pytest, schema parity
 ```
 
