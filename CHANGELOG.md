@@ -11,6 +11,12 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ### Work orders say what to change
 
+- **D-128** The four `HallucinationInducerFault` modes that need a real model to prove
+  anything now have both halves tested: a `@pytest.mark.live` pair against a real
+  endpoint, and a deterministic pair in the default run asserting the planted text
+  reaches the prompt the model received. The second caught `target_llm=` matching
+  nothing, which would have made the live test inject nothing and pass.
+
 - **D-127** `CheckpointRollbackFault(rollback_steps=N)` accepted the parameter and
   ignored it — a scenario asking for three steps got a one-node replay with nothing to
   say its request had been reduced. It now replays the last N committed nodes, oldest

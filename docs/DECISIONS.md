@@ -2057,3 +2057,31 @@ the harness. Without that a two-node rollback would make `duplicate_side_effect`
 on the correct agent too. Verified on the demo graph — a two-step rollback replays
 `summarize` and `respond`, the buggy tree fails `duplicate_side_effect`, and the
 hardened tree passes.
+
+### D-128 — The library's half of an inducer is tested without a model
+*2026-09-05. Affects `docs/07-TESTING.md` §1, D-117.*
+
+Four `HallucinationInducerFault` modes — `false_premise`, `authority_bias`,
+`leading_question`, `entity_lookalike` — change how a model *reasons*, and a scripted
+model does not reason. Representing them in the fake would mean writing the failure by
+hand and then asserting it, which proves the fake obeys its own script and nothing
+about an agent. They were therefore shipped and untested, which is its own problem.
+
+The work splits cleanly. **Whether a real model gives way to a false premise is a fact
+about that model.** **That the inducer is planted, recorded, and actually reaches the
+model is a fact about this library** — and that half must not need a network.
+
+Both halves now exist: a `@pytest.mark.live` pair against a real endpoint
+(`ALC_LIVE_MODEL=… pytest -m live`), and a deterministic pair in the default run that
+asserts the planted text arrives in the prompt the model received, for every one of the
+four modes. A drift test asserts the live list plus the demo's two equals
+`_INDUCER_MODES`, so a mode cannot be added and left untested in both places.
+
+The deterministic half earned itself immediately: it caught `target_llm="complete"`
+matching nothing, because a bare `@engine.llm` registers the model as `"default"`. The
+live test had the same bug and would have silently injected nothing on the first
+machine that had an endpoint — a passing test proving the harness did nothing, which is
+the failure this library exists to catch.
+
+The live "does it move the model" test reports rather than asserts per mode. A mode a
+particular model shrugs off is a fact about that model, not a defect in the fault.
