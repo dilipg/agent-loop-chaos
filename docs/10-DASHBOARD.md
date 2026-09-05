@@ -134,6 +134,23 @@ buffering forever. `--no-sse` falls back to client polling of
 
 ## 6. The page
 
+### 6.0 Two views: report first, trace second
+
+The dashboard opens on a **report view** for a reader who did not write the agent, and
+the three panes below are one click away (D-119). Per run, in plain English: what we
+broke, what the agent did, what we wanted instead, how bad it is, how we know, and what
+to fix — plus a button into the trace at that run and a button that copies the work
+order. The suite line says how hard the run pushed, in words, from `report.intensity`.
+
+Every code is rendered through `agent_loop_chaos.glossary`, shipped with the library so
+the live server and the HTML export say the same thing. `GET /api/glossary` serves it;
+the export inlines it. A test asserts every enum value, probe code and `Expect` field
+has an entry.
+
+The trace view carries a collapsible **How to read this** panel — the three panes, a
+colour legend, and the keys — in the pane rather than behind `?`, because a reader who
+does not know they need help does not press `?`.
+
 Three panes, resizable, remembered in `localStorage` (a per-viewer convenience only
 — never state that matters):
 

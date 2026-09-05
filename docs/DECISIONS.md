@@ -1817,3 +1817,35 @@ hallucinating *on corrupt data* that was never touched.
 Destructive now means at least one patch operation is not `add`, or the fault raised.
 The demo's numbers are unchanged; `HallucinationInducerFault` classifies as
 `unverified_claim_emitted`, which is what actually happened.
+
+### D-119 — The dashboard lands on a report, not a trace
+*2026-09-05. Affects `docs/10-DASHBOARD.md` §6, phase 10.*
+
+`docs/10` §6 specifies three panes of trace. That is the right tool for the person who
+wrote the agent and the wrong first thing to show the person deciding whether to ship
+it: `failure_mode: unverified_claim_emitted` is a stable identifier for a machine, not
+an explanation for a human, and a 20 000-row timeline is not a summary.
+
+The dashboard now opens on a **report view** and the trace is one click away. Per run,
+in plain English: what we broke, what the agent did, what we wanted instead, how bad
+it is, how we know, and what to fix — then a button into the trace at that run, and a
+button that copies the work order.
+
+Every code is rendered through `agent_loop_chaos.glossary`, which is the single source
+of the wording and is shipped with the library rather than embedded in the page, so
+the HTML export and the live server say the same thing and there is one place to fix a
+sentence. A test asserts every value of every enum, every probe code and every `Expect`
+field has an entry: a glossary with a hole shows a raw code to exactly the reader who
+cannot decode one. Fault descriptions are not in it — they come from the fault
+registry, so the catalog and the page cannot drift.
+
+`assertions_failed` is deliberately not rendered as itself. "The run broke a rule the
+scenario said it had to keep" is true and useless; the failed assertions are listed
+instead, which turns the finding into *"every figure in the answer should trace back
+to something real — the output asserts '3470 km' with nothing in the tool results,
+inputs or state to source it"*.
+
+The trace view keeps a collapsible **How to read this** panel: what the three panes
+are, a colour legend for the row classes, and the keys. It is in the pane rather than
+behind the `?` dialog because a reader who does not know they need help does not press
+`?`.

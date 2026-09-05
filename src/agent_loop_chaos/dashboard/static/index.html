@@ -111,21 +111,90 @@ kbd { font-family: var(--mono); border: 1px solid var(--line); border-radius: 4p
       padding: 0 4px; }
 .banner { padding: 4px 12px; background: var(--accent-soft); color: var(--accent);
           font-size: 12px; border-bottom: 1px solid var(--accent); }
+
+/* ---- report view: for someone who did not write the agent ---------------- */
+#report { flex: 1; overflow: auto; display: none; }
+#report.on { display: block; }
+main.trace-off { display: none; }
+.wrap { max-width: 940px; margin: 0 auto; padding: 22px 20px 60px; }
+.lede { font-size: 15px; line-height: 1.55; }
+.lede strong { font-weight: 650; }
+.scoreline { display: flex; gap: 10px; flex-wrap: wrap; margin: 14px 0 6px; }
+.score { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; background: var(--panel); }
+.score b { display: block; font-size: 22px; font-weight: 650; line-height: 1.2; }
+.score span { color: var(--dim); font-size: 12px; }
+.score.bad b { color: var(--fail); }
+.score.good b { color: var(--pass); }
+.card {
+  border: 1px solid var(--line); border-left-width: 4px; border-radius: 10px;
+  padding: 14px 16px; margin: 12px 0; background: var(--panel);
+}
+.card.fail { border-left-color: var(--fail); }
+.card.pass { border-left-color: var(--pass); }
+.card h2 { font-size: 15px; margin: 0 0 2px; font-weight: 650; }
+.card .verdict { font-size: 13px; margin-bottom: 10px; }
+.card .verdict.fail { color: var(--fail); }
+.card .verdict.pass { color: var(--pass); }
+.card dl { margin: 0; display: grid; grid-template-columns: 132px 1fr; gap: 6px 14px; }
+.card dt {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim);
+  padding-top: 2px;
+}
+.card dd { margin: 0; font-size: 13px; line-height: 1.5; }
+.card dd ul { margin: 0; padding-left: 18px; }
+.card .actions { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+.card .desc { color: var(--dim); font-size: 12px; margin: 0 0 8px; }
+details.help { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; width: 100%; }
+details.help summary { cursor: pointer; font-size: 12px; color: var(--accent); }
+details.help div { font-size: 12px; color: var(--dim); margin-top: 8px; line-height: 1.55; }
+details.help p { margin: 0 0 8px; }
+details.help .legend { display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; align-items: center; }
+details.help code { font-family: var(--mono); }
+.swatch { display: inline-block; width: 22px; height: 10px; border-radius: 2px; }
 </style>
 </head>
 <body>
 <header>
   <span class="brand">agent-loop-chaos</span>
   <span class="counter" id="counter" aria-live="polite">loading…</span>
+  <button id="viewreport" aria-pressed="true" title="Plain-English report">report</button>
+  <button id="viewtrace" aria-pressed="false" title="Event-by-event trace">trace</button>
   <span class="spacer"></span>
   <button id="failonly" aria-pressed="false" title="Show failures only">failures only</button>
   <button id="follow" aria-pressed="true" title="Follow new events">follow</button>
   <button id="help" title="Keyboard shortcuts">?</button>
 </header>
 <div class="banner" id="banner" hidden></div>
-<main>
+<section id="report" class="on" aria-label="Report"><div class="wrap" id="reportbody"></div></section>
+<main class="trace-off">
   <section class="pane" id="runs" aria-label="Runs">
-    <div class="head"><input type="search" id="runfilter" placeholder="filter runs" aria-label="Filter runs"></div>
+    <div class="head">
+      <input type="search" id="runfilter" placeholder="filter runs" aria-label="Filter runs">
+      <details class="help">
+        <summary>How to read this</summary>
+        <div>
+          <p><b>What this is.</b> Each row on the left is one experiment: we deliberately
+             broke something while the agent was working, then watched what it did. A
+             green dot means the agent coped. A red dot means it did not.</p>
+          <p><b>The middle column</b> is everything that happened, oldest first. The
+             highlighted rows are the moments we broke something &mdash; look at those first.
+             Click any row to see its detail on the right.</p>
+          <p><b>The right column</b> explains one moment. <i>Diff</i> shows exactly what
+             changed. <i>Verdict</i> explains the outcome. <i>Task</i> is a ready-made
+             work order you can hand to a developer or a coding agent.</p>
+          <div class="legend">
+            <span class="swatch" style="background: var(--fault)"></span><span>we broke something here</span>
+            <span class="swatch" style="background: var(--tool)"></span><span>the agent called a tool</span>
+            <span class="swatch" style="background: var(--llm)"></span><span>the agent called the model</span>
+            <span class="swatch" style="background: var(--state)"></span><span>the agent&rsquo;s memory changed</span>
+            <span class="swatch" style="background: var(--err)"></span><span>an error</span>
+          </div>
+          <p style="margin-top:8px"><b>Keys.</b> <code>j</code>/<code>k</code> move,
+             <code>f</code> jumps to the next break, <code>/</code> searches,
+             <code>?</code> shows all of them.</p>
+        </div>
+      </details>
+    </div>
     <div class="body" id="runlist"></div>
   </section>
   <div class="grip" id="grip1" role="separator" aria-orientation="vertical"></div>
@@ -208,7 +277,8 @@ const src = LIVE ? {
     get("/api/run/" + encodeURIComponent(id) + "/events?from=" + from + "&limit=2000"),
   task: (id) =>
     fetch("/api/run/" + encodeURIComponent(id) + "/artifact/AGENT_TASK.md")
-      .then((r) => (r.ok ? r.text() : ""))
+      .then((r) => (r.ok ? r.text() : "")),
+  glossary: () => get("/api/glossary")
 } : {
   suite: async () => BLOB.suite,
   runs: async () => BLOB.runs.map((r) => r.row),
@@ -217,7 +287,8 @@ const src = LIVE ? {
     const all = find(id).events.filter((e) => (e.seq || 0) >= from);
     return { events: all, next_from: from + all.length, has_more: false };
   },
-  task: async (id) => find(id).task || ""
+  task: async (id) => find(id).task || "",
+  glossary: async () => BLOB.glossary || {}
 };
 function find(id) { return BLOB.runs.find((r) => r.row.run_id === id) || { row: {}, events: [] }; }
 
@@ -225,7 +296,7 @@ function find(id) { return BLOB.runs.find((r) => r.row.run_id === id) || { row: 
 const S = {
   suite: null, runs: [], sel: null, events: [], next: 0, ev: null,
   tab: "Event", groups: new Set(), q: "", runq: "", failonly: false, follow: true,
-  report: null, task: "", t0: null
+  report: null, task: "", t0: null, view: "report", gloss: {}, reports: {}
 };
 const GROUP = {
   fault: (e) => /^(fault_fired|mutation_applied)$/.test(e.kind || ""),
@@ -534,6 +605,186 @@ function jumpTo(seq) {
   if (i >= 0) { setFollow(false); scroller.scrollTop = Math.max(0, i * ROW_H - 80); paint(); }
 }
 
+
+// ---------------------------------------------------------------- report view
+// For someone who did not write the agent and is deciding whether to ship it. Every
+// code the report carries is rendered through the glossary the library ships, so
+// there is one wording to fix rather than two, and no raw enum name ever reaches the
+// reader who cannot decode one.
+function say(table, code, fallback) {
+  const entry = (S.gloss[table] || {})[code];
+  return entry || fallback || code || "";
+}
+function faultSummary(kind) {
+  const entry = (S.gloss.faults || {})[kind];
+  return entry ? entry.summary : kind;
+}
+function drawReport() {
+  const box = document.getElementById("reportbody");
+  clear(box);
+  const suite = S.suite || {};
+  const rows = S.runs.filter((r) => !S.failonly || r.success === false);
+
+  const failed = S.runs.filter((r) => r.success === false).length;
+  const passed = S.runs.filter((r) => r.success === true).length;
+  const running = S.runs.filter((r) => r.status === "running").length;
+
+  const lede = el("p", "lede");
+  put(lede, "We ran this agent " + (S.runs.length || 0) + " time" +
+            (S.runs.length === 1 ? "" : "s") + ", breaking something different each " +
+            "time, and watched what it did. ");
+  const dial = suite.intensity || (S.runs[0] && S.runs[0].intensity);
+  if (dial) put(lede, "Pressure was set to " + dial.level + " of 10 (" + dial.label + "): " +
+                      dial.summary + " ");
+  put(lede, failed
+    ? "It coped with " + passed + " and did not cope with " + failed + "."
+    : "It coped with every one.");
+  box.appendChild(lede);
+
+  const line = el("div", "scoreline");
+  line.appendChild(scoreBox(passed, "coped", "good"));
+  line.appendChild(scoreBox(failed, "did not cope", failed ? "bad" : ""));
+  if (running) line.appendChild(scoreBox(running, "still running", ""));
+  box.appendChild(line);
+
+  if (!rows.length) {
+    box.appendChild(el("div", "empty",
+      S.runs.length ? "nothing failed — switch off “failures only” to see the rest"
+                    : (LIVE ? "no runs yet — start one with: alc run <suite.yaml> --dashboard"
+                            : "this export contains no runs")));
+    return;
+  }
+  for (const row of rows) box.appendChild(card(row));
+}
+function scoreBox(n, label, cls) {
+  const node = el("div", "score " + cls);
+  node.appendChild(el("b", null, n));
+  node.appendChild(el("span", null, label));
+  return node;
+}
+function card(row) {
+  const report = S.reports[row.run_id] || null;
+  const failedRun = row.success === false;
+  const node = el("div", "card " + (failedRun ? "fail" : "pass"));
+  node.appendChild(el("h2", null, row.scenario_id || row.run_id));
+  if (report && report.target && report.target.description) {
+    node.appendChild(el("p", "desc", report.target.description));
+  }
+
+  const verdict = el("div", "verdict " + (failedRun ? "fail" : "pass"));
+  put(verdict, row.status === "running" ? "Still running…"
+    : failedRun ? "Did not cope — " + say("failure_modes", row.failure_mode, row.failure_mode)
+    : "Coped. " + say("failure_modes", row.failure_mode || "none"));
+  node.appendChild(verdict);
+
+  const dl = el("dl");
+  row_(dl, "What we broke", brokeList(report, row));
+  if (report) {
+    const observed = (report.verdict || {}).observed_behavior;
+    if (observed) row_(dl, "What it did", el("span", null, say("observed", observed)));
+    const expected = (report.verdict || {}).expected_behavior;
+    if (expected) row_(dl, "What we wanted", el("span", null, say("expected", expected)));
+    if (failedRun && row.severity) {
+      row_(dl, "How bad", el("span", null, say("severities", row.severity, row.severity)));
+    }
+    const evidence = symptomList(report);
+    if (evidence) row_(dl, "How we know", evidence);
+    const fix = fixText(report);
+    if (fix) row_(dl, "What to fix", fix);
+  } else if (row.status !== "running") {
+    row_(dl, "Detail", el("span", null, "the full report has not been written yet"));
+  }
+  node.appendChild(dl);
+
+  const actions = el("div", "actions");
+  const open = el("button", null, "See what happened, step by step");
+  open.onclick = () => { setView("trace"); select(row.run_id); };
+  actions.appendChild(open);
+  if (row.artifacts && row.artifacts["AGENT_TASK.md"]) {
+    const task = el("button", null, "Copy the work order");
+    task.onclick = () => src.task(row.run_id).then(
+      (text) => navigator.clipboard && navigator.clipboard.writeText(text));
+    actions.appendChild(task);
+  }
+  node.appendChild(actions);
+  return node;
+}
+function row_(dl, term, node) {
+  dl.appendChild(el("dt", null, term));
+  const dd = el("dd");
+  dd.appendChild(node);
+  dl.appendChild(dd);
+}
+function brokeList(report, row) {
+  const faults = (report && report.injected_faults) || [];
+  const fired = faults.filter((f) => f.fired);
+  if (!fired.length) {
+    return el("span", null, faults.length
+      ? "nothing, in the end — every fault we armed turned out not to apply here"
+      : "nothing — this was a control run, to prove the tooling changes nothing by itself");
+  }
+  const ul = el("ul");
+  for (const fault of fired) {
+    const li = el("li");
+    put(li, faultSummary(fault.type));
+    const note = (fault.fires || []).map((f) => f.note).filter(Boolean)[0];
+    if (note) { put(li, " — "); li.appendChild(el("i", null, note)); }
+    if (fault.origin) {
+      put(li, " ");
+      li.appendChild(el("span", "chip", "added by pressure level " + fault.origin.split(":")[1]));
+    }
+    ul.appendChild(li);
+  }
+  return ul;
+}
+function symptomList(report) {
+  const symptoms = report.symptoms || [];
+  const broken = (report.assertions || []).filter((a) => a.ok === false);
+  if (!symptoms.length && !broken.length) return null;
+  const ul = el("ul");
+  for (const sym of symptoms) {
+    // "The run broke a rule the scenario said it had to keep" is true and useless.
+    // Which rule, and what it was protecting, is the finding -- so the failed
+    // assertions are listed instead of the code that summarises them.
+    if (sym.code === "assertions_failed" && broken.length) continue;
+    const li = el("li");
+    put(li, say("probes", sym.code, sym.detail || sym.code));
+    if (sym.detail && say("probes", sym.code, "") !== sym.detail) {
+      li.appendChild(el("div", "desc", sym.detail));
+    }
+    ul.appendChild(li);
+  }
+  for (const check of broken) {
+    const li = el("li");
+    put(li, say("assertions", check.check, check.check));
+    if (check.detail) li.appendChild(el("div", "desc", check.detail));
+    ul.appendChild(li);
+  }
+  return ul;
+}
+function fixText(report) {
+  const fixes = report.suggested_fixes || [];
+  const pointers = report.code_pointers || [];
+  if (!fixes.length && !pointers.length) return null;
+  const box = el("div");
+  if (fixes.length) put(box, fixes[0].description || "");
+  if (pointers.length) {
+    const where = pointers[0];
+    const short = String(where.file || "").split("/").slice(-2).join("/");
+    box.appendChild(el("div", "desc",
+      "Start at " + short + ":" + where.line + (where.symbol ? " (" + where.symbol + ")" : "")));
+  }
+  return box;
+}
+function setView(view) {
+  S.view = view;
+  document.getElementById("report").className = view === "report" ? "on" : "";
+  document.querySelector("main").className = view === "report" ? "trace-off" : "";
+  document.getElementById("viewreport").setAttribute("aria-pressed", String(view === "report"));
+  document.getElementById("viewtrace").setAttribute("aria-pressed", String(view === "trace"));
+  if (view === "report") drawReport();
+}
+
 // ---------------------------------------------------------------- loading
 async function select(id) {
   S.sel = id; S.events = []; S.next = 0; S.ev = null; S.report = null; S.task = ""; S.t0 = null;
@@ -566,7 +817,18 @@ async function refresh() {
   S.suite = await src.suite().catch(() => S.suite);
   S.runs = await src.runs().catch(() => S.runs);
   drawCounter(); drawRuns();
+  await loadReports();
+  if (S.view === "report") drawReport();
   if (!S.sel && S.runs.length) await select(S.runs[0].run_id);
+}
+async function loadReports() {
+  // The report view needs the whole report, not the summary row. Fetched once per
+  // run and cached: a finished run's report never changes.
+  for (const row of S.runs) {
+    if (S.reports[row.run_id] || row.status === "running") continue;
+    const detail = await src.run(row.run_id).catch(() => null);
+    if (detail && detail.report) S.reports[row.run_id] = detail.report;
+  }
 }
 
 // ---------------------------------------------------------------- live updates
@@ -612,9 +874,14 @@ function wire() {
   document.getElementById("runfilter").oninput = (e) => { S.runq = e.target.value; drawRuns(); };
   document.getElementById("search").oninput = (e) => { S.q = e.target.value; drawRows(); };
   document.getElementById("failonly").onclick = (e) => {
-    S.failonly = !S.failonly; e.target.setAttribute("aria-pressed", String(S.failonly)); drawRuns();
+    S.failonly = !S.failonly;
+    e.target.setAttribute("aria-pressed", String(S.failonly));
+    drawRuns();
+    if (S.view === "report") drawReport();
   };
   document.getElementById("follow").onclick = () => setFollow(!S.follow);
+  document.getElementById("viewreport").onclick = () => setView("report");
+  document.getElementById("viewtrace").onclick = () => setView("trace");
   document.getElementById("jumplive").onclick = () => setFollow(true);
   document.getElementById("help").onclick = () => document.getElementById("helpbox").showModal();
   for (const b of document.querySelectorAll("[data-group]")) {
@@ -666,7 +933,9 @@ function nextFault() {
   if (found) { S.ev = found.seq; drawRows(); jumpTo(found.seq); drawDetail(); }
 }
 
-drawTabs(); wire();
+drawTabs(); wire(); setView("report");
+src.glossary().then((g) => { S.gloss = g || {}; if (S.view === "report") drawReport(); })
+              .catch(() => { S.gloss = {}; });
 refresh().then(() => { if (LIVE) stream(); });
 </script>
 </body>

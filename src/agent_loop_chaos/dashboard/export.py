@@ -58,7 +58,7 @@ def build_blob(out_dir: str | Path, *, max_trace_events: int = 5_000) -> dict[st
                 "task": task.decode("utf-8", errors="replace") if task else "",
             }
         )
-    blob = {"suite": api.suite(watcher), "runs": runs}
+    blob = {"suite": api.suite(watcher), "runs": runs, "glossary": api.glossary(watcher)}
     redacted = redact(blob)
     return redacted if isinstance(redacted, dict) else blob
 

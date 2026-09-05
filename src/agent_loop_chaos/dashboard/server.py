@@ -295,6 +295,8 @@ def _make_handler(server: DashboardServer) -> type[BaseHTTPRequestHandler]:
                 return self._json(api.suite(w))
             if parts == ["api", "runs"]:
                 return self._json(api.runs(w))
+            if parts == ["api", "glossary"]:
+                return self._json(api.glossary(w))
             if parts == ["api", "health"]:
                 return self._json(api.health(w))
             if parts == ["api", "stream"]:

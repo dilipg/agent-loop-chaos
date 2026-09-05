@@ -22,7 +22,7 @@ from typing import Any
 from ..version import __version__
 from .watcher import RunDirWatcher
 
-__all__ = ["ARTIFACTS", "artifact", "events", "health", "run", "runs", "suite"]
+__all__ = ["ARTIFACTS", "artifact", "events", "glossary", "health", "run", "runs", "suite"]
 
 #: The only names ever served, and the content type each gets.
 ARTIFACTS: dict[str, str] = {
@@ -229,6 +229,20 @@ def artifact(watcher: RunDirWatcher, run_id: str, name: str) -> tuple[bytes | No
         return path.read_bytes(), ARTIFACTS[name]
     except OSError:
         return None, None
+
+
+def glossary(watcher: RunDirWatcher) -> dict[str, Any]:
+    """Plain English for every code a report can emit.
+
+    Args:
+        watcher: Unused; kept so every endpoint has one signature.
+
+    Returns:
+        The glossary bundle, which the report view renders instead of raw enum names.
+    """
+    from ..glossary import bundle
+
+    return bundle()
 
 
 def health(watcher: RunDirWatcher) -> dict[str, Any]:

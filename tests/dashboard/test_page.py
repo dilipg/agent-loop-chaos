@@ -79,3 +79,57 @@ def test_the_package_exports_its_public_names() -> None:
     assert callable(dashboard.export_html)
     with pytest.raises(AttributeError):
         dashboard.not_a_thing  # noqa: B018  attribute access is the assertion
+
+
+class TestTheReportView:
+    """The view for someone who did not write the agent.
+
+    `docs/10` §6 gives the developer three panes of trace. That is the wrong first
+    thing to show a person deciding whether to ship: `failure_mode:
+    unverified_claim_emitted` is a stable identifier, not an explanation. The report
+    view renders every code through the glossary the library ships.
+    """
+
+    def test_it_is_the_landing_view(self, page: str) -> None:
+        assert 'setView("report")' in page
+        assert 'id="report" class="on"' in page
+
+    def test_both_views_are_reachable(self, page: str) -> None:
+        assert 'id="viewreport"' in page and 'id="viewtrace"' in page
+
+    def test_it_renders_codes_through_the_glossary(self, page: str) -> None:
+        # A raw enum name must never reach this reader, so every code goes through
+        # `say()`, which looks it up in the shipped glossary.
+        assert "function say(" in page
+        for table in ("failure_modes", "observed", "expected", "severities", "probes"):
+            assert f'say("{table}"' in page
+
+    def test_it_says_how_hard_the_run_pushed(self, page: str) -> None:
+        assert "Pressure was set to" in page
+
+    def test_it_offers_the_trace_as_the_next_step(self, page: str) -> None:
+        assert "See what happened, step by step" in page
+
+    def test_it_offers_the_work_order(self, page: str) -> None:
+        assert "Copy the work order" in page
+
+    def test_it_uses_plain_headings(self, page: str) -> None:
+        for heading in ("What we broke", "What it did", "What to fix", "How we know"):
+            assert heading in page
+
+    def test_it_still_escapes_everything(self, page: str) -> None:
+        # The report view renders fault notes and symptom details, which are
+        # payload-derived. Same rule as the timeline: nothing is assigned as markup.
+        assert "innerHTML" not in page
+
+
+class TestTheListingHelp:
+    def test_the_trace_view_explains_itself(self, page: str) -> None:
+        assert "How to read this" in page
+
+    def test_the_help_explains_the_colours(self, page: str) -> None:
+        assert "we broke something here" in page
+        assert "the agent called a tool" in page
+
+    def test_the_help_names_the_keys(self, page: str) -> None:
+        assert "jumps to the next break" in page

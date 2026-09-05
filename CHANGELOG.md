@@ -9,6 +9,29 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+### The dashboard opens on a report, not a trace
+
+**D-119.** Three panes of trace is the right tool for the person who wrote the agent
+and the wrong first thing to show the person deciding whether to ship it. The
+dashboard now lands on a **report view**: per run, in plain English, what we broke,
+what the agent did, what we wanted instead, how bad it is, how we know, and what to
+fix — with a button into the trace at that run and a button that copies the work
+order. The trace is one click away and unchanged.
+
+- `agent_loop_chaos.glossary` is the single source of the wording, shipped with the
+  library so the live server (`GET /api/glossary`) and the HTML export say the same
+  thing. A test asserts every enum value, probe code and `Expect` field has an entry —
+  a glossary with a hole shows a raw code to exactly the reader who cannot decode one.
+  Fault descriptions come from the registry, so the catalog cannot drift from the page.
+- `assertions_failed` is not rendered as itself. "The run broke a rule the scenario
+  said it had to keep" is true and useless; the failed assertions are listed instead,
+  which turns the finding into *"every figure in the answer should trace back to
+  something real — the output asserts '3470 km' with nothing in the tool results,
+  inputs or state to source it"*.
+- The trace view keeps a collapsible **How to read this** panel — the panes, a colour
+  legend, the keys — in the pane rather than behind `?`, because a reader who does not
+  know they need help does not press `?`.
+
 ### The intensity dial, and hallucination testing
 
 **`intensity`, 1 to 10** (D-116). One number decides how hard a plan pushes. `1` is
