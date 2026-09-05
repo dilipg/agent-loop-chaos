@@ -98,7 +98,7 @@ crossing. Pointers below 0.5 confidence are omitted.
 
 Candidate fixes (ranked, advisory — verify before trusting them):
 
-1. **output_validation** (confidence 1.0) — Make the agent meet the scenario's declared expectation with the fault still injected -- suppressing the symptom is not a fix.
+1. **output_validation** (confidence 1.0) — Before stating a figure, check it against the tool result it came from, and say the value is unavailable rather than supplying one when the source is missing.
 
 ## 6. Your task
 

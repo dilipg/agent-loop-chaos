@@ -1996,3 +1996,29 @@ the provider syncs in place — so the doctor reads
 `pytest` was never affected (`pythonpath = ["src", "."]`), which is exactly why this
 survived eleven phases: `make check` stayed green the whole time and only the `alc`
 console script broke.
+
+### D-126 — The fix names the check, not the layer
+*2026-09-05. Affects `docs/05-JUDGE-AND-LOOP.md`, `docs/11-OUTCOMES-AND-ASSERTIONS.md` §4.*
+
+`assertions_failed` is the dominant symptom for most findings, and `FIX_TABLE` had one
+entry for all of them: "make the agent meet the scenario's declared expectation with
+the fault still injected". True, and useless — it tells a reader to pass the test
+without saying what to change, and it is the field a reader acts on.
+
+Which check failed *is* the finding, and each has a different remedy: an unsourced
+number needs a validation branch where the figure is stated, an invented tool needs the
+answer built from the call log rather than from what the model assumes happened, a
+duplicated effect needs an idempotency key. `CHECK_FIX_TABLE` is keyed by `Expect`
+field and covers every one; a test asserts completeness, so adding a check without a
+fix fails.
+
+`_fixes` prefers the entry for the first failed check and falls back to the generic one
+only for a check with no specific remedy — a newly added one, most likely. Assertion
+order is the scenario's, and the report's, so the choice is deterministic.
+
+Every `kind` reuses the existing `suggested_fixes[].kind` enum rather than extending
+it. The vocabulary is closed and a consumer switching on it keeps working; each new fix
+did map onto an existing value, which is a good sign the vocabulary was right.
+
+Measured on the demo suite: 21 failures previously collapsing to a handful of fix texts
+now produce **11 distinct ones**.

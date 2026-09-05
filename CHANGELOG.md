@@ -9,6 +9,21 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+### Work orders say what to change
+
+- **D-126** `assertions_failed` is the dominant symptom for most findings, and it had
+  one fix for all of them: "make the agent meet the scenario's declared expectation".
+  True, and useless — it is the field a reader acts on. `CHECK_FIX_TABLE` is keyed by
+  `Expect` field and covers every check, with a completeness test. On the demo suite,
+  21 failures now produce 11 distinct fix texts.
+- **D-125** `make venv VENV=~/.venvs/…` and `make doctor`. With iCloud's Desktop &
+  Documents sync on, the file provider hides `.pth` files and CPython skips them, so an
+  editable install inside a synced directory stops resolving mid-session. Only `.pth`
+  files are skipped, never source — so the venv moves, not the checkout. `make doctor`
+  names the condition, says the flag will come back, and prints the fix.
+- **D-123 / D-124** `alc init` no longer scaffolds a YAML file a base install cannot
+  read, and the README's paths are the ones the scaffold writes.
+
 ## 0.2.0 — 2026-09-05
 
 The live dashboard, an intensity dial, hallucination testing, and a README you can

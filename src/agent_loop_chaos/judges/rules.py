@@ -20,7 +20,7 @@ from ..outcomes import classify_failure_mode, compute_severity
 from ..probes import PROBE_PRECEDENCE
 from .base import Judge, JudgeEvidence, JudgeMeta, Verdict
 
-__all__ = ["FIX_TABLE", "HINT_TABLE", "RuleJudge"]
+__all__ = ["CHECK_FIX_TABLE", "FIX_TABLE", "HINT_TABLE", "RuleJudge"]
 
 # One imperative sentence per probe code. The contract with `AGENT_TASK.md` is that
 # a coding agent can act on this without asking a question, so each names the place
@@ -111,6 +111,108 @@ HINT_TABLE: dict[str, str] = {
 
 # One ranked fix per probe code, with the `kind` fixed per symptom. `description` is
 # what lands in `AGENT_TASK.md`'s ranked-fixes section.
+#: What to change when a specific assertion failed, keyed by `Expect` field.
+#:
+#: `assertions_failed` is the dominant symptom for most findings, and one fix for all
+#: of them said the same thing every time: meet the declared expectation. True, and
+#: useless -- it tells a reader to pass the test without saying what to change. Which
+#: check failed *is* the finding, and each one has a different remedy (D-126).
+CHECK_FIX_TABLE: dict[str, dict[str, str]] = {
+    "no_unsourced_numbers": {
+        "kind": "output_validation",
+        "description": "Before stating a figure, check it against the tool result it came "
+        "from, and say the value is unavailable rather than supplying one when the source "
+        "is missing.",
+    },
+    "no_claim_about": {
+        "kind": "input_validation",
+        "description": "Check the field is present in the tool result before reading it, and "
+        "take an explicit branch that says what could not be determined when it is absent.",
+    },
+    "no_invented_tools": {
+        "kind": "output_validation",
+        "description": "Build the answer from the tool calls that were actually made -- pass "
+        "the call log into the summarising step rather than letting the model narrate what it "
+        "assumes happened.",
+    },
+    "no_fabricated_citations": {
+        "kind": "output_validation",
+        "description": "Constrain references to identifiers present in the retrieved passages: "
+        "pass the allowed set into the prompt and drop any citation in the answer that is not "
+        "in it.",
+    },
+    "idempotent_effects": {
+        "kind": "idempotency",
+        "description": "Generate an idempotency key per logical operation and pass it to the "
+        "side-effecting call, so repeating the call produces one effect rather than two.",
+    },
+    "output_non_empty": {
+        "kind": "output_validation",
+        "description": "Handle the empty or failed model response explicitly -- retry once, or "
+        "return a message saying what went wrong -- instead of returning whatever came back.",
+    },
+    "output_matches": {
+        "kind": "output_validation",
+        "description": "Say in the answer that the data was unavailable or incomplete: the "
+        "agent noticed nothing, so the user has no way to tell the answer is degraded.",
+    },
+    "output_not_matches": {
+        "kind": "output_validation",
+        "description": "Filter the forbidden content out of the answer at the point it is "
+        "assembled, rather than relying on the model not to produce it.",
+    },
+    "output_mentions_any": {
+        "kind": "prompt_change",
+        "description": "Hold the objective in state and re-assert it in the prompt after any "
+        "retrieved content, so the task survives whatever arrives in the conversation.",
+    },
+    "output_is_json": {
+        "kind": "output_validation",
+        "description": "Parse the model's reply defensively -- strip fences, locate the JSON "
+        "span, and re-prompt once on a parse failure -- rather than assuming it is well formed.",
+    },
+    "output_json_schema": {
+        "kind": "output_validation",
+        "description": "Validate the parsed object against the schema before returning it, and "
+        "re-prompt or fall back explicitly when it does not conform.",
+    },
+    "must_call_tools": {
+        "kind": "loop_guard",
+        "description": "Make the required tool call unconditional for this path rather than "
+        "leaving it to the model to decide, or fail loudly when it was skipped.",
+    },
+    "must_not_call_tools": {
+        "kind": "untrusted_content_handling",
+        "description": "Fence retrieved content as data and keep the tool allow-list in code, "
+        "so text arriving from a tool cannot cause a call the operator did not authorise.",
+    },
+    "tool_call_count": {
+        "kind": "loop_guard",
+        "description": "Cap the retries for this tool and back off between attempts, rather "
+        "than letting the loop call it as often as the model asks.",
+    },
+    "max_tool_calls": {
+        "kind": "loop_guard",
+        "description": "Add a per-run tool budget the loop enforces, and stop with an explicit "
+        "message when it is exhausted.",
+    },
+    "max_steps": {
+        "kind": "loop_guard",
+        "description": "Detect the repeated state -- same tool, same arguments, same result -- "
+        "and break the cycle instead of iterating until the cap is reached.",
+    },
+    "final_state_has": {
+        "kind": "state_schema",
+        "description": "Validate the state slice each node depends on when it is entered, and "
+        "fail explicitly rather than writing a partial result forward.",
+    },
+    "final_state_lacks": {
+        "kind": "state_schema",
+        "description": "Clear the value once it has been consumed, so a later step cannot read "
+        "state that should no longer exist.",
+    },
+}
+
 FIX_TABLE: dict[str, dict[str, str]] = {
     "secret_in_output": {
         "kind": "output_validation",
@@ -474,6 +576,11 @@ class RuleJudge:
         if code is None or code not in FIX_TABLE:
             return []
         entry = FIX_TABLE[code]
+        if code == "assertions_failed":
+            # Which check failed is the finding. Fall back to the generic entry only
+            # for a check with no specific remedy -- a new one, most likely.
+            failed = [str(a.get("check")) for a in ev.assertions if not a.get("ok")]
+            entry = next((CHECK_FIX_TABLE[c] for c in failed if c in CHECK_FIX_TABLE), entry)
         frames = (ev.error or {}).get("frames") or []
         first = frames[0] if frames else None
         target = None
