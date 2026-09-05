@@ -2452,6 +2452,8 @@ class ChaosEngine:
         adapter: Literal["auto", "vanilla", "langgraph"] = "auto",
         baseline: ChaosResult | None = None,
         seed: int | None = None,
+        scenario_title: str | None = None,
+        scenario_description: str | None = None,
     ) -> ChaosResult:
         """Run an agent under the fault plan.
 
@@ -2472,6 +2474,8 @@ class ChaosEngine:
             adapter: Force an adapter, or sniff it.
             baseline: A prior unfaulted result to diff against.
             seed: Override the engine seed for this run.
+            scenario_title: A short human name for the experiment (D-120).
+            scenario_description: Why the scenario exists.
 
         Returns:
             The assembled `ChaosResult`.
@@ -2504,6 +2508,8 @@ class ChaosEngine:
             is_async=False,
             expect=expect,
             expected_errors=expected_errors,
+            scenario_title=scenario_title,
+            scenario_description=scenario_description,
         )
 
     async def arun(
@@ -2523,6 +2529,8 @@ class ChaosEngine:
         adapter: Literal["auto", "vanilla", "langgraph"] = "auto",
         baseline: ChaosResult | None = None,
         seed: int | None = None,
+        scenario_title: str | None = None,
+        scenario_description: str | None = None,
     ) -> ChaosResult:
         """Async twin of `run`, with the same signature.
 
@@ -2539,6 +2547,8 @@ class ChaosEngine:
             must_not: Probe codes that always fail the run.
             expect: Declarative assertions.
             expected_errors: Exception names that count as an explicit error.
+            scenario_title: A short human name for the experiment (D-120).
+            scenario_description: Why the scenario exists.
             allow_side_effects: Tools the D-23 gate may target.
             dry_run: Override the engine's `dry_run` for this run.
             attempt: Part of `run_id`.
@@ -2563,6 +2573,8 @@ class ChaosEngine:
             seed=seed,
             expect=expect,
             expected_errors=expected_errors,
+            scenario_title=scenario_title,
+            scenario_description=scenario_description,
         )
 
     def run_with_state(
@@ -2875,6 +2887,8 @@ class ChaosEngine:
         is_async: bool,
         expect: Expect | Mapping[str, Any] | None = None,
         expected_errors: Sequence[str] = (),
+        scenario_title: str | None = None,
+        scenario_description: str | None = None,
     ) -> ChaosResult:
         """Lifecycle steps 1-7 and 14, synchronously.
 
@@ -2910,6 +2924,8 @@ class ChaosEngine:
             entrypoint=entrypoint,
         )
         state.entrypoint_sha256 = entrypoint_fingerprint(target)
+        state.ctx.scenario_title = scenario_title
+        state.ctx.scenario_description = scenario_description
         state.inputs = inputs
         state.expect = (
             expect
@@ -2978,6 +2994,8 @@ class ChaosEngine:
         seed: int | None,
         expect: Expect | Mapping[str, Any] | None = None,
         expected_errors: Sequence[str] = (),
+        scenario_title: str | None = None,
+        scenario_description: str | None = None,
     ) -> ChaosResult:
         """Lifecycle steps 1-7 and 14, asynchronously.
 
@@ -3012,6 +3030,8 @@ class ChaosEngine:
             entrypoint=entrypoint,
         )
         state.entrypoint_sha256 = entrypoint_fingerprint(target)
+        state.ctx.scenario_title = scenario_title
+        state.ctx.scenario_description = scenario_description
         state.inputs = inputs
         state.expect = (
             expect
@@ -3419,6 +3439,8 @@ class ChaosEngine:
             must_not=state.must_not,
             injected_faults=[r.to_dict() for r in records],
             intensity=self.intensity,
+            scenario_title=ctx.scenario_title,
+            scenario_description=ctx.scenario_description,
             limit_hit=state.limit_hit,
             baseline=baseline_block,
             delta=delta,

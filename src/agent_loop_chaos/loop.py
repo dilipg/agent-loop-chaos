@@ -444,6 +444,8 @@ def run_suite(
             inputs=scenario.inputs,
             initial_state=dict(scenario.initial_state or {}) or None,
             scenario_id=scenario.id,
+            scenario_title=scenario.title,
+            scenario_description=scenario.description,
             expected_behavior=scenario.expected_behavior,
             must_not=scenario.must_not,
             expect=scenario.expect,

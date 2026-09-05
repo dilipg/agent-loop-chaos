@@ -9,6 +9,22 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+### Runs say what they were, not only what they are called
+
+**D-120.** `pattern.async_agent.fixed` names a directory and feeds `--filter`, and
+means nothing to anyone who has not read the suite file. The report carried no other
+human text: `description` existed on `Scenario` and was never serialized.
+
+- New `title:` on a scenario — a short human name, capped at 78 characters so it stays
+  a heading. It and `description` now reach the report as `scenario_title` and
+  `scenario_description`. Report schema 1.4 → 1.5, additive.
+- The report cards, the run list and `AGENT_TASK.md`'s heading all lead with the title
+  and keep the id underneath, never instead. The run-list filter matches titles too.
+- Where a suite supplies neither, the page derives something readable rather than
+  printing a dotted string at the reader.
+- Both shipped suites are titled, with tests that fail if a scenario is added without
+  one, if a title is just the id again, or if it grows into a paragraph.
+
 ### The dashboard opens on a report, not a trace
 
 **D-119.** Three panes of trace is the right tool for the person who wrote the agent

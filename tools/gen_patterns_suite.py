@@ -44,6 +44,46 @@ scenarios:
 """
 
 
+#: A short human name per shape, and what we break in it. The registry's `description`
+#: and `weakness` are written for someone reading the source; a title has to work for
+#: someone reading a dashboard who has never opened this repository (D-120).
+SHAPES: dict[str, str] = {
+    "async_agent": "Async fan-out agent",
+    "class_based": "Agent class with state on self",
+    "function_calling": "OpenAI-style tool-calling loop",
+    "pipeline": "Fixed pipeline, no loop",
+    "rag_pipeline": "Retrieve-rerank-generate chain",
+    "react_loop": "Hand-rolled ReAct text loop",
+    "streaming": "Streaming response accumulator",
+    "supervisor": "Supervisor and specialists",
+}
+
+BREAKS: dict[str, str] = {
+    "async_agent": "a lookup times out",
+    "class_based": "a tool drops a field",
+    "function_calling": "a corrupted tool result",
+    "pipeline": "a stage input loses a field",
+    "rag_pipeline": "hidden instructions in a passage",
+    "react_loop": "hidden instructions in a tool result",
+    "streaming": "the stream is cut short",
+    "supervisor": "routed to the wrong specialist",
+}
+
+
+def title_for(name: str, hardened: bool) -> str:
+    """Build the human name for one scenario.
+
+    Args:
+        name: The pattern's registry key.
+        hardened: Whether this is the `build_fixed` twin.
+
+    Returns:
+        A short sentence a reader can act on without opening the suite file.
+    """
+    shape = SHAPES[name] + (" (hardened)" if hardened else "")
+    return f"{shape}: {BREAKS[name]}"
+
+
 def render() -> str:
     """Build the suite document.
 
@@ -60,6 +100,7 @@ def render() -> str:
         for suffix, attr in (("", "build"), (".fixed", "build_fixed")):
             rows = [
                 f"  - id: pattern.{name}{suffix}",
+                f"    title: {json.dumps(title_for(name, bool(suffix)))}",
                 f"    entrypoint: examples.patterns.{name}:{attr}",
                 f"    description: {json.dumps(spec.description)}",
                 f"    inputs: {json.dumps(spec.inputs)}",

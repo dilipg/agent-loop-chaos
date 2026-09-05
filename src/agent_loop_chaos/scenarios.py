@@ -364,6 +364,10 @@ class Scenario:
     tags: dict[str, str] = field(default_factory=dict)
     description: str | None = None
     matrix: dict[str, list[Any]] | None = None
+    #: A short human name for this experiment. The id is a stable identifier -- it
+    #: names a directory and feeds `--filter` -- and is meaningless to anyone who has
+    #: not read the suite file. A title never replaces it; it sits in front of it.
+    title: str | None = None
     preset_skipped: list[dict[str, str]] = field(default_factory=list)
     # Set by `load_suite`, unset for a suite built in Python. `RefinementLoop` hashes
     # this file between rounds: editing the scenario is the easiest way to make a
@@ -681,6 +685,7 @@ def _scenario_from_body(body: Mapping[str, Any]) -> Scenario:
         "dry_run",
         "tags",
         "description",
+        "title",
         "matrix",
     }
     return Scenario(

@@ -151,9 +151,11 @@
     "scenario_yaml": "{\"inputs\": \"Pack list for Paris\"}",
     "seed": 1337
   },
+  "scenario_description": null,
   "scenario_id": "weather.tool_contract.unit_swap",
+  "scenario_title": null,
   "schema_errors": [],
-  "schema_version": "1.4",
+  "schema_version": "1.5",
   "seed": 1337,
   "severity": "high",
   "success": false,

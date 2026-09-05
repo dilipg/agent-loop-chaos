@@ -1,7 +1,9 @@
 {
-  "schema_version": "1.4",
+  "schema_version": "1.5",
   "run_id": "run-3f9a12c4",
   "scenario_id": "weather.tool_contract.drop_key",
+  "scenario_title": "A tool leaves out a field the agent needs",
+  "scenario_description": "Proves the agent validates a tool result before reading fields from it.",
   "library_version": "0.1.0",
   "seed": 1337,
   "plan_hash": "sha256:4b2f1e0c8a7d6b5c4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d",

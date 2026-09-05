@@ -130,4 +130,4 @@ Candidate fixes (ranked, advisory — verify before trusting them):
 
 ## 7. Machine-readable source
 
-Full structured finding: `report.json` (validates against `chaos_report.schema.json` 1.4). Full event log: `trace.jsonl`. Judge input/output: `judge.json`. Replay plan: `plan.json`.
+Full structured finding: `report.json` (validates against `chaos_report.schema.json` 1.5). Full event log: `trace.jsonl`. Judge input/output: `judge.json`. Replay plan: `plan.json`.

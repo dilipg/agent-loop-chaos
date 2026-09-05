@@ -574,7 +574,11 @@ profile(7).label          # "relentless"
 describe(7)               # {"level": 7, "label": …, "summary": …} — what a report carries
 ```
 
-A scenario or a suite's `defaults:` may set `intensity:` directly. Every fault the
+A scenario or a suite's `defaults:` may set `intensity:` directly. A scenario should
+also set `title:` — a short human name, at most 78 characters. `id` is a stable
+identifier that names a directory and feeds `--filter`; the title is what every
+reader-facing surface leads with, and both reach the report as `scenario_title` and
+`scenario_description` (D-120). Every fault the
 dial added carries `origin: "intensity:<level>:<preset>"`; a fault the scenario
 declared has none.
 

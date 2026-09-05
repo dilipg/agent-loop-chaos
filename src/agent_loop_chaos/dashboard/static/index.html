@@ -132,6 +132,7 @@ main.trace-off { display: none; }
 .card.fail { border-left-color: var(--fail); }
 .card.pass { border-left-color: var(--pass); }
 .card h2 { font-size: 15px; margin: 0 0 2px; font-weight: 650; }
+.card .sid, .run .sid { font-family: var(--mono); font-size: 11px; color: var(--dim); }
 .card .verdict { font-size: 13px; margin-bottom: 10px; }
 .card .verdict.fail { color: var(--fail); }
 .card .verdict.pass { color: var(--pass); }
@@ -343,7 +344,8 @@ function drawRuns() {
   const rows = S.runs.filter((r) => {
     if (S.failonly && r.success !== false) return false;
     if (!S.runq) return true;
-    return (r.scenario_id + " " + r.run_id).toLowerCase().includes(S.runq.toLowerCase());
+    const hay = (r.scenario_id + " " + r.run_id + " " + (r.title || "")).toLowerCase();
+    return hay.includes(S.runq.toLowerCase());
   });
   if (!rows.length) {
     list.appendChild(el("div", "empty",
@@ -357,8 +359,9 @@ function drawRuns() {
     node.setAttribute("aria-selected", String(r.run_id === S.sel));
     const id = el("div", "id");
     id.appendChild(el("span", "dot " + dotOf(r)));
-    put(id, r.scenario_id || r.run_id);
+    put(id, nameOf(r));
     node.appendChild(id);
+    node.appendChild(el("div", "sid", r.scenario_id || r.run_id));
     const bits = [statusText(r)];
     if (r.failure_mode) bits.push(r.failure_mode);
     if (r.severity) bits.push(r.severity);
@@ -615,6 +618,19 @@ function say(table, code, fallback) {
   const entry = (S.gloss[table] || {})[code];
   return entry || fallback || code || "";
 }
+// The id is a stable identifier -- it names a directory and feeds `--filter` -- and
+// means nothing to a reader who has not opened the suite file. Lead with the title;
+// keep the id, smaller, underneath. Where a suite gives neither, derive something
+// readable rather than printing a dotted string at someone (D-120).
+function nameOf(row) {
+  if (row.title) return row.title;
+  const id = String(row.scenario_id || row.run_id || "");
+  const parts = id.split(".");
+  const head = parts.shift() || id;
+  const rest = parts.join(" ").replace(/[_-]+/g, " ").trim();
+  const label = rest ? head + ": " + rest : head.replace(/[_-]+/g, " ");
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
 function faultSummary(kind) {
   const entry = (S.gloss.faults || {})[kind];
   return entry ? entry.summary : kind;
@@ -666,10 +682,10 @@ function card(row) {
   const report = S.reports[row.run_id] || null;
   const failedRun = row.success === false;
   const node = el("div", "card " + (failedRun ? "fail" : "pass"));
-  node.appendChild(el("h2", null, row.scenario_id || row.run_id));
-  if (report && report.target && report.target.description) {
-    node.appendChild(el("p", "desc", report.target.description));
-  }
+  node.appendChild(el("h2", null, nameOf(row)));
+  node.appendChild(el("div", "sid", row.scenario_id || row.run_id));
+  const blurb = row.description || (report && report.scenario_description);
+  if (blurb) node.appendChild(el("p", "desc", blurb));
 
   const verdict = el("div", "verdict " + (failedRun ? "fail" : "pass"));
   put(verdict, row.status === "running" ? "Still running…"

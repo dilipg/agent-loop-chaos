@@ -34,7 +34,7 @@ __all__ = [
     "extract_code_pointers",
 ]
 
-SCHEMA_VERSION = "1.4"
+SCHEMA_VERSION = "1.5"
 
 
 def empty_verdict(expected_behavior: ExpectedBehavior = "graceful_degradation") -> dict[str, Any]:
@@ -87,6 +87,11 @@ class ChaosResult:
     schema_version: str = SCHEMA_VERSION
     library_version: str = __version__
     scenario_id: str | None = None
+    #: A short human name, and why the scenario exists. Both come from the scenario
+    #: file. Without them a reader has only the id, which is an identifier rather than
+    #: an explanation (D-120).
+    scenario_title: str | None = None
+    scenario_description: str | None = None
     attempt: int = 1
     dry_run: bool = False
 
@@ -134,6 +139,8 @@ class ChaosResult:
             "library_version": self.library_version,
             "run_id": self.run_id,
             "scenario_id": self.scenario_id,
+            "scenario_title": self.scenario_title,
+            "scenario_description": self.scenario_description,
             "seed": self.seed,
             "plan_hash": self.plan_hash,
             "attempt": self.attempt,
@@ -444,6 +451,8 @@ def assemble(
     must_not: Sequence[str] = (),
     injected_faults: Sequence[Mapping[str, Any]] = (),
     intensity: int = DEFAULT_LEVEL,
+    scenario_title: str | None = None,
+    scenario_description: str | None = None,
     limit_hit: str | None = None,
     baseline: dict[str, Any] | None = None,
     delta: dict[str, Any] | None = None,
@@ -488,6 +497,8 @@ def assemble(
         must_not: Probe codes that always fail the run.
         injected_faults: The fault records.
         intensity: The dial level this plan ran at, 1 to 10.
+        scenario_title: A short human name for the experiment.
+        scenario_description: Why the scenario exists.
         limit_hit: Which limit stopped the run.
         baseline: A baseline reference.
         delta: The baseline delta.
@@ -603,6 +614,8 @@ def assemble(
         assertions=[a.to_dict() for a in assertions],
         injected_faults=[dict(f) for f in injected_faults],
         intensity=describe(intensity),
+        scenario_title=scenario_title,
+        scenario_description=scenario_description,
         final_output=final_output,
         error=error,
         baseline=baseline,

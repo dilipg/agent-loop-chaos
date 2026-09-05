@@ -408,6 +408,11 @@
           "maximum": 10,
           "default": 3,
           "description": "How hard the plan pushes: 1 strict, 10 creative. 3 is the identity -- a dial nobody turned changes nothing. Scales trigger persistence and magnitude parameters, and adds faults from the matching preset above 4."
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 78,
+          "description": "A short human name for this experiment. `id` is a stable identifier -- it names a directory and feeds `--filter` -- and means nothing to a reader who has not opened this file. The title sits in front of the id in every reader-facing view; it never replaces it."
         }
       }
     },

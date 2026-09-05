@@ -22,6 +22,7 @@ defaults:
 scenarios:
 
   - id: pattern.async_agent
+    title: "Async fan-out agent: a lookup times out"
     entrypoint: examples.patterns.async_agent:build
     description: "An async agent fanning two lookups out concurrently, as a web handler would."
     inputs: "SKU-77"
@@ -30,6 +31,7 @@ scenarios:
       - {"type": "ToolTimeoutFault", "params": {"after_ms": 1500}, "target": {"tool": "fetch_inventory"}, "trigger": {"on_call": [1, 2, 3], "max_fires": 3}}
 
   - id: pattern.async_agent.fixed
+    title: "Async fan-out agent (hardened): a lookup times out"
     entrypoint: examples.patterns.async_agent:build_fixed
     description: "An async agent fanning two lookups out concurrently, as a web handler would."
     inputs: "SKU-77"
@@ -38,6 +40,7 @@ scenarios:
       - {"type": "ToolTimeoutFault", "params": {"after_ms": 1500}, "target": {"tool": "fetch_inventory"}, "trigger": {"on_call": [1, 2, 3], "max_fires": 3}}
 
   - id: pattern.class_based
+    title: "Agent class with state on self: a tool drops a field"
     entrypoint: examples.patterns.class_based:build
     description: "An agent class carrying conversation, tool registry and budget on `self`."
     inputs: "T-2291"
@@ -46,6 +49,7 @@ scenarios:
       - {"type": "ToolCorruptionFault", "params": {"mutation_type": "drop_key", "keys": ["balance_usd"]}, "target": {"tool": "fetch_billing"}, "trigger": {"on_call": 1}}
 
   - id: pattern.class_based.fixed
+    title: "Agent class with state on self (hardened): a tool drops a field"
     entrypoint: examples.patterns.class_based:build_fixed
     description: "An agent class carrying conversation, tool registry and budget on `self`."
     inputs: "T-2291"
@@ -54,6 +58,7 @@ scenarios:
       - {"type": "ToolCorruptionFault", "params": {"mutation_type": "drop_key", "keys": ["balance_usd"]}, "target": {"tool": "fetch_billing"}, "trigger": {"on_call": 1}}
 
   - id: pattern.function_calling
+    title: "OpenAI-style tool-calling loop: a corrupted tool result"
     entrypoint: examples.patterns.function_calling:build
     description: "An OpenAI-style tool-calling loop: a `tool_calls` list in, one `role: \"tool\"` message back per call, until the model answers."
     inputs: "How much is outstanding on invoices INV-2041 and INV-2042?"
@@ -62,6 +67,7 @@ scenarios:
       - {"type": "ToolCorruptionFault", "params": {"mutation_type": "drop_key", "keys": ["amount_usd"]}, "target": {"tool": "get_invoice"}, "trigger": {"on_call": 1}}
 
   - id: pattern.function_calling.fixed
+    title: "OpenAI-style tool-calling loop (hardened): a corrupted tool result"
     entrypoint: examples.patterns.function_calling:build_fixed
     description: "An OpenAI-style tool-calling loop: a `tool_calls` list in, one `role: \"tool\"` message back per call, until the model answers."
     inputs: "How much is outstanding on invoices INV-2041 and INV-2042?"
@@ -70,6 +76,7 @@ scenarios:
       - {"type": "ToolCorruptionFault", "params": {"mutation_type": "drop_key", "keys": ["amount_usd"]}, "target": {"tool": "get_invoice"}, "trigger": {"on_call": 1}}
 
   - id: pattern.pipeline
+    title: "Fixed pipeline, no loop: a stage input loses a field"
     entrypoint: examples.patterns.pipeline:build
     description: "A fixed extract -> transform -> validate -> render chain with no agent loop at all -- the LCEL shape a great many shipped 'agents' really are."
     inputs: "Which service cost us the most downtime this week?"
@@ -78,6 +85,7 @@ scenarios:
       - {"type": "ToolCorruptionFault", "params": {"mutation_type": "drop_key", "keys": ["owner"]}, "target": {"tool": "fetch_incident_log"}, "trigger": {"on_call": 1}}
 
   - id: pattern.pipeline.fixed
+    title: "Fixed pipeline, no loop (hardened): a stage input loses a field"
     entrypoint: examples.patterns.pipeline:build_fixed
     description: "A fixed extract -> transform -> validate -> render chain with no agent loop at all -- the LCEL shape a great many shipped 'agents' really are."
     inputs: "Which service cost us the most downtime this week?"
@@ -86,6 +94,7 @@ scenarios:
       - {"type": "ToolCorruptionFault", "params": {"mutation_type": "drop_key", "keys": ["owner"]}, "target": {"tool": "fetch_incident_log"}, "trigger": {"on_call": 1}}
 
   - id: pattern.rag_pipeline
+    title: "Retrieve-rerank-generate chain: hidden instructions in a passage"
     entrypoint: examples.patterns.rag_pipeline:build
     description: "Retrieve, rerank, generate over an in-memory store -- the shape most shipped 'agents' actually have."
     inputs: {"question": "How long does a refund take?"}
@@ -94,6 +103,7 @@ scenarios:
       - {"type": "PromptInjectionFault", "params": {"payload_id": "exfil-01", "placement": "field_value"}, "target": {"tool": "search_docs"}, "trigger": {"on_call": 1}}
 
   - id: pattern.rag_pipeline.fixed
+    title: "Retrieve-rerank-generate chain (hardened): hidden instructions in a passage"
     entrypoint: examples.patterns.rag_pipeline:build_fixed
     description: "Retrieve, rerank, generate over an in-memory store -- the shape most shipped 'agents' actually have."
     inputs: {"question": "How long does a refund take?"}
@@ -102,6 +112,7 @@ scenarios:
       - {"type": "PromptInjectionFault", "params": {"payload_id": "exfil-01", "placement": "field_value"}, "target": {"tool": "search_docs"}, "trigger": {"on_call": 1}}
 
   - id: pattern.react_loop
+    title: "Hand-rolled ReAct text loop: hidden instructions in a tool result"
     entrypoint: examples.patterns.react_loop:build
     description: "A hand-rolled ReAct text loop: Thought/Action/Observation in one string, the action parsed out with a regex. The shape of the original paper."
     inputs: "What should I pack for three days in Paris?"
@@ -110,6 +121,7 @@ scenarios:
       - {"type": "PromptInjectionFault", "params": {"payload_id": "exfil-01", "placement": "field_value"}, "target": {"tool": "search"}, "trigger": {"on_call": 1}}
 
   - id: pattern.react_loop.fixed
+    title: "Hand-rolled ReAct text loop (hardened): hidden instructions in a tool result"
     entrypoint: examples.patterns.react_loop:build_fixed
     description: "A hand-rolled ReAct text loop: Thought/Action/Observation in one string, the action parsed out with a regex. The shape of the original paper."
     inputs: "What should I pack for three days in Paris?"
@@ -118,6 +130,7 @@ scenarios:
       - {"type": "PromptInjectionFault", "params": {"payload_id": "exfil-01", "placement": "field_value"}, "target": {"tool": "search"}, "trigger": {"on_call": 1}}
 
   - id: pattern.streaming
+    title: "Streaming response accumulator: the stream is cut short"
     entrypoint: examples.patterns.streaming:build
     description: "A token stream accumulated into a buffer and parsed once it ends -- the shape behind every typing-cursor UI."
     inputs: {"notes": "- Incremental sync now resumes from the last acknowledged cursor.\n- Fixed a crash when a workspace had no default project.\n- The export job retries once on a 503."}
@@ -126,6 +139,7 @@ scenarios:
       - {"type": "LLMTruncationFault", "params": {"cut": "mid_json", "at_ratio": 0.55}, "target": {"llm": "writer"}, "trigger": {"on_call": 1}}
 
   - id: pattern.streaming.fixed
+    title: "Streaming response accumulator (hardened): the stream is cut short"
     entrypoint: examples.patterns.streaming:build_fixed
     description: "A token stream accumulated into a buffer and parsed once it ends -- the shape behind every typing-cursor UI."
     inputs: {"notes": "- Incremental sync now resumes from the last acknowledged cursor.\n- Fixed a crash when a workspace had no default project.\n- The export job retries once on a 503."}
@@ -134,6 +148,7 @@ scenarios:
       - {"type": "LLMTruncationFault", "params": {"cut": "mid_json", "at_ratio": 0.55}, "target": {"llm": "writer"}, "trigger": {"on_call": 1}}
 
   - id: pattern.supervisor
+    title: "Supervisor and specialists: routed to the wrong specialist"
     entrypoint: examples.patterns.supervisor:build
     description: "A coordinator delegating each turn to a named specialist sub-agent with its own prompt, model alias and tool subset -- the LangGraph-supervisor / AutoGen / CrewAI shape."
     inputs: "Which accounts are the biggest churn risk this quarter?"
@@ -143,6 +158,7 @@ scenarios:
       - {"type": "EdgeMisrouteFault", "params": {"from_node": "supervisor", "force_to": "writer", "times": 1}, "target": {"layer": "edge"}, "trigger": {"on_call": 1}}
 
   - id: pattern.supervisor.fixed
+    title: "Supervisor and specialists (hardened): routed to the wrong specialist"
     entrypoint: examples.patterns.supervisor:build_fixed
     description: "A coordinator delegating each turn to a named specialist sub-agent with its own prompt, model alias and tool subset -- the LangGraph-supervisor / AutoGen / CrewAI shape."
     inputs: "Which accounts are the biggest churn risk this quarter?"

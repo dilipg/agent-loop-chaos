@@ -51,7 +51,7 @@
       "type": "string",
       "pattern": "^\\d+\\.\\d+$",
       "examples": [
-        "1.4"
+        "1.5"
       ]
     },
     "run_id": {
@@ -1263,6 +1263,20 @@
           "type": "string"
         }
       }
+    },
+    "scenario_title": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "A short human name for this experiment. `scenario_id` is a stable identifier -- it names a directory and feeds `--filter` -- and is meaningless to anyone who has not read the suite file. The title sits in front of the id; it never replaces it."
+    },
+    "scenario_description": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Why this scenario exists, from the suite file."
     }
   }
 }

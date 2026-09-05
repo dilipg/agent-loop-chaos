@@ -1849,3 +1849,29 @@ The trace view keeps a collapsible **How to read this** panel: what the three pa
 are, a colour legend for the row classes, and the keys. It is in the pane rather than
 behind the `?` dialog because a reader who does not know they need help does not press
 `?`.
+
+### D-120 — A run says what it was, not only what it is called
+*2026-09-05. Affects `docs/02-API.md`, `docs/04-SCHEMAS.md`, `docs/10-DASHBOARD.md` §6.*
+
+`pattern.async_agent.fixed` is a stable identifier: it names a directory, feeds
+`--filter`, and must never change. It is also meaningless to everyone who has not read
+the suite file, which is most people opening the dashboard — developers included. The
+report carried no other human text at all: `description` existed on `Scenario` and was
+never serialized, so the reader-facing views had nothing but the id to show.
+
+A scenario now carries `title` — a short human name, capped at 78 characters so it
+stays a heading rather than becoming a paragraph — and both it and the existing
+`description` reach the report as `scenario_title` and `scenario_description`. Report
+schema 1.4 → 1.5, additive.
+
+Every reader-facing surface leads with the title and keeps the id as secondary text,
+never as a replacement: the report cards, the run list, and `AGENT_TASK.md`'s heading.
+The run-list filter matches the title too, so searching for what you remember works.
+Where a suite supplies neither, the page derives something readable
+(`tool.drop_required_key` → "Tool: drop required key") rather than printing a dotted
+string at someone.
+
+Both shipped suites are titled, and tests enforce it: every scenario in
+`demo_suite.yaml` and `patterns_suite.yaml` has a title, no title is the id again or
+still contains an underscore, and none exceeds a heading's length. A suite that ships
+as an example is also documentation.

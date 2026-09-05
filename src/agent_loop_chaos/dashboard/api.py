@@ -117,6 +117,8 @@ def runs(watcher: RunDirWatcher) -> list[dict[str, Any]]:
             {
                 "run_id": state.run_id,
                 "scenario_id": report.get("scenario_id") or state.scenario_id,
+                "title": report.get("scenario_title"),
+                "description": report.get("scenario_description"),
                 "status": state.status,
                 "success": report.get("success"),
                 "failure_mode": report.get("failure_mode"),

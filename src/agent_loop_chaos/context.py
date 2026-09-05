@@ -332,6 +332,8 @@ class RunContext:
             (D-04). Never derived by scanning the filesystem, which would make it
             path-dependent.
         scenario_id: The scenario's id, when running under a suite.
+        scenario_title: A short human name for the experiment (D-120).
+        scenario_description: Why the scenario exists.
         seed: The root seed.
         started_at: ISO-8601 UTC. A timing field only — never read by decision logic.
         limits: The run's guard rails.
@@ -354,6 +356,8 @@ class RunContext:
     limits: Limits
     trace: TraceRecorder
     scenario_id: str | None = None
+    scenario_title: str | None = None
+    scenario_description: str | None = None
     rng_registry: dict[str, random.Random] = field(default_factory=dict)
     counters: Counters = field(default_factory=Counters)
     attempt: int = 1
