@@ -9,6 +9,45 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+## 0.2.0 — 2026-09-05
+
+The live dashboard, an intensity dial, hallucination testing, and a README you can
+integrate from. Everything in 0.1.0 still holds: `success` is computed, the probes are
+authoritative, and no language model can change a verdict.
+
+Two first-run defects, both found by the release gate rather than by the test suite —
+the development environment always has `pyyaml`, so only a clean wheel install could
+surface them:
+
+- **D-123** `alc init` scaffolded `quickstart.yaml` unconditionally, so on a base
+  install the next documented command failed with "reading a YAML suite needs pyyaml".
+  It now scaffolds JSON when `pyyaml` is absent and says why. The README leads with
+  `pip install "agent-loop-chaos[yaml]"`, since every example in it is YAML.
+- **D-124** The README referenced `chaos/suite.yaml` eight times; `alc init` writes
+  `chaos/quickstart.yaml`. A test now extracts every `chaos/*.yaml` path the README
+  mentions and asserts the scaffold writes it.
+
+### Known gaps
+
+- A *multi-step* `resume_from_checkpoint` — rolling back further than the node that
+  just committed — remains unimplemented at `(checkpoint, post)`; asking for one there
+  records a skip naming the action rather than pretending (D-109). The single-node
+  replay the fault is actually for works (D-111).
+- Four of the six `HallucinationInducerFault` modes (`false_premise`,
+  `authority_bias`, `leading_question`, `entity_lookalike`) plant real conditions but
+  do not move a *scripted* model, so they are in the `hallucination` preset for use
+  against a real endpoint rather than in the demo suite. Adding them there would ship
+  dead scenarios (D-64).
+- Under `--judge rules`, a work order's "what to fix" is generic for an
+  `assertions_failed` finding. The per-probe fix table covers the structural probes;
+  the assertions layer routes to the catch-all.
+- Not published to PyPI. `pip install agent-loop-chaos` does not work yet.
+
+### Schemas
+
+`chaos_report` 1.5, `trace_event` 1.0, `judge_verdict`, `scenario`, `suite` 1.1. All
+five ship inside the wheel and are importable without the source tree.
+
 ### A README you can integrate from, and a one-click hand-off
 
 **D-121.** `README.md` was written when this repository was a spec pack with no code.

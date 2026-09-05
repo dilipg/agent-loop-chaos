@@ -878,7 +878,16 @@ def _init(args: argparse.Namespace) -> int:
         scaffolding command must never do.
     """
     root = Path(args.dir)
-    files = {root / "quickstart.yaml": QUICKSTART, root / "README.md": SCAFFOLD_README}
+    # YAML is an optional runtime extra (D-27). Scaffolding a `.yaml` file that the
+    # very next command cannot read -- and letting the reader find that out one command
+    # later -- is the worst possible ordering, so a base install gets JSON, which needs
+    # no extra at all.
+    name, body = (
+        ("quickstart.yaml", QUICKSTART)
+        if _has_yaml()
+        else ("quickstart.json", _as_json(QUICKSTART))
+    )
+    files = {root / name: body, root / "README.md": SCAFFOLD_README}
     existing = [p for p in files if p.exists()]
     if existing and not args.force:
         for path in existing:
@@ -887,12 +896,77 @@ def _init(args: argparse.Namespace) -> int:
         return EXIT_USAGE
 
     root.mkdir(parents=True, exist_ok=True)
-    for path, body in files.items():
-        path.write_text(body, encoding="utf-8")
+    for path, text in files.items():
+        path.write_text(text, encoding="utf-8")
         print(f"  wrote {path}")
-    print(f"\nNext: edit {root / 'quickstart.yaml'} to point at your agent, then\n")
-    print(f"  alc run {root / 'quickstart.yaml'} --judge rules\n")
+    if not _has_yaml():
+        print(
+            "\nalc init: pyyaml is not installed, so this scaffold is JSON. For YAML "
+            'suites: pip install "agent-loop-chaos[yaml]"',
+            file=sys.stderr,
+        )
+    print(f"\nNext: edit {root / name} to point at your agent, then\n")
+    print(f"  alc run {root / name} --judge rules\n")
     return EXIT_OK
+
+
+def _has_yaml() -> bool:
+    """Whether YAML suites can be read at all.
+
+    Returns:
+        True when `pyyaml` is importable.
+    """
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec("yaml") is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _as_json(yaml_text: str) -> str:
+    """Render the scaffold as JSON, comments folded into `description`.
+
+    Args:
+        yaml_text: The YAML scaffold.
+
+    Returns:
+        An equivalent JSON document. Written by hand rather than converted, because
+        converting would need the parser that is missing.
+    """
+    return json.dumps(
+        {
+            "version": "1.0",
+            "scenarios": [
+                {
+                    "id": "quickstart.drop_required_key",
+                    "title": "A tool leaves out a field the agent needs",
+                    "description": (
+                        "A field the agent reads simply stops being returned. Point "
+                        "`entrypoint` at your agent: a callable whose first parameter is "
+                        "named `engine` is treated as a builder, which is how your tools "
+                        "get wrapped so a tool fault can reach them."
+                    ),
+                    "entrypoint": "your_package.agent:build",
+                    "inputs": {"question": "what is the weather in Paris?"},
+                    "expected_behavior": "graceful_degradation",
+                    "expect": {
+                        "no_unsourced_numbers": {"enabled": True},
+                        "output_matches": ["(?i)unavailab|missing|could not"],
+                    },
+                    "faults": [
+                        {
+                            "type": "ToolCorruptionFault",
+                            "target": {"tool": "get_weather"},
+                            "trigger": {"on_call": 1},
+                            "params": {"mutation_type": "drop_key", "keys": ["temp_c"]},
+                        }
+                    ],
+                }
+            ],
+        },
+        indent=2,
+    )
 
 
 def _replay(args: argparse.Namespace) -> int:

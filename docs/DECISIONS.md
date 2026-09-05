@@ -1930,3 +1930,40 @@ allow-listed artifact name — the `?download=1` flag decides *whether* to attac
 what to call the file, so a filename cannot be smuggled through the query string. And a
 passing run contributes nothing: a work order is written for a failure, and a pass has
 nothing to hand over.
+
+### D-123 — `alc init` never scaffolds a file the next command cannot read
+*2026-09-05. Affects `docs/02-API.md` §10, `README.md`, D-27.*
+
+`pyyaml` is an optional runtime extra (D-27), and `alc init` wrote
+`chaos/quickstart.yaml` unconditionally. On a base `pip install agent-loop-chaos` the
+scaffold therefore produced a file the very next documented command could not read:
+
+```
+$ alc init && alc run chaos/quickstart.yaml --judge rules
+alc run: reading a YAML suite needs pyyaml: install agent-loop-chaos[yaml].
+```
+
+Scaffolding something unreadable and letting the reader find out one command later is
+the worst possible ordering. `alc init` now checks for `pyyaml`: with it, the YAML
+scaffold as before; without it, an equivalent JSON scaffold — JSON needs no extra —
+plus a line on stderr naming the extra. The "Next:" line names whichever file was
+written, so a copy-paste works either way.
+
+The README now leads with `pip install "agent-loop-chaos[yaml]"`, because every example
+in it is YAML.
+
+Found by running the M9 release checklist's own gate — install the wheel in a clean
+venv and use it — which is the only place this could have been found, since the
+development environment always has `pyyaml` through `[dev]`.
+
+### D-124 — The README's paths are the ones the scaffold writes
+*2026-09-05. Affects `README.md`.*
+
+The README referenced `chaos/suite.yaml` eight times. `alc init` writes
+`chaos/quickstart.yaml`. Every command after the quickstart pointed at a file nothing
+creates, so a reader following the README got "no such file" on their second command.
+
+All references now use the scaffolded name, and a test extracts every `chaos/*.yaml`
+path the README mentions and asserts `alc init` actually writes it. The regex excludes
+`.chaos/` — the *output* directory — which is a different thing that happens to end in
+the same letters.

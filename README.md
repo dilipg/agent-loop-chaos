@@ -37,15 +37,18 @@ agent handled it, and writes the finding as a work order a coding agent can exec
 ## Install
 
 ```bash
-pip install agent-loop-chaos
+pip install "agent-loop-chaos[yaml]"
 ```
 
-`jsonschema` is the only required dependency. Everything else is optional:
+`jsonschema` is the only *required* dependency — `pip install agent-loop-chaos` on its
+own works and reads JSON suites. The `[yaml]` extra is worth taking anyway, because
+every example here is YAML and it is what `alc init` scaffolds. (Without it, `alc init`
+scaffolds JSON instead and says so, rather than writing a file the next command cannot
+read.)
 
 ```bash
 pip install "agent-loop-chaos[langgraph]"   # LangGraph adapter
 pip install "agent-loop-chaos[slm]"         # httpx, for a local model judge
-pip install "agent-loop-chaos[yaml]"        # YAML suites (JSON needs nothing)
 ```
 
 ## Quickstart
@@ -579,10 +582,10 @@ agent, and prove the fix, without a human in the loop.
 ### The loop
 
 ```bash
-alc run chaos/suite.yaml --judge rules --out .chaos   # 1. find what breaks
+alc run chaos/quickstart.yaml --judge rules --out .chaos   # 1. find what breaks
 alc report .chaos --format md -o findings.md          # 2. read every finding
 #                                                       3. fix the agent
-alc run chaos/suite.yaml --judge rules --out .chaos   # 4. prove it
+alc run chaos/quickstart.yaml --judge rules --out .chaos   # 4. prove it
 ```
 
 `findings.md` is the whole hand-off: every failure's complete work order in one file.
@@ -596,7 +599,7 @@ The dashboard's **Download all work orders** button produces the same file, and
 ### Have the tool drive the loop for you
 
 ```bash
-alc run chaos/suite.yaml --rounds 3 --judge rules
+alc run chaos/quickstart.yaml --rounds 3 --judge rules
 ```
 
 Between rounds it re-runs the whole suite and reports what flipped, what regressed,
@@ -608,7 +611,7 @@ fix.** Exit code `4` means the harness itself was altered.
 ### Reading the result programmatically
 
 ```bash
-alc run chaos/suite.yaml --judge rules --json        # exactly one JSON object, nothing else
+alc run chaos/quickstart.yaml --judge rules --json        # exactly one JSON object, nothing else
 ```
 
 ```jsonc
@@ -666,7 +669,7 @@ Worth pasting into `CLAUDE.md`, `AGENTS.md`, or your harness's system prompt:
 ```markdown
 ## Chaos tests
 
-Run `alc run chaos/suite.yaml --judge rules` before claiming an agent change is done.
+Run `alc run chaos/quickstart.yaml --judge rules` before claiming an agent change is done.
 Failures write a complete work order to `.chaos/<scenario>/<run>/AGENT_TASK.md`;
 `alc report .chaos --format md` collects them all into one file.
 
@@ -683,7 +686,7 @@ usage error, `3` internal error, `4` tampering detected.
 ```yaml
 # .github/workflows/chaos.yml
 - run: pip install "agent-loop-chaos[yaml]"
-- run: alc run chaos/suite.yaml --judge rules --out .chaos
+- run: alc run chaos/quickstart.yaml --judge rules --out .chaos
   # --judge rules makes no network call at all, so this is hermetic and reproducible.
 - if: always()
   run: alc report .chaos --format html -o chaos-report.html
@@ -696,7 +699,7 @@ usage error, `3` internal error, `4` tampering detected.
 one-liner:
 
 ```bash
-alc run chaos/suite.yaml --judge rules --json | jq -e '.failed == 0'
+alc run chaos/quickstart.yaml --judge rules --json | jq -e '.failed == 0'
 ```
 
 `suite.json` is the machine-readable summary, written at suite start and updated after
@@ -727,7 +730,7 @@ from agent_loop_chaos.loop import run_suite
 from agent_loop_chaos import load_suite
 
 def test_the_chaos_suite_passes(tmp_path):
-    suite = load_suite("chaos/suite.yaml")
+    suite = load_suite("chaos/quickstart.yaml")
     results = run_suite(suite.scenarios, out_dir=tmp_path, judge="rules")
     failed = [r.scenario_id for r in results if not r.success]
     assert not failed, failed
@@ -739,7 +742,7 @@ boundary).
 
 ## Status
 
-Pre-alpha, version 0.1.0. Everything described above is implemented and tested: the
+Pre-alpha, version 0.2.0. Everything described above is implemented and tested: the
 engine, 28 faults, 20 probes, the assertions layer, the judges, the refinement loop,
 the two demo agents, the eight-shape conformance pool, and the live dashboard with its
 single-file HTML export. See [docs/08-ROADMAP.md](docs/08-ROADMAP.md).

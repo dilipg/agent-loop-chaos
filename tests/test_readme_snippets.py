@@ -315,3 +315,42 @@ class TestTheReadmeStaysTrue:
         actions = build_parser()._subparsers._group_actions[0]  # type: ignore[union-attr]
         for name in actions.choices:  # type: ignore[attr-defined]
             assert f"alc {name}" in readme, f"`alc {name}` is undocumented in the README"
+
+
+class TestTheReadmePathsExist:
+    """A reader runs `alc init` and then copy-pastes the next command.
+
+    The README referenced `chaos/suite.yaml` eight times. `alc init` writes
+    `chaos/quickstart.yaml`. Every command after the quickstart pointed at a file
+    nothing creates.
+    """
+
+    def test_every_chaos_path_is_one_init_writes(self, tmp_path: Path, monkeypatch: Any) -> None:
+        import re
+
+        from agent_loop_chaos.cli import main
+
+        monkeypatch.chdir(tmp_path)
+        assert main(["init"]) == 0
+        scaffolded = {str(p.relative_to(tmp_path)) for p in (tmp_path / "chaos").iterdir()}
+
+        # `(?<![.\w])` so `.chaos/suite.json` -- the *output* directory -- is not
+        # mistaken for a scenario file the scaffold was supposed to write.
+        referenced = set(
+            re.findall(r"(?<![.\w])chaos/[A-Za-z0-9_.-]+\.(?:yaml|yml|json)", _readme())
+        )
+        missing = referenced - scaffolded
+        assert not missing, (
+            f"the README references {sorted(missing)}, which `alc init` never writes"
+        )
+
+    def test_the_referenced_suite_actually_loads(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """Not just present -- parseable, so the next command in the README works."""
+        pytest.importorskip("yaml", reason="the yaml extra is not installed")
+        from agent_loop_chaos.cli import main
+        from agent_loop_chaos.scenarios import load_suite
+
+        monkeypatch.chdir(tmp_path)
+        main(["init"])
+        suite = load_suite(tmp_path / "chaos" / "quickstart.yaml")
+        assert suite.scenarios
