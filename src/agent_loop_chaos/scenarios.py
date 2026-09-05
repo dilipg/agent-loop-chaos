@@ -422,13 +422,18 @@ class Scenario:
         for combination in product(*(self.matrix[key] for key in keys)):
             body = self.to_body()
             suffix = ""
+            axes: list[str] = []
             for key, value in zip(keys, combination, strict=True):
                 _set_path(body, key, value)
                 suffix += f"-{key.split('.')[-1]}-{slug(value)}"
+                axes.append(str(value).replace("_", " "))
             out.append(
                 replace(
                     self,
                     id=f"{self.id}{suffix}",
+                    # The id already disambiguates; a title that does not turns four
+                    # products into four identical headings (D-120).
+                    title=f"{self.title} — {', '.join(axes)}" if self.title else None,
                     inputs=body["inputs"],
                     initial_state=body["initial_state"],
                     faults=body["faults"],

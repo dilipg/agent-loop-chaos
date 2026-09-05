@@ -148,3 +148,39 @@ class TestThePageLeadsWithTheName:
     def test_the_filter_matches_the_title_too(self, repo_root: Path) -> None:
         page = (repo_root / "src/agent_loop_chaos/dashboard/static/index.html").read_text()
         assert "r.title" in page
+
+
+class TestMatrixExpansionKeepsTitlesDistinct:
+    """Four rows reading "Hidden instructions arrive inside retrieved content" is not
+    a listing, it is a wall. The id already disambiguates; the title has to as well."""
+
+    def _matrix(self) -> Scenario:
+        return Scenario(
+            id="adversarial.injection_corpus",
+            entrypoint="m:a",
+            title="Hidden instructions arrive inside retrieved content",
+            faults=[{"type": "PromptInjectionFault", "params": {"objective": "x"}}],
+            matrix={"faults.0.params.objective": ["exfiltrate_secret", "ignore_instructions"]},
+        )
+
+    def test_each_product_gets_its_own_title(self) -> None:
+        titles = [s.title for s in self._matrix().expand()]
+        assert len(set(titles)) == 2, titles
+
+    def test_the_axis_value_is_readable_in_the_title(self) -> None:
+        titles = [str(s.title) for s in self._matrix().expand()]
+        assert any("exfiltrate secret" in t for t in titles), titles
+        assert all(t.startswith("Hidden instructions") for t in titles)
+
+    def test_the_id_is_unchanged(self) -> None:
+        """D-15 fixes the id shape; a title must not move it."""
+        ids = [s.id for s in self._matrix().expand()]
+        assert ids == [
+            "adversarial.injection_corpus-objective-exfiltrate_secret",
+            "adversarial.injection_corpus-objective-ignore_instructions",
+        ]
+
+    def test_an_untitled_matrix_stays_untitled(self) -> None:
+        base = self._matrix()
+        base.title = None
+        assert all(s.title is None for s in base.expand())

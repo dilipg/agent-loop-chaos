@@ -1875,3 +1875,7 @@ Both shipped suites are titled, and tests enforce it: every scenario in
 `demo_suite.yaml` and `patterns_suite.yaml` has a title, no title is the id again or
 still contains an underscore, and none exceeds a heading's length. A suite that ships
 as an example is also documentation.
+
+Matrix expansion appends the axis value to the title as well as to the id. Four
+products reading "Hidden instructions arrive inside retrieved content" is a wall, not
+a listing; the id shape stays exactly as D-15 fixes it.
