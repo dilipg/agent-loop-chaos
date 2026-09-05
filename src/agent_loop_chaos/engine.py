@@ -148,6 +148,13 @@ class _RunState:
     #: otherwise `duplicate_side_effect` fires on the *correct* agent too, since both
     #: trees call the tool twice and only the results differ.
     replay_depth: int = 0
+    #: The last `_ROLLBACK_WINDOW` committed nodes as
+    #: `(name, function, entry state, args, kwargs)`, oldest first. A rollback replays
+    #: a slice of this; the entry state *is* the checkpoint. Recorded unconditionally,
+    #: because the fault fires after the nodes it rolls back over have already run.
+    node_window: list[tuple[str, Any, Any, tuple[Any, ...], dict[str, Any] | None]] = field(
+        default_factory=list
+    )
     harness_raised_seqs: set[int] = field(default_factory=set)
     keys_removed: set[str] = field(default_factory=set)
     keys_retyped: set[str] = field(default_factory=set)
@@ -1353,8 +1360,11 @@ class ChaosEngine:
         if outcome.action == "resume_from_checkpoint" and crossing.layer == "node":
             # The node has committed and `route_node` still holds its function and the
             # state it entered with. Re-running from that state is the rollback, and it
-            # re-runs the side effects -- which is the finding (D-111).
+            # re-runs the side effects -- which is the finding (D-111). `rollback_steps`
+            # widens the window to the last N committed nodes, which is what a resume
+            # from a durable checkpoint actually redoes (D-127).
             crossing.replay_times = max(1, int(outcome.params.get("times", 1)))
+            crossing.rollback_steps = max(1, int(outcome.params.get("rollback_steps", 1)))
             return value
         # resume_from_checkpoint needs a checkpointer, so it lands with the LangGraph
         # adapter in M5 (D-10).
@@ -1833,7 +1843,34 @@ class ChaosEngine:
         except BaseException as exc:
             return self._error_phase(crossing, _from_target(exc), time.perf_counter())
         result = self._node_post(crossing, update)
+        self._remember_node(crossing.name, fn, working, args, kwargs)
         return self._replay_node(fn, crossing, working, args, kwargs, result)
+
+    def _remember_node(
+        self,
+        name: str,
+        fn: Callable[..., Any],
+        entry_state: Any,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any] | None,
+    ) -> None:
+        """Keep what a rollback would need to replay this node.
+
+        Bounded: a rollback window is small and a long run must not accumulate every
+        node it ever entered. Kept unconditionally rather than only when a rollback
+        fault is armed, because the fault fires *after* the nodes it rolls back over
+        have already run.
+
+        Args:
+            name: The node's name.
+            fn: Its function.
+            entry_state: The state it was entered with -- this is the checkpoint.
+            args: Extra positional arguments.
+            kwargs: Extra keyword arguments.
+        """
+        state = self._state()
+        state.node_window.append((name, fn, entry_state, args, kwargs))
+        del state.node_window[:-_ROLLBACK_WINDOW]
 
     def _replay_node(
         self,
@@ -1868,27 +1905,42 @@ class ChaosEngine:
         if crossing.replay_times < 1:
             return result
         state = self._state()
+        # The window is the last `rollback_steps` committed nodes, oldest first -- a
+        # resume redoes them in the order they originally ran. Asking for more than
+        # the run has produced replays what there is: a rollback cannot go behind the
+        # start of the run, and refusing would be less useful than doing what it can.
+        window = state.node_window[-crossing.rollback_steps :] or [
+            (crossing.name, fn, entry_state, args, kwargs)
+        ]
         for repeat in range(1, crossing.replay_times + 1):
-            self._emit(
-                Event(
-                    kind="checkpoint_restored",
-                    level="minimal",
-                    layer="node",
-                    name=crossing.name,
-                    step=crossing.step,
-                    payload={"replay": repeat, "of": crossing.replay_times},
+            for node_name, node_fn, node_state, node_args, node_kwargs in window:
+                self._emit(
+                    Event(
+                        kind="checkpoint_restored",
+                        level="minimal",
+                        layer="node",
+                        name=crossing.name,
+                        step=crossing.step,
+                        payload={
+                            "replay": repeat,
+                            "of": crossing.replay_times,
+                            "node": node_name,
+                            "rollback_steps": crossing.rollback_steps,
+                        },
+                    )
                 )
-            )
-            self._record_harness_invocation(crossing, repeat)
-            state.replay_depth += 1
-            try:
-                result = fn(entry_state, *args, **(kwargs or {}))
-            except LimitExceeded:
-                raise
-            except BaseException as exc:
-                return self._error_phase(crossing, _from_target(exc), time.perf_counter())
-            finally:
-                state.replay_depth -= 1
+                self._record_harness_invocation(crossing, repeat)
+                state.replay_depth += 1
+                try:
+                    replayed = node_fn(node_state, *node_args, **(node_kwargs or {}))
+                except LimitExceeded:
+                    raise
+                except BaseException as exc:
+                    return self._error_phase(crossing, _from_target(exc), time.perf_counter())
+                finally:
+                    state.replay_depth -= 1
+                if node_name == crossing.name:
+                    result = replayed
         state.history.setdefault(crossing.name, []).append(result)
         return result
 
@@ -3762,6 +3814,12 @@ def _action_is_performable(action: str, layer: str) -> bool:
     if action == "resume_from_checkpoint":
         return layer == "node"
     return action not in UNSUPPORTED_ACTIONS
+
+
+#: How many committed nodes are kept for a rollback to replay. A window is small by
+#: nature -- a resume redoes the work since the last durable checkpoint, not the run --
+#: and a long run must not accumulate every node it ever entered.
+_ROLLBACK_WINDOW = 32
 
 
 #: Frames that own nothing. A failure inside them belongs to their caller.

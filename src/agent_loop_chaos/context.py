@@ -173,7 +173,10 @@ class Crossing:
             (D-57). This is how `ToolErrorFault(error_type="error_payload")` and
             `RateLimitFault` return an error envelope without the tool executing.
         substitute_result: The value to return in place of the call.
-        replay_times: How many times to re-run a committed node from its entry state.
+        replay_times: How many times to re-run the rollback window.
+        rollback_steps: How many committed nodes the window covers. `1` is the
+            node that just committed; `3` is it and the two before it, which is
+            what a resume from a durable checkpoint actually redoes.
         invoke_times: How many times the adapter should invoke the real callable.
             `DuplicateSideEffectFault` sets this via the `invoke_target` action
             (D-10): only the adapter knows whether to `await`, so `apply()` cannot
@@ -200,6 +203,7 @@ class Crossing:
     #: How many times to re-run the node body from the state it entered with. Set by
     #: a `resume_from_checkpoint` action at a `(node, post)` crossing; 0 normally.
     replay_times: int = 0
+    rollback_steps: int = 1
     invoke_times: int = 1
     invoke_return_from: str = "first"
 

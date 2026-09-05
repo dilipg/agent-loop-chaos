@@ -11,6 +11,12 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ### Work orders say what to change
 
+- **D-127** `CheckpointRollbackFault(rollback_steps=N)` accepted the parameter and
+  ignored it — a scenario asking for three steps got a one-node replay with nothing to
+  say its request had been reduced. It now replays the last N committed nodes, oldest
+  first, which is what a resume from a durable checkpoint actually redoes.
+  `(checkpoint, post)` remains an honest skip.
+
 - **D-126** `assertions_failed` is the dominant symptom for most findings, and it had
   one fix for all of them: "make the agent meet the scenario's declared expectation".
   True, and useless — it is the field a reader acts on. `CHECK_FIX_TABLE` is keyed by

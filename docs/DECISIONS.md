@@ -2022,3 +2022,38 @@ did map onto an existing value, which is a good sign the vocabulary was right.
 
 Measured on the demo suite: 21 failures previously collapsing to a handful of fix texts
 now produce **11 distinct ones**.
+
+### D-127 — `rollback_steps` replays a window, not one node
+*2026-09-05. Affects `docs/03-FAULT-CATALOG.md` C6, D-109, D-111.*
+
+`CheckpointRollbackFault(rollback_steps=N)` accepted the parameter and ignored it: a
+scenario asking to be rolled back three steps got a one-node replay, with nothing in
+the report to say its request had been quietly reduced. That is the failure this
+library exists to catch, in the library.
+
+A crash-and-resume in production rarely redoes exactly one step. The scheduler restarts
+from the last durable checkpoint and everything after it runs again, so the window is
+what `rollback_steps` should mean. `RunState.node_window` keeps the last 32 committed
+nodes as `(name, function, entry state, args, kwargs)` — the entry state *is* the
+checkpoint — and the replay re-runs the last N of them, oldest first, exactly as a
+resume would. `times` multiplies the whole window rather than the final node.
+
+The window is recorded unconditionally rather than only when a rollback fault is armed,
+because the fault fires *after* the nodes it rolls back over have already run. Bounded
+at 32: a rollback window is small by nature and a long run must not accumulate every
+node it entered.
+
+Asking for more steps than the run has produced replays what there is. A rollback
+cannot go behind the start of a run, and refusing would be less useful than doing what
+it can.
+
+`(checkpoint, post)` is still an honest skip. The checkpointer's `put` runs after the
+node returned, so replaying from there means re-entering the graph, and the engine does
+not drive a user's graph (D-111). What changed is that the useful case is no longer
+limited to one step.
+
+R1 still holds: every replayed invocation, across the whole window, is attributed to
+the harness. Without that a two-node rollback would make `duplicate_side_effect` fire
+on the correct agent too. Verified on the demo graph — a two-step rollback replays
+`summarize` and `respond`, the buggy tree fails `duplicate_side_effect`, and the
+hardened tree passes.
