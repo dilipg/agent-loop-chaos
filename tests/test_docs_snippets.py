@@ -51,9 +51,29 @@ def test_at_least_one_snippet_is_marked() -> None:
 @pytest.mark.parametrize(("label", "code"), SNIPPETS, ids=[s[0] for s in SNIPPETS])
 def test_the_snippet_runs(label: str, code: str, tmp_path: Path, monkeypatch: Any) -> None:
     """Execute one documented block in a temp directory."""
+    from agent_loop_chaos.errors import MissingExtraError
+
     monkeypatch.chdir(tmp_path)
     namespace: dict[str, Any] = {"__name__": "__doc_snippet__"}
     try:
         exec(compile(code, label, "exec"), namespace)
+    except MissingExtraError as missing:
+        # A snippet that documents an optional extra cannot run without it. Skipping
+        # is the same rule `importorskip` applies, and it is what keeps CI's
+        # `langgraph: none` column -- the one that proves the core has no framework
+        # dependency -- from failing on documentation about the framework.
+        pytest.skip(f"{label} needs an optional extra: {missing}")
     except Exception as exc:  # pragma: no cover - the failure message is the product
         pytest.fail(f"{label} no longer runs: {type(exc).__name__}: {exc}\n\n{code}")
+
+
+def test_a_snippet_needing_an_extra_is_skipped_not_failed() -> None:
+    """The skip above must be reachable, or it is decoration.
+
+    A `MissingExtraError` is the library refusing clearly; anything else from a
+    snippet is a documentation defect and must still fail.
+    """
+    from agent_loop_chaos.errors import ChaosError, MissingExtraError
+
+    assert issubclass(MissingExtraError, ChaosError)
+    assert not issubclass(MissingExtraError, ImportError)

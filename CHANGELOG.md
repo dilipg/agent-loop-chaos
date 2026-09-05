@@ -9,6 +9,17 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+### CI is green
+
+- **D-130** Two jobs had been failing on every commit since they were written, neither
+  reachable from a working copy. `lint` installed only `[dev]`, so `mypy --strict`
+  could not find `langgraph`, `langchain_core` or `httpx`; it now installs
+  `[dev,all]`. The `langgraph: none` column — the one proving the core has no framework
+  dependency — failed on a FAQ snippet that imports the LangGraph adapter; a
+  `MissingExtraError` from a documented snippet is now a skip, and anything else still
+  fails. `tests/test_ci_workflow.py` asserts both, plus that no job carries
+  `continue-on-error` or `|| true`.
+
 ### Work orders say what to change
 
 - **D-129** `.github/workflows/release.yml`: a `v*` tag re-runs the full gate at that

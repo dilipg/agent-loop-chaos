@@ -2116,3 +2116,33 @@ required reviewer can put a human in front of the upload.
 The one-time PyPI-side setup is written at the top of the workflow rather than in
 someone's head. **The package is not published**: the machinery is ready and the first
 upload stays a deliberate act.
+
+### D-130 — CI had two jobs that could never have passed
+*2026-09-05. Affects `.github/workflows/ci.yml`, `docs/07-TESTING.md` §8.*
+
+Both failed on every commit since they were written, and neither was reachable from a
+working copy — which is exactly why they survived eleven phases of green `make check`.
+
+**`lint` installed only `[dev]`.** `mypy --strict` then cannot find `langgraph`,
+`langchain_core` or `httpx`, and reports `import-not-found` for the three modules that
+import them. A maintainer's venv has those extras, so the local run passed and the job
+was red. It now installs `[dev,all]`. Adding a mypy override to silence the imports
+would have been the smaller diff and the wrong one: it types those modules as `Any` and
+stops checking the code with the least test coverage.
+
+**The `langgraph: none` column failed on a FAQ snippet.** `tests/test_docs_snippets.py`
+executes every marked block, and one imports the LangGraph adapter, which raises
+`MissingExtraError` without the extra. So the column that exists to prove the core has
+no framework dependency was failing on documentation *about* the framework. A
+`MissingExtraError` from a snippet is now a skip — the same rule `importorskip` applies
+— while any other exception still fails, because that is a documentation defect.
+
+`tests/test_ci_workflow.py` reads the workflow and asserts what neither job could
+assert about itself: the lint job installs every extra `src/` declares it needs
+(derived from the `MissingExtraError("install agent-loop-chaos[x]")` strings, so a new
+optional import brings its own requirement), one test column installs no framework, the
+oldest supported Python is in the matrix, coverage is enforced rather than reported,
+and no job carries `continue-on-error` or `|| true`.
+
+Verified by reproducing all three jobs locally in clean venvs, and the test matrix on
+3.10, 3.11, 3.12 and 3.13.

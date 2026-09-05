@@ -23,7 +23,11 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install -e ".[dev]"
+      # Every optional extra, on purpose. `mypy --strict` has to see `langgraph`,
+      # `langchain_core` and `httpx` or it cannot check the three modules that import
+      # them -- and typing them as `Any` to avoid installing them would silence the
+      # checks that matter most, in the code with the least test coverage.
+      - run: pip install -e ".[dev,all]"
       - run: ruff check .
       - run: ruff format --check .
       - run: mypy --strict src/agent_loop_chaos
