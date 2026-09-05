@@ -265,7 +265,21 @@ def _make_handler(server: DashboardServer) -> type[BaseHTTPRequestHandler]:
             """
             log.debug("dashboard %s", fmt % args)
 
-        # do_GET is BaseHTTPRequestHandler's dispatch name, not ours to choose.
+        #: Set for the duration of a HEAD, so `_send` writes headers and no body.
+        head_only = False
+
+        # do_HEAD/do_GET are BaseHTTPRequestHandler's dispatch names, not ours to
+        # choose. HEAD routes exactly as GET and then drops the body: every client
+        # checks a download's size and type this way before fetching it, and the
+        # default is a 501 with an HTML error page.
+        def do_HEAD(self) -> None:
+            """Route one request, answering with headers only."""
+            self.head_only = True
+            try:
+                self.do_GET()
+            finally:
+                self.head_only = False
+
         def do_GET(self) -> None:
             """Route one request."""
             parsed = urlparse(self.path)
@@ -358,6 +372,10 @@ def _make_handler(server: DashboardServer) -> type[BaseHTTPRequestHandler]:
             """
             if not server.sse:
                 return self._send(404, b'{"error":"sse disabled"}', "application/json")
+            if self.head_only:
+                # A stream has no length to report and holding it open for a HEAD
+                # would block the client forever.
+                return self._send(200, b"", "text/event-stream")
             heartbeat = float(query.get("heartbeat_s", ["15"])[0])
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -422,7 +440,8 @@ def _make_handler(server: DashboardServer) -> type[BaseHTTPRequestHandler]:
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
-            self.wfile.write(body)
+            if not self.head_only:
+                self.wfile.write(body)
 
         def _refuse(self) -> None:
             """Refuse a mutating method. Read-only means read-only."""

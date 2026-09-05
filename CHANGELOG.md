@@ -33,7 +33,8 @@ file, behind a header saying what it is and the rule that matters. The report vi
 offers it as **Download all work orders**; `alc report <out_dir> --format md` writes the
 identical file from the terminal. `Content-Disposition` is built only from an
 allow-listed artifact name, so `?download=1` decides whether to attach and never what
-to call the file.
+to call the file. `HEAD` is answered as well — every client checks a download's size
+and type that way first, and the stdlib default is a 501 with an HTML error page.
 
 ### Runs say what they were, not only what they are called
 

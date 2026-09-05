@@ -240,3 +240,54 @@ class TestTheJsonHandoff:
         for key in ("scenario_id", "success", "failure_mode", "severity", "agent_task"):
             assert f'"{key}"' in block, f"the README stopped showing {key}"
             assert key in row, f"the README documents {key}, which --json does not emit"
+
+
+class TestHead:
+    """A read-only server that cannot answer HEAD is not read-only, it is GET-only.
+
+    Every HTTP client checks a download's size and type with HEAD before fetching it,
+    and `BaseHTTPRequestHandler`'s default is a 501 with an HTML error body -- which is
+    what the browser's own download machinery would have hit.
+    """
+
+    @pytest.fixture
+    def server(self, chaos: Path, loopback: None) -> object:
+        from agent_loop_chaos.dashboard.server import DashboardServer
+
+        srv = DashboardServer(chaos, port=0, poll_ms=25)
+        srv.start()
+        yield srv
+        srv.stop()
+
+    def _head(self, url: str) -> tuple[int, dict[str, str]]:
+        import urllib.request
+
+        request = urllib.request.Request(url, method="HEAD")
+        with urllib.request.urlopen(request, timeout=5) as fh:
+            assert fh.read() == b"", "HEAD must not send a body"
+            return fh.status, dict(fh.headers)
+
+    def test_it_answers_head_on_the_bundle(self, server: object) -> None:
+        status, headers = self._head(server.url + "/api/tasks.md")  # type: ignore[attr-defined]
+        assert status == 200
+        assert headers["Content-Type"].startswith("text/markdown")
+        assert "attachment" in headers["Content-Disposition"]
+        assert int(headers["Content-Length"]) > 0
+
+    def test_it_answers_head_on_the_page(self, server: object) -> None:
+        status, headers = self._head(server.url + "/")  # type: ignore[attr-defined]
+        assert status == 200
+        assert headers["Content-Type"].startswith("text/html")
+
+    def test_head_on_a_missing_run_is_still_404(self, server: object) -> None:
+        import urllib.error
+        import urllib.request
+
+        request = urllib.request.Request(
+            server.url + "/api/run/nope/artifact/report.json",
+            method="HEAD",  # type: ignore[attr-defined]
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(request, timeout=5)
+        with exc.value:
+            assert exc.value.code == 404

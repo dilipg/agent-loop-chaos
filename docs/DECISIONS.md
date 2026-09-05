@@ -1917,6 +1917,14 @@ behind a short header saying what the file is and the rule that matters (fix the
 not the scenario). The report view offers it as **Download all work orders**;
 `alc report <out_dir> --format md` writes the identical file from the terminal.
 
+`HEAD` is answered too, routing exactly as `GET` and then dropping the body. Every
+client checks a download's size and type that way before fetching it, and
+`BaseHTTPRequestHandler`'s default is a 501 with an HTML error page — which is what the
+browser's own download machinery would have hit. A read-only server that cannot answer
+`HEAD` is not read-only, it is GET-only. `/api/stream` answers a `HEAD` immediately
+rather than holding the connection open forever for a client that asked only for
+headers.
+
 Two safety points, both tested. `Content-Disposition` is only ever built from an
 allow-listed artifact name — the `?download=1` flag decides *whether* to attach, never
 what to call the file, so a filename cannot be smuggled through the query string. And a
