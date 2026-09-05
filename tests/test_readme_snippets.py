@@ -354,3 +354,40 @@ class TestTheReadmePathsExist:
         main(["init"])
         suite = load_suite(tmp_path / "chaos" / "quickstart.yaml")
         assert suite.scenarios
+
+
+class TestTheReadmeCoversRunningAgainstARealAgent:
+    """The first question anyone integrating asks, and the one with a leak behind it.
+
+    `report.json` is written to be attached to tickets. A reader who never learns
+    about `redact_keys` will not know their custom credential header is in it.
+    """
+
+    def test_it_says_the_engine_needs_no_credential(self) -> None:
+        assert "never needs a credential" in _readme()
+
+    def test_it_names_the_escape_hatch_for_a_custom_header(self) -> None:
+        assert "redact_keys" in _readme()
+
+    def test_it_tells_the_reader_to_verify_rather_than_trust(self) -> None:
+        readme = _readme()
+        assert "not in json.dumps(result.to_dict())" in readme
+
+    def test_it_explains_the_side_effect_gate(self) -> None:
+        readme = _readme()
+        assert "side_effecting=True" in readme
+        assert "allow_side_effects" in readme
+
+    def test_every_expect_check_it_shows_is_real(self) -> None:
+        """A scenario field the README invents would fail at load, not at review."""
+        import dataclasses
+        import re
+
+        from agent_loop_chaos.assertions import Expect
+
+        declared = {f.name for f in dataclasses.fields(Expect)}
+        block = _readme().split("    expect:                                   #")[1]
+        block = block.split("\n\n")[0]
+        shown = set(re.findall(r"^      ([a-z_]+):", block, re.M))
+        assert shown, "the annotated scenario no longer shows an expect block"
+        assert shown <= declared, f"the README shows checks that do not exist: {shown - declared}"

@@ -13,6 +13,7 @@ Chaos engineering for agent loops. Output designed for machines, not dashboards.
 [Quickstart](#quickstart) · [The work order](#the-work-order)
 
 **Using it** — [Integrating with your agent](#integrating-with-your-agent) ·
+[Credentials & real actions](#credentials-and-tools-that-do-something-real) ·
 [Writing a scenario](#writing-a-scenario) · [The faults](#the-faults) ·
 [Reading the output](#reading-the-output) · [The dashboard](#the-dashboard) ·
 [**For coding agents**](#for-coding-agents) · [In CI](#in-ci) · [In pytest](#in-pytest)
@@ -209,6 +210,44 @@ That declaration is enforced, not decorative. Faults that perform a real action 
 a `side_effecting=True` tool unless the scenario names it in `allow_side_effects:`, and
 `--preset full` refuses to start if any tool leaves it undeclared. See [SAFETY.md](SAFETY.md).
 
+### Credentials, and tools that do something real
+
+**The engine never needs a credential.** It wraps your callables, so your agent
+authenticates exactly as it does in production. There is nothing to configure and no
+secret to hand over.
+
+What matters is the other direction. `report.json` and `AGENT_TASK.md` are written to
+be attached to tickets and read by coding agents, so a credential the agent legitimately
+holds must not come back out in them. Keys named like one — `authorization`, `api_key`,
+`token`, `secret`, `cookie` — and values shaped like one — `sk-…` including `sk-proj-`
+and `sk-ant-`, `ghp_`, `AKIA`, `xoxb-`, JWTs, PEM blocks — are redacted from the trace
+**and** the report. A credential under a name the deny-list cannot guess is not:
+
+```python
+ChaosEngine(redact_keys=["x_signature", "x_.*_secret"])
+```
+
+Check it rather than trusting it. One line, worth keeping in your own suite:
+
+```python
+assert os.environ["MY_API_KEY"] not in json.dumps(result.to_dict())
+```
+
+**Declare every tool that writes.** `@engine.tool(side_effecting=True)` is enforced,
+not documentation: the three faults that perform real actions refuse such a tool unless
+the scenario names it in `allow_side_effects:`, glob targets never match one, and
+`--preset full` refuses to start while any tool leaves the flag undeclared.
+
+A sensible progression against a real system: staging with read-only tools first; then
+add the write tools *without* opting in, so the gate holds them still while everything
+around them breaks; then opt in one tool at a time, only where a duplicate is
+recoverable. [SAFETY.md](SAFETY.md) has the detail.
+
+Access control is also a thing to *test*, not only to protect —
+`ArgumentTamperFault` on a `tenant_id`, `StateDropFault` on the authorisation context,
+and `PromptInjectionFault(objective="escalate_scope")` all ask whether the agent still
+refuses what it should when the request underneath it is corrupted.
+
 ### An agent class
 
 If your tools are methods on an object, wrap them in one call:
@@ -322,7 +361,10 @@ scenarios:
 
     expect:                                   # what must hold afterwards
       output_non_empty: true
-      no_unsourced_numbers: { enabled: true }
+      no_unsourced_numbers: { enabled: true }  # every figure traces to a source
+      no_invented_tools: true                  # no claim of work it did not do
+      no_fabricated_citations: true            # no reference it never retrieved
+      idempotent_effects: [hold_booking]       # twice called, once done
       output_matches: ["(?i)unavailab|missing|could not"]
 
     must_not: [secret_in_output]              # probe codes that always fail the run
@@ -742,7 +784,7 @@ boundary).
 
 ## Status
 
-Pre-alpha, version 0.2.0. Everything described above is implemented and tested: the
+Pre-alpha, version 0.2.1. Everything described above is implemented and tested: the
 engine, 28 faults, 20 probes, the assertions layer, the judges, the refinement loop,
 the two demo agents, the eight-shape conformance pool, and the live dashboard with its
 single-file HTML export. See [docs/08-ROADMAP.md](docs/08-ROADMAP.md).

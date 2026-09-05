@@ -9,6 +9,12 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+## 0.2.1 — 2026-09-05
+
+A security release. **0.2.0 wrote credentials into `report.json`** — the file the tool
+tells you to attach to tickets and hand to coding agents. If you ran 0.2.0 against an
+agent holding real credentials, treat any report it produced as sensitive.
+
 ### Credentials, and a third dishonest-fire bug
 
 - **D-131** `report.tool_calls[]` and `report.llm_exchanges[]` bypassed redaction. A
