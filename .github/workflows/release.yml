@@ -1,0 +1,120 @@
+# Publish to PyPI on a tag, with no API token stored anywhere.
+#
+# This uses PyPI's Trusted Publishing: GitHub mints a short-lived OIDC token for this
+# specific workflow in this specific repository, and PyPI trusts it because the
+# project's settings say to. There is no secret to leak, rotate, or accidentally print.
+#
+# One-time setup on PyPI, under the project's "Publishing" settings -- or, before the
+# first release exists, under "Pending publishers":
+#
+#   Owner            dilipg
+#   Repository       agent-loop-chaos
+#   Workflow         release.yml
+#   Environment      pypi
+#
+# Then create a repository environment named `pypi` and, if you want a human in the
+# loop, add yourself as a required reviewer: the job will wait for an approval before
+# it uploads. Publishing is irreversible -- a version number on PyPI can be yanked but
+# never reused -- so the approval gate is worth the extra click.
+#
+# After that, a release is:
+#
+#   git tag -a v0.3.0 -m "0.3.0" && git push origin v0.3.0
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Where to publish"
+        type: choice
+        options: [testpypi, pypi]
+        default: testpypi
+
+permissions:
+  contents: read
+
+jobs:
+  # The gate runs again on the tag. A tag can point anywhere, and "it was green on
+  # main" is not the same statement as "it is green at this commit".
+  verify:
+    name: verify the tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev,langgraph]"
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy --strict src/agent_loop_chaos
+      - run: pytest -q --cov --cov-report=term-missing
+      - run: python tools/verify_pack.py --strict
+
+      # The tag and the code must agree. Publishing 0.2.0 from a tree that says 0.3.0
+      # produces an artifact nobody can reproduce from the tag.
+      - name: the tag matches version.py
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tagged="${GITHUB_REF_NAME#v}"
+          declared="$(python -c 'import agent_loop_chaos; print(agent_loop_chaos.__version__)')"
+          echo "tag=$tagged  version.py=$declared"
+          test "$tagged" = "$declared"
+
+      # The changelog is the release notes. A tag with no section is a release nobody
+      # can read.
+      - name: the changelog has a section for it
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: grep -q "^## ${GITHUB_REF_NAME#v} " CHANGELOG.md
+
+  build:
+    name: build
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check dist/*
+
+      # The release gate that matters: install the wheel somewhere it has no source
+      # tree to fall back on, and use it. This is what caught D-123.
+      - name: use the wheel from a clean venv
+        run: |
+          python -m venv /tmp/clean
+          /tmp/clean/bin/pip install "$(ls dist/*.whl)[yaml]"
+          cd /tmp && /tmp/clean/bin/alc --version
+          cd /tmp && /tmp/clean/bin/alc list-faults --json > /dev/null
+          mkdir -p /tmp/scaffold && cd /tmp/scaffold && /tmp/clean/bin/alc init
+          cd /tmp/scaffold && /tmp/clean/bin/alc validate chaos/quickstart.yaml
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: publish to ${{ github.event.inputs.target || 'pypi' }}
+    needs: build
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.target || 'pypi' }}
+    permissions:
+      id-token: write        # mint the OIDC token; this is the whole mechanism
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: >-
+            ${{ github.event.inputs.target == 'testpypi'
+                && 'https://test.pypi.org/legacy/' || '' }}

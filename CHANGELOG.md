@@ -11,6 +11,14 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ### Work orders say what to change
 
+- **D-129** `.github/workflows/release.yml`: a `v*` tag re-runs the full gate at that
+  commit, refuses a tag that disagrees with `version.py` or has no changelog section,
+  uses the wheel from a clean venv before publishing, and uploads via PyPI Trusted
+  Publishing — OIDC, so no API token is stored. `workflow_dispatch` rehearses against
+  TestPyPI. The one-time PyPI-side setup is written at the top of the file. **The
+  package is still not published**; the workflow is ready and the first upload is a
+  deliberate act.
+
 - **D-128** The four `HallucinationInducerFault` modes that need a real model to prove
   anything now have both halves tested: a `@pytest.mark.live` pair against a real
   endpoint, and a deterministic pair in the default run asserting the planted text

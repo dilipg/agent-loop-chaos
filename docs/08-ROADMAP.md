@@ -78,7 +78,15 @@ phase.
 4. `LICENSE` (Apache-2.0), `NOTICE`, `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`
    present; `CONTRIBUTING.md` explains how to add a fault and a probe in ≤20 lines.
 5. `python -m build`; `twine check dist/*`; install the wheel in a clean venv and
-   run the demo suite from it.
-6. Git tag `v0.1.0`; GitHub release notes = the changelog section plus one
+   run the demo suite from it. This step is not a formality: it is the only place a
+   packaging or extras defect can surface, and it has caught one (D-123).
+6. Git tag `vX.Y.Z`; GitHub release notes = the changelog section plus one
    `AGENT_TASK.md` example, because that artifact is the pitch.
 7. README badges: CI, PyPI, Python versions, license.
+
+Steps 5 and 6 are automated by `.github/workflows/release.yml`: pushing a `v*` tag
+re-runs the whole gate at that commit, refuses a tag that disagrees with
+`version.py` or has no changelog section, builds, uses the wheel from a clean venv,
+and publishes via PyPI Trusted Publishing — OIDC, so no API token is stored anywhere.
+`workflow_dispatch` publishes to TestPyPI for a rehearsal. The one-time PyPI-side
+setup is documented at the top of the workflow.

@@ -2085,3 +2085,34 @@ the failure this library exists to catch.
 
 The live "does it move the model" test reports rather than asserts per mode. A mode a
 particular model shrugs off is a fact about that model, not a defect in the fault.
+
+### D-129 — Releasing is a tag push, and no token is stored
+*2026-09-05. Affects `docs/08-ROADMAP.md` release checklist.*
+
+`.github/workflows/release.yml` publishes on a `v*` tag through PyPI Trusted
+Publishing: GitHub mints a short-lived OIDC token scoped to this workflow in this
+repository, and PyPI trusts it because the project's settings say so. There is no
+secret to leak, rotate, or accidentally print, and a test asserts no job reads a
+`PYPI_API_TOKEN` or sets a `password:`.
+
+Three refusals, each guarding something only discovered at the moment of an
+irreversible publish — a version number on PyPI can be yanked but never reused:
+
+- **The gate runs again on the tag.** A tag can point anywhere, and "it was green on
+  main" is a different statement from "it is green at this commit".
+- **The tag must match `version.py`.** Publishing 0.2.0 from a tree that declares 0.3.0
+  produces an artifact nobody can reproduce from the tag.
+- **The changelog must have a section for it.** A release nobody can read is not one.
+
+The build job installs the wheel into a clean venv and *uses* it — `alc --version`,
+`list-faults`, `init`, `validate` — before anything is uploaded. That is not a
+formality: it is the only place a packaging or extras defect can surface, and it is
+exactly what caught D-123.
+
+`workflow_dispatch` publishes to TestPyPI by default, so the whole path can be
+rehearsed without claiming a real version. The publish job is environment-gated, so a
+required reviewer can put a human in front of the upload.
+
+The one-time PyPI-side setup is written at the top of the workflow rather than in
+someone's head. **The package is not published**: the machinery is ready and the first
+upload stays a deliberate act.
