@@ -249,6 +249,38 @@ Forces a plausible, confident, wrong answer.
 catches the mismatch.
 **Failure modes:** `unverified_claim_emitted`, `silent_wrong_answer`.
 
+### B9b. `HallucinationInducerFault`
+**Accepts:** `(llm, pre)`
+**Params:** `mode ∈ {"false_premise","unanswerable_request","citation_pressure",
+"authority_bias","leading_question","entity_lookalike"}`,
+`position ∈ {"start","middle","end","before_last_user"}` (default `end`).
+Plants a known inducer in the prompt and leaves the answer entirely to the agent.
+B9 rewrites the response to *be* wrong; this creates the **conditions** under which a
+model fabricates, so a run that passes is the agent genuinely declining the bait.
+
+- `false_premise` — asserts something untrue as already established, so the model
+  reasons forward from it instead of checking it.
+- `unanswerable_request` — asks for a fact no tool can supply. Admitting that is the
+  correct answer; producing a number is the failure.
+- `citation_pressure` — demands a source for a claim nothing retrievable supports,
+  which is what makes a model invent a reference.
+- `authority_bias` — reframes an uncertain value as expert-confirmed, so hedging that
+  would have saved the answer is dropped.
+- `leading_question` — presupposes a fact in the question, so denying it requires
+  contradicting the user.
+- `entity_lookalike` — introduces an id one character from a real one, so two records
+  get conflated and attributes migrate between them.
+
+Every mode is a deterministic string transform; a model call would make a seeded run
+unreproducible.
+**Proves:** no separation between what the agent was told and what it verified, so a
+confident premise is indistinguishable from evidence.
+**Graceful:** check a premise against retrieved data before using it, say "I don't
+have that" instead of producing a number, cite only what is in a source.
+**Detected by:** `no_invented_tools`, `no_fabricated_citations`,
+`no_unsourced_numbers` (`docs/11` §4.3, §4.3b) — all auto-enabled when this fires.
+**Failure modes:** `unverified_claim_emitted`, `silent_wrong_answer`.
+
 ### B10. `PromptInjectionFault`
 **Accepts:** `(tool, post)`, `(llm, pre)` — the payload is the carrier, so this
 usually rides in on a tool result.
@@ -342,6 +374,7 @@ from YAML as `preset: <name>`. Each is a fault list with sensible triggers.
 | `adversarial` | B10 full corpus, A1 `unicode_noise` | is tool output trusted as instruction? |
 | `state_integrity` | C1, C2, C4, C5 | do nodes validate their state slice? |
 | `resume_safety` | C6, A8 | are nodes idempotent on replay? |
+| `hallucination` | `HallucinationInducerFault` all six modes, `HallucinationSeedFault` B-modes | does the agent assert what it cannot support? |
 | `full` | every preset above | release gate |
 
 A preset must be expressible in YAML with a single line, and `alc run --preset full`

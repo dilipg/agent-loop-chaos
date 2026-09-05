@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from .enums import ExpectedBehavior, FailureMode, Severity
+from .intensity import DEFAULT_LEVEL, describe
 from .seeding import sanitize_floats
 from .version import __version__
 
@@ -33,7 +34,7 @@ __all__ = [
     "extract_code_pointers",
 ]
 
-SCHEMA_VERSION = "1.3"
+SCHEMA_VERSION = "1.4"
 
 
 def empty_verdict(expected_behavior: ExpectedBehavior = "graceful_degradation") -> dict[str, Any]:
@@ -96,6 +97,9 @@ class ChaosResult:
     assertions: list[dict[str, Any]] = field(default_factory=list)
 
     injected_faults: list[dict[str, Any]] = field(default_factory=list)
+    #: `{level, label, summary}` -- how hard this plan pushed. Always present, so a
+    #: reader never has to guess whether a passing run was tested gently.
+    intensity: dict[str, Any] = field(default_factory=lambda: describe(DEFAULT_LEVEL))
     chaos_narrative: str = ""
 
     agent_state_pre_fault: Any = None
@@ -145,6 +149,7 @@ class ChaosResult:
             "symptoms": self.symptoms,
             "assertions": self.assertions,
             "injected_faults": self.injected_faults,
+            "intensity": self.intensity,
             "chaos_narrative": self.chaos_narrative,
             "randomness": self.randomness,
             "agent_state_pre_fault": self.agent_state_pre_fault,
@@ -438,6 +443,7 @@ def assemble(
     expected_behavior: ExpectedBehavior = "graceful_degradation",
     must_not: Sequence[str] = (),
     injected_faults: Sequence[Mapping[str, Any]] = (),
+    intensity: int = DEFAULT_LEVEL,
     limit_hit: str | None = None,
     baseline: dict[str, Any] | None = None,
     delta: dict[str, Any] | None = None,
@@ -481,6 +487,7 @@ def assemble(
         expected_behavior: The scenario's expectation.
         must_not: Probe codes that always fail the run.
         injected_faults: The fault records.
+        intensity: The dial level this plan ran at, 1 to 10.
         limit_hit: Which limit stopped the run.
         baseline: A baseline reference.
         delta: The baseline delta.
@@ -595,6 +602,7 @@ def assemble(
         symptoms=[s.to_dict() for s in symptoms],
         assertions=[a.to_dict() for a in assertions],
         injected_faults=[dict(f) for f in injected_faults],
+        intensity=describe(intensity),
         final_output=final_output,
         error=error,
         baseline=baseline,

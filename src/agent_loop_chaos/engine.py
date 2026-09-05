@@ -60,6 +60,7 @@ from .faults.base import (
     MutationLog,
     fault_key_for,
 )
+from .intensity import DEFAULT_LEVEL, profile
 from .metrics import compute_delta, compute_metrics
 from .probes import ProbeContext, run_probes
 from .report import ChaosResult, assemble, extract_code_context
@@ -209,6 +210,7 @@ class ChaosEngine:
         strict_trace: bool = False,
         judge_options: Mapping[str, Any] | None = None,
         narrate_all: bool = False,
+        intensity: int = DEFAULT_LEVEL,
     ) -> None:
         """Initialise an engine.
 
@@ -236,6 +238,11 @@ class ChaosEngine:
             strict_trace: Validate every trace event against the schema as it is
                 written. Used throughout the test suite; off by default so a
                 production run is not slowed by it.
+            intensity: How hard this run's plan pushes, 1 (strict) to 10 (creative).
+                Recorded in `plan.json` and the report. The dial scales **fault
+                specs**, so a suite, a preset or `--intensity` gets scaled faults;
+                a `Fault` object handed to `register_fault` directly is taken as
+                given, because its parameters are already constructed.
             judge_options: Extra keyword arguments for a constructed `SLMJudge`
                 (`model`, `base_url`, `transport`, `timeout_s`, …). Ignored when
                 `judge` is already an instance.
@@ -258,6 +265,7 @@ class ChaosEngine:
         self.strict_trace = strict_trace
         self.judge_options: dict[str, Any] = dict(judge_options or {})
         self.narrate_all = narrate_all
+        self.intensity = profile(intensity).level
         self._judge_impl: Any | None = None
 
         self._faults: list[_ArmedFault] = []
@@ -277,6 +285,7 @@ class ChaosEngine:
         target_node: str | None = None,
         target_llm: str | None = None,
         target_state_key: str | None = None,
+        origin: str = "",
     ) -> str:
         """Add a fault to the plan and return its `fault_id`.
 
@@ -292,6 +301,9 @@ class ChaosEngine:
             target_node: Shorthand for ``Target(node=...)``.
             target_llm: Shorthand for ``Target(llm=...)``.
             target_state_key: Shorthand for ``Target(state_key=...)``.
+            origin: Where this fault came from. Empty means a caller asked for it;
+                the intensity dial stamps `intensity:<level>:<preset>` on what it
+                added, so a reader can tell the two apart.
 
         Returns:
             The `fault_id`, for cross-referencing in the report.
@@ -352,6 +364,7 @@ class ChaosEngine:
                     params=fault.params(),
                     target=target_dict,
                     trigger=trigger_dict,
+                    origin=origin,
                 ),
             )
         )
@@ -513,7 +526,7 @@ class ChaosEngine:
         Returns:
             The plan, ready for `canonical_json`.
         """
-        return {
+        plan: dict[str, Any] = {
             "seed": self.seed,
             "adapter": adapter,
             "entrypoint": entrypoint,
@@ -539,6 +552,12 @@ class ChaosEngine:
                 for a in self._faults
             ],
         }
+        if self.intensity != DEFAULT_LEVEL:
+            # Part of the experiment's identity, so it belongs in the hash -- but only
+            # when the dial was actually turned, so every existing plan_hash stays
+            # exactly where it was.
+            plan["intensity"] = self.intensity
+        return plan
 
     # ------------------------------------------------------- instrumentation API
 
@@ -2458,9 +2477,18 @@ class ChaosEngine:
             The assembled `ChaosResult`.
 
         Raises:
-            ConfigError: On a signature mismatch, or an unsupported adapter.
+            ConfigError: On a signature mismatch, an unsupported adapter, or a
+                coroutine agent -- `run` is synchronous and cannot await one.
             SchemaError: When `strict_schema` and the report does not validate.
         """
+        if inspect.iscoroutinefunction(target):
+            # Calling it here would build a coroutine, never await it, and report a
+            # verdict about a run that did not happen. Refusing is the only honest
+            # answer a synchronous method has.
+            raise ConfigError(
+                f"{getattr(target, '__name__', target)!r} is a coroutine function; "
+                "use `await engine.arun(...)` instead of `engine.run(...)`"
+            )
         return self._execute(
             target,
             inputs=inputs,
@@ -2569,6 +2597,8 @@ class ChaosEngine:
             The unfaulted `ChaosResult`.
         """
         kw.setdefault("expected_behavior", "ignore_and_continue")
+        if inspect.iscoroutinefunction(target):
+            return asyncio.run(self.arun(target, dry_run=True, **kw))
         return self.run(target, dry_run=True, **kw)
 
     def replay(
@@ -3361,7 +3391,16 @@ class ChaosEngine:
             )
 
         # 11-12. classify and assemble
-        destructive = any(f.get("json_patch") or f.get("action") == "raise" for f in fires)
+        # Destructive means data the agent relied on was *changed*, not that the
+        # harness added something. A patch of pure `add` ops -- an inducer planting a
+        # premise, noise appended to a context -- corrupts nothing, and calling the
+        # result `hallucination_on_corrupt_data` would blame data that was never
+        # touched. The honest mode there is `unverified_claim_emitted` (D-118).
+        destructive = any(
+            f.get("action") == "raise"
+            or any(op.get("op") != "add" for op in f.get("json_patch") or [])
+            for f in fires
+        )
         baseline_block, delta = _baseline_blocks(state.baseline_result, metrics, output, evidence)
         result = assemble(
             trace=trace,
@@ -3379,6 +3418,7 @@ class ChaosEngine:
             expected_behavior=expected_behavior,
             must_not=state.must_not,
             injected_faults=[r.to_dict() for r in records],
+            intensity=self.intensity,
             limit_hit=state.limit_hit,
             baseline=baseline_block,
             delta=delta,

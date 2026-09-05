@@ -526,6 +526,7 @@ alc run <suite.yaml|scenario.yaml|module:attr>   [--seed N] [--jobs N] [--judge 
                                                  [--trace-level L] [--filter GLOB] [--fail-fast]
                                                  [--no-baseline] [--dry-run] [--json]
                                                  [--rounds N] [--stop-when …]
+                                                 [--intensity 1-10]
                                                  [--dashboard] [--port N] [--linger S]
 alc replay <run_dir> [--seed N]
 alc judge <run_dir> [--judge …] [--model …] [--base-url U] [--transport T]
@@ -561,6 +562,21 @@ from agent_loop_chaos.dashboard.export import export_html, build_blob
 plus `ARTIFACTS` — the literal allow-list of serveable file names. A `run_id` is
 resolved by lookup in the watcher's discovered map, never by joining request input
 onto a path, and `payloads/` is not serveable.
+
+`--intensity N` overrides every scenario's own level: 1 strict, 3 standard (the
+default and the identity), 10 creative. It scales trigger persistence and magnitude
+parameters and, above 4, adds faults from the matching preset — see D-116 and
+`agent_loop_chaos.intensity`:
+
+```python
+from agent_loop_chaos.intensity import DEFAULT_LEVEL, describe, profile
+profile(7).label          # "relentless"
+describe(7)               # {"level": 7, "label": …, "summary": …} — what a report carries
+```
+
+A scenario or a suite's `defaults:` may set `intensity:` directly. Every fault the
+dial added carries `origin: "intensity:<level>:<preset>"`; a fault the scenario
+declared has none.
 
 Exit codes: `0` all passed, `1` at least one scenario failed, `2` configuration or
 usage error, `3` internal error. `--json` prints one JSON object to stdout and

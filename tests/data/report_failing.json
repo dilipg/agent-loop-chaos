@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.1",
+  "schema_version": "1.4",
   "run_id": "run-3f9a12c4",
   "scenario_id": "weather.tool_contract.drop_key",
   "library_version": "0.1.0",
@@ -94,7 +94,11 @@
       "tokens_out": 262,
       "attempts": 1,
       "fell_back_to_rules": false,
-      "raw_response_path": "judge.json"
+      "raw_response_path": "judge.json",
+      "evidence_dropped": [
+        "code_context"
+      ],
+      "auto_selected": false
     }
   },
   "failure_mode": "hallucination_on_corrupt_data",
@@ -226,12 +230,24 @@
           ],
           "unrepresentable": false,
           "delay_ms": 0,
-          "rng_draws": 0
+          "rng_draws": 0,
+          "params": {
+            "payload_id": "drop-01",
+            "detect": {
+              "kind": "regex",
+              "value": "temp"
+            }
+          }
         }
       ],
       "fault_key": "a1f39c"
     }
   ],
+  "intensity": {
+    "level": 3,
+    "label": "standard",
+    "summary": "Exactly what the scenario declares. The default."
+  },
   "chaos_narrative": "Seed 1337. One fault armed, one fired: ToolCorruptionFault removed the `temp_c` field from every record returned by get_weather_data on its first call (step 2). Nothing else was perturbed; no randomness beyond the fixed key selection was consumed.",
   "randomness": {
     "seed": 1337,

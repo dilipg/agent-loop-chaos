@@ -122,6 +122,11 @@
       "type": "ToolCorruptionFault"
     }
   ],
+  "intensity": {
+    "label": "standard",
+    "level": 3,
+    "summary": "Exactly what the scenario declares. The default."
+  },
   "llm_exchanges": [],
   "loop": {
     "limit_hit": null,
@@ -157,7 +162,7 @@
   },
   "scenario_id": "weather.tool_contract.drop_key",
   "schema_errors": [],
-  "schema_version": "1.3",
+  "schema_version": "1.4",
   "seed": 1337,
   "severity": "high",
   "success": false,

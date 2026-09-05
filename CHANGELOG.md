@@ -9,6 +9,63 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+### The intensity dial, and hallucination testing
+
+**`intensity`, 1 to 10** (D-116). One number decides how hard a plan pushes. `1` is
+strict: the smallest blast radius that still proves something. `10` is creative:
+harsher parameters, relentless triggers, and extra faults drawn from the matching
+preset so a one-fault scenario becomes a compound one. Set it on a scenario, on a
+suite's `defaults:`, or with `alc run --intensity N`.
+
+- **3 is the identity.** Same params, same triggers, same fault set, byte-identical
+  reports, `plan_hash` unchanged. A dial nobody turned moves nothing.
+- **Turning it down never stops a fault firing** — "strict" is a smaller blast radius,
+  never a fault that might not happen (D-64).
+- **Plan time only.** No probe, assertion or judge reads the level at run time.
+- Every fault the dial added carries `origin: "intensity:<level>:<preset>"`, and a
+  real-action fault is never added automatically (`SAFETY.md` §1).
+- `report.intensity` is `{level, label, summary}` and is always present. Report
+  schema 1.3 → 1.4.
+
+**Hallucination inducers and identifiers** (D-117). `HallucinationSeedFault` rewrites
+a response to *be* wrong. The new `HallucinationInducerFault` is the other half and
+the more honest experiment: it plants a known inducer in the prompt and leaves the
+answer to the agent, so a run that passes is the agent genuinely declining the bait.
+Six modes — `false_premise`, `unanswerable_request`, `citation_pressure`,
+`authority_bias`, `leading_question`, `entity_lookalike` — plus a `hallucination`
+preset.
+
+Two new identifiers, in the assertions layer rather than `probes.py` for the reason
+that removed `fabricated_value` from it:
+
+- `no_invented_tools` — the output claims work the agent did not do. The registry and
+  call log are exact, so this check contains no judgement.
+- `no_fabricated_citations` — a reference-shaped token that appears in nothing the
+  agent retrieved.
+
+Both auto-enable when a hallucination fault fires, and all four grounding-family
+checks classify as `hallucinated`.
+
+**D-118** "Destructive" now means *changed*, not *added*. A patch of pure `add` ops
+corrupts nothing, so an agent that invented a citation was being reported as
+hallucinating on corrupt data that was never touched.
+
+Demo suite: 27 scenarios, buggy tree **21 failures across 8 modes**, corrected tree
+**27/27 pass**.
+
+### The pattern pool is runnable, and async entrypoints work from a suite
+
+- **D-115** `examples/scenarios/patterns_suite.yaml` — the eight agent shapes in
+  `examples/patterns/`, naive and hardened, as 16 CLI-runnable scenarios. Generated
+  from the registry by `tools/gen_patterns_suite.py`; a test fails if the committed
+  file is stale. Result is exact and asserted: 8 fail, 8 pass, every fault fires.
+- **D-114** A suite drives a coroutine entrypoint through `arun`. `run_suite` called
+  `engine.run` unconditionally, so an async agent built a coroutine, never awaited it,
+  and came back `failure_mode: unknown` — a verdict about a run that did not happen.
+  `_shared_baseline` had the same bug and swallowed it as "baseline could not be
+  produced". `engine.run` now refuses a coroutine agent with a `ConfigError` naming
+  `arun` instead of returning a coroutine object.
+
 ### M10 — the live trace dashboard (post-0.1.0)
 
 A local, stdlib-only, read-only web view that tails `trace.jsonl` while a suite is

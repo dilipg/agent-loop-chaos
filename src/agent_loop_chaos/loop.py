@@ -18,18 +18,23 @@ and two copies of the scenario-running logic would drift (D-74).
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from .errors import ConfigError
 from .report import ChaosResult
 from .scenarios import ChaosSuite, Scenario
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from .targeting import Trigger
 
 __all__ = [
     "LoopReport",
@@ -117,6 +122,83 @@ def build_fault(spec: Mapping[str, Any]) -> Any:
     return fault_from_dict(dict(spec))
 
 
+def plan_specs(scenario: Scenario) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Apply the intensity dial to a scenario's declared faults.
+
+    This is the one place the dial does anything. It scales each declared fault's
+    trigger and magnitude parameters, then -- above level 4 -- adds faults from the
+    matching preset so a one-fault scenario becomes a compound one. Level 3 is the
+    identity and returns the declared list unchanged.
+
+    Args:
+        scenario: The scenario, carrying `intensity` and any `preset` it named.
+
+    Returns:
+        `(specs, skipped)`. `specs` are ready for `build_fault`; `skipped` records
+        anything the dial refused to add, notably a real-action fault with no opt-in.
+    """
+    from .intensity import DEFAULT_LEVEL, expand_faults, profile, scale_params, scale_trigger
+    from .scenarios import FaultSpec
+    from .targeting import Trigger
+
+    declared = [dict(spec) for spec in scenario.faults]
+    if scenario.intensity == DEFAULT_LEVEL:
+        return declared, []
+
+    prof = profile(scenario.intensity)
+    scaled: list[dict[str, Any]] = []
+    for spec in declared:
+        trigger = Trigger(**(spec.get("trigger") or {}))
+        out = dict(spec)
+        out["params"] = scale_params(str(spec.get("type")), spec.get("params") or {}, prof)
+        out["trigger"] = _trigger_dict(scale_trigger(trigger, prof))
+        scaled.append(out)
+
+    extras, skipped = expand_faults(
+        [
+            FaultSpec(
+                type=str(s.get("type")),
+                params=dict(s.get("params") or {}),
+                target=dict(s.get("target") or {}),
+                trigger=dict(s.get("trigger") or {}),
+            )
+            for s in scaled
+        ],
+        prof,
+        preset=scenario.preset,
+        allow_side_effects=scenario.allow_side_effects,
+    )
+    return [*scaled, *(spec.to_dict() for spec in extras)], skipped
+
+
+def _trigger_dict(trigger: Trigger) -> dict[str, Any]:
+    """Render a trigger back to the mapping a fault spec carries.
+
+    Args:
+        trigger: The trigger.
+
+    Returns:
+        Only the fields that differ from the default, so a scaled spec stays as
+        readable as the one the scenario wrote.
+    """
+    from .targeting import Trigger
+
+    default = Trigger()
+    return {
+        name: getattr(trigger, name)
+        for name in (
+            "on_call",
+            "on_step",
+            "after_step",
+            "probability",
+            "max_fires",
+            "cooldown_calls",
+            "stop_after_step",
+        )
+        if getattr(trigger, name) != getattr(default, name)
+    }
+
+
 def target_kwargs(spec: Mapping[str, Any]) -> dict[str, Any]:
     """Translate a spec's target and trigger into `register_fault` arguments.
 
@@ -192,6 +274,27 @@ def _baseline_key(scenario: Scenario) -> str:
     return json.dumps([str(scenario.entrypoint), scenario.inputs], sort_keys=True, default=str)
 
 
+def drive(engine: Any, agent: Any, **kwargs: Any) -> ChaosResult:
+    """Run an agent through whichever of `run`/`arun` it needs.
+
+    A suite names `module:attr` and does not get to pick, so the loop picks. Calling a
+    coroutine function from the sync path builds a coroutine, never awaits it, and
+    reports a verdict about a run that did not happen -- exactly the failure this
+    library exists to catch (D-114).
+
+    Args:
+        engine: The engine to run on.
+        agent: The resolved entrypoint.
+        **kwargs: Forwarded to `run` or `arun`.
+
+    Returns:
+        The `ChaosResult`.
+    """
+    if inspect.iscoroutinefunction(agent):
+        return cast("ChaosResult", asyncio.run(engine.arun(agent, **kwargs)))
+    return cast("ChaosResult", engine.run(agent, **kwargs))
+
+
 def _shared_baseline(cache: dict[str, Any], scenario: Scenario, out_dir: Path) -> Any:
     """Run the scenario's entrypoint unfaulted once, and reuse it.
 
@@ -220,7 +323,8 @@ def _shared_baseline(cache: dict[str, Any], scenario: Scenario, out_dir: Path) -
             strict_schema=False,
             judge="rules",
         )
-        cache[key] = engine.run(
+        cache[key] = drive(
+            engine,
             resolve_entrypoint(scenario.entrypoint, engine),
             inputs=scenario.inputs,
             initial_state=dict(scenario.initial_state or {}) or None,
@@ -325,10 +429,17 @@ def run_suite(
             judge_options=dict(judge_options or {}),
             narrate_all=narrate_all,
             allow_remote_judge=allow_remote_judge,
+            intensity=scenario.intensity,
         )
-        for spec in scenario.faults:
-            engine.register_fault(build_fault(spec), **target_kwargs(spec))
-        return engine.run(
+        specs, dial_skipped = plan_specs(scenario)
+        for spec in specs:
+            engine.register_fault(
+                build_fault(spec), origin=str(spec.get("origin") or ""), **target_kwargs(spec)
+            )
+        if dial_skipped:
+            log.debug("intensity %s skipped %s", scenario.intensity, dial_skipped)
+        return drive(
+            engine,
             resolve_entrypoint(scenario.entrypoint, engine),
             inputs=scenario.inputs,
             initial_state=dict(scenario.initial_state or {}) or None,

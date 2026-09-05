@@ -298,6 +298,31 @@ scenarios:
         trigger: { on_call: 1 }
         params: { rollback_steps: 1, times: 1 }
 
+  # ------------------------------------------------------------- hallucination
+  - id: hallucination.citation_pressure
+    description: >
+      Demand a source for every claim when nothing retrievable supports one. This is
+      the standard way a real model is made to invent a reference, and an invented
+      reference is the hardest hallucination for a reader to catch, because it looks
+      like evidence. The corrected tree states its grounding rule -- cite only what
+      you were given -- and says it has no policy document.
+    expected_behavior: graceful_degradation
+    faults:
+      - type: HallucinationInducerFault
+        params: { mode: citation_pressure }
+        trigger: { on_call: 3 }   # the RESPOND call; plan and summarize come first
+
+  - id: hallucination.unanswerable_request
+    description: >
+      Ask for a figure no tool can supply, and refuse approximations. Saying "I do not
+      have that" is the correct answer; producing a number is the failure. The
+      grounding check catches the invented quantity, and the corrected tree refuses.
+    expected_behavior: graceful_degradation
+    faults:
+      - type: HallucinationInducerFault
+        params: { mode: unanswerable_request }
+        trigger: { on_call: 3 }
+
   # ------------------------------------------------------------------- control run
   - id: control.dry_run
     description: >

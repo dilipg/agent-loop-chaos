@@ -135,8 +135,8 @@ def test_expansion_does_not_mutate_the_base_scenario() -> None:
 # --------------------------------------------------------------------- presets
 
 
-def test_all_ten_presets_ship() -> None:
-    """`docs/03` §D names ten, and `--preset full` must be able to reference them."""
+def test_all_eleven_presets_ship() -> None:
+    """`docs/03` §D names them, and `--preset full` must be able to reference each."""
     assert set(PRESETS) == {
         "smoke",
         "tool_contract",
@@ -147,6 +147,7 @@ def test_all_ten_presets_ship() -> None:
         "adversarial",
         "state_integrity",
         "resume_safety",
+        "hallucination",
         "full",
     }
 

@@ -164,7 +164,7 @@ class TestACleanInstall:
     def test_list_faults_works_outside_the_source_tree(self) -> None:
         proc = _in_venv("alc", "list-faults", "--json")
         assert proc.returncode == 0, proc.stderr[-400:]
-        assert json.loads(proc.stdout)["count"] == 27
+        assert json.loads(proc.stdout)["count"] == 28
 
     def test_only_jsonschema_is_required(self) -> None:
         """Importing the package must not need any optional extra."""

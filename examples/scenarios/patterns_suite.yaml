@@ -1,0 +1,152 @@
+# The conformance pool, as a runnable suite.
+#
+# examples/patterns/ is eight agent shapes people actually ship -- a ReAct text loop,
+# an OpenAI tool-calling loop, an async agent, a class with state on `self`, a
+# supervisor delegating to specialists, a fixed pipeline with no loop, a streaming
+# accumulator, and a retrieve-rerank-generate chain. Each ships twice: `build` has a
+# planted weakness, `build_fixed` is the hardened twin.
+#
+# Every `.fixed` scenario is a negative control. A probe that fires on one has a false
+# positive and the probe is wrong until proven otherwise (docs/11 section 2). So a
+# green run here is not "nothing broke" -- it is the harness proving it can tell a
+# real weakness from its own injection, across eight unrelated loop shapes.
+#
+# GENERATED from examples/patterns/PATTERNS. Do not edit by hand:
+#   python3 tools/gen_patterns_suite.py
+
+version: "1.0"
+
+defaults:
+  seed: 1337
+
+scenarios:
+
+  - id: pattern.async_agent
+    entrypoint: examples.patterns.async_agent:build
+    description: "An async agent fanning two lookups out concurrently, as a web handler would."
+    inputs: "SKU-77"
+    expected_behavior: graceful_degradation
+    faults:
+      - {"type": "ToolTimeoutFault", "params": {"after_ms": 1500}, "target": {"tool": "fetch_inventory"}, "trigger": {"on_call": [1, 2, 3], "max_fires": 3}}
+
+  - id: pattern.async_agent.fixed
+    entrypoint: examples.patterns.async_agent:build_fixed
+    description: "An async agent fanning two lookups out concurrently, as a web handler would."
+    inputs: "SKU-77"
+    expected_behavior: graceful_degradation
+    faults:
+      - {"type": "ToolTimeoutFault", "params": {"after_ms": 1500}, "target": {"tool": "fetch_inventory"}, "trigger": {"on_call": [1, 2, 3], "max_fires": 3}}
+
+  - id: pattern.class_based
+    entrypoint: examples.patterns.class_based:build
+    description: "An agent class carrying conversation, tool registry and budget on `self`."
+    inputs: "T-2291"
+    expected_behavior: graceful_degradation
+    faults:
+      - {"type": "ToolCorruptionFault", "params": {"mutation_type": "drop_key", "keys": ["balance_usd"]}, "target": {"tool": "fetch_billing"}, "trigger": {"on_call": 1}}
+
+  - id: pattern.class_based.fixed
+    entrypoint: examples.patterns.class_based:build_fixed
+    description: "An agent class carrying conversation, tool registry and budget on `self`."
+    inputs: "T-2291"
+    expected_behavior: graceful_degradation
+    faults:
+      - {"type": "ToolCorruptionFault", "params": {"mutation_type": "drop_key", "keys": ["balance_usd"]}, "target": {"tool": "fetch_billing"}, "trigger": {"on_call": 1}}
+
+  - id: pattern.function_calling
+    entrypoint: examples.patterns.function_calling:build
+    description: "An OpenAI-style tool-calling loop: a `tool_calls` list in, one `role: \"tool\"` message back per call, until the model answers."
+    inputs: "How much is outstanding on invoices INV-2041 and INV-2042?"
+    expected_behavior: graceful_degradation
+    faults:
+      - {"type": "ToolCorruptionFault", "params": {"mutation_type": "drop_key", "keys": ["amount_usd"]}, "target": {"tool": "get_invoice"}, "trigger": {"on_call": 1}}
+
+  - id: pattern.function_calling.fixed
+    entrypoint: examples.patterns.function_calling:build_fixed
+    description: "An OpenAI-style tool-calling loop: a `tool_calls` list in, one `role: \"tool\"` message back per call, until the model answers."
+    inputs: "How much is outstanding on invoices INV-2041 and INV-2042?"
+    expected_behavior: graceful_degradation
+    faults:
+      - {"type": "ToolCorruptionFault", "params": {"mutation_type": "drop_key", "keys": ["amount_usd"]}, "target": {"tool": "get_invoice"}, "trigger": {"on_call": 1}}
+
+  - id: pattern.pipeline
+    entrypoint: examples.patterns.pipeline:build
+    description: "A fixed extract -> transform -> validate -> render chain with no agent loop at all -- the LCEL shape a great many shipped 'agents' really are."
+    inputs: "Which service cost us the most downtime this week?"
+    expected_behavior: graceful_degradation
+    faults:
+      - {"type": "ToolCorruptionFault", "params": {"mutation_type": "drop_key", "keys": ["owner"]}, "target": {"tool": "fetch_incident_log"}, "trigger": {"on_call": 1}}
+
+  - id: pattern.pipeline.fixed
+    entrypoint: examples.patterns.pipeline:build_fixed
+    description: "A fixed extract -> transform -> validate -> render chain with no agent loop at all -- the LCEL shape a great many shipped 'agents' really are."
+    inputs: "Which service cost us the most downtime this week?"
+    expected_behavior: graceful_degradation
+    faults:
+      - {"type": "ToolCorruptionFault", "params": {"mutation_type": "drop_key", "keys": ["owner"]}, "target": {"tool": "fetch_incident_log"}, "trigger": {"on_call": 1}}
+
+  - id: pattern.rag_pipeline
+    entrypoint: examples.patterns.rag_pipeline:build
+    description: "Retrieve, rerank, generate over an in-memory store -- the shape most shipped 'agents' actually have."
+    inputs: {"question": "How long does a refund take?"}
+    expected_behavior: graceful_degradation
+    faults:
+      - {"type": "PromptInjectionFault", "params": {"payload_id": "exfil-01", "placement": "field_value"}, "target": {"tool": "search_docs"}, "trigger": {"on_call": 1}}
+
+  - id: pattern.rag_pipeline.fixed
+    entrypoint: examples.patterns.rag_pipeline:build_fixed
+    description: "Retrieve, rerank, generate over an in-memory store -- the shape most shipped 'agents' actually have."
+    inputs: {"question": "How long does a refund take?"}
+    expected_behavior: graceful_degradation
+    faults:
+      - {"type": "PromptInjectionFault", "params": {"payload_id": "exfil-01", "placement": "field_value"}, "target": {"tool": "search_docs"}, "trigger": {"on_call": 1}}
+
+  - id: pattern.react_loop
+    entrypoint: examples.patterns.react_loop:build
+    description: "A hand-rolled ReAct text loop: Thought/Action/Observation in one string, the action parsed out with a regex. The shape of the original paper."
+    inputs: "What should I pack for three days in Paris?"
+    expected_behavior: graceful_degradation
+    faults:
+      - {"type": "PromptInjectionFault", "params": {"payload_id": "exfil-01", "placement": "field_value"}, "target": {"tool": "search"}, "trigger": {"on_call": 1}}
+
+  - id: pattern.react_loop.fixed
+    entrypoint: examples.patterns.react_loop:build_fixed
+    description: "A hand-rolled ReAct text loop: Thought/Action/Observation in one string, the action parsed out with a regex. The shape of the original paper."
+    inputs: "What should I pack for three days in Paris?"
+    expected_behavior: graceful_degradation
+    faults:
+      - {"type": "PromptInjectionFault", "params": {"payload_id": "exfil-01", "placement": "field_value"}, "target": {"tool": "search"}, "trigger": {"on_call": 1}}
+
+  - id: pattern.streaming
+    entrypoint: examples.patterns.streaming:build
+    description: "A token stream accumulated into a buffer and parsed once it ends -- the shape behind every typing-cursor UI."
+    inputs: {"notes": "- Incremental sync now resumes from the last acknowledged cursor.\n- Fixed a crash when a workspace had no default project.\n- The export job retries once on a 503."}
+    expected_behavior: graceful_degradation
+    faults:
+      - {"type": "LLMTruncationFault", "params": {"cut": "mid_json", "at_ratio": 0.55}, "target": {"llm": "writer"}, "trigger": {"on_call": 1}}
+
+  - id: pattern.streaming.fixed
+    entrypoint: examples.patterns.streaming:build_fixed
+    description: "A token stream accumulated into a buffer and parsed once it ends -- the shape behind every typing-cursor UI."
+    inputs: {"notes": "- Incremental sync now resumes from the last acknowledged cursor.\n- Fixed a crash when a workspace had no default project.\n- The export job retries once on a 503."}
+    expected_behavior: graceful_degradation
+    faults:
+      - {"type": "LLMTruncationFault", "params": {"cut": "mid_json", "at_ratio": 0.55}, "target": {"llm": "writer"}, "trigger": {"on_call": 1}}
+
+  - id: pattern.supervisor
+    entrypoint: examples.patterns.supervisor:build
+    description: "A coordinator delegating each turn to a named specialist sub-agent with its own prompt, model alias and tool subset -- the LangGraph-supervisor / AutoGen / CrewAI shape."
+    inputs: "Which accounts are the biggest churn risk this quarter?"
+    initial_state: {"claims": []}
+    expected_behavior: graceful_degradation
+    faults:
+      - {"type": "EdgeMisrouteFault", "params": {"from_node": "supervisor", "force_to": "writer", "times": 1}, "target": {"layer": "edge"}, "trigger": {"on_call": 1}}
+
+  - id: pattern.supervisor.fixed
+    entrypoint: examples.patterns.supervisor:build_fixed
+    description: "A coordinator delegating each turn to a named specialist sub-agent with its own prompt, model alias and tool subset -- the LangGraph-supervisor / AutoGen / CrewAI shape."
+    inputs: "Which accounts are the biggest churn risk this quarter?"
+    initial_state: {"claims": []}
+    expected_behavior: graceful_degradation
+    faults:
+      - {"type": "EdgeMisrouteFault", "params": {"from_node": "supervisor", "force_to": "writer", "times": 1}, "target": {"layer": "edge"}, "trigger": {"on_call": 1}}

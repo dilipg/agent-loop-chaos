@@ -25,6 +25,7 @@ from .assertions import Expect
 from .context import Limits
 from .enums import ExpectedBehavior
 from .errors import ConfigError, MissingExtraError
+from .intensity import DEFAULT_LEVEL, profile
 from .report import ChaosResult
 
 __all__ = [
@@ -69,12 +70,16 @@ class FaultSpec:
         target: Where it applies.
         trigger: When it fires. Presets always set this explicitly, because an
             implicit default could change and move every plan hash with it.
+        origin: Where this fault came from. Empty means the scenario declared it;
+            `intensity:<level>:<preset>` means the dial added it. A reader looking at
+            five faults in a plan needs to know which two the file actually asked for.
     """
 
     type: str
     params: dict[str, Any] = field(default_factory=dict)
     target: dict[str, Any] = field(default_factory=dict)
     trigger: dict[str, Any] = field(default_factory=dict)
+    origin: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize for a scenario's `faults` list.
@@ -87,6 +92,8 @@ class FaultSpec:
             out["target"] = dict(self.target)
         if self.trigger:
             out["trigger"] = dict(self.trigger)
+        if self.origin:
+            out["origin"] = self.origin
         return out
 
 
@@ -194,6 +201,21 @@ _RESUME_SAFETY = [
     FaultSpec("DuplicateSideEffectFault", {"times": 2}, {}, _t(on_call=1)),
 ]
 
+_HALLUCINATION = [
+    FaultSpec("HallucinationInducerFault", {"mode": mode}, {}, _t(on_call=1))
+    for mode in (
+        "false_premise",
+        "unanswerable_request",
+        "citation_pressure",
+        "authority_bias",
+        "leading_question",
+        "entity_lookalike",
+    )
+] + [
+    FaultSpec("HallucinationSeedFault", {"mode": mode}, {}, _t(on_call=1))
+    for mode in ("invent_value", "contradict_tool_output", "invent_citation", "invent_tool")
+]
+
 PRESETS: dict[str, list[FaultSpec]] = {
     "smoke": _SMOKE,
     "tool_contract": _TOOL_CONTRACT,
@@ -204,6 +226,7 @@ PRESETS: dict[str, list[FaultSpec]] = {
     "adversarial": _ADVERSARIAL,
     "state_integrity": _STATE_INTEGRITY,
     "resume_safety": _RESUME_SAFETY,
+    "hallucination": _HALLUCINATION,
     "full": [
         *_SMOKE,
         *_TOOL_CONTRACT,
@@ -214,6 +237,7 @@ PRESETS: dict[str, list[FaultSpec]] = {
         *_ADVERSARIAL,
         *_STATE_INTEGRITY,
         *_RESUME_SAFETY,
+        *_HALLUCINATION,
     ],
 }
 
@@ -328,6 +352,12 @@ class Scenario:
     expected_errors: list[str] = field(default_factory=list)
     allow_side_effects: list[str] = field(default_factory=list)
     objective_state_key: str = "query"
+    #: How hard the plan pushes, 1 (strict) to 10 (creative). 3 is the identity: a
+    #: dial nobody turned changes nothing. See `agent_loop_chaos.intensity`.
+    intensity: int = DEFAULT_LEVEL
+    #: The preset this scenario named, kept so a high intensity knows where to draw
+    #: extra faults from. `resolve_preset` already folded its faults into `faults`.
+    preset: str | None = None
     dry_run: bool = False
     limits: Limits = field(default_factory=Limits)
     judge: JudgeSpec | None = None
@@ -345,9 +375,11 @@ class Scenario:
         """Validate the fields that can only be checked against the registry.
 
         Raises:
-            ConfigError: When `must_not` names an unknown probe code (D-33).
+            ConfigError: When `must_not` names an unknown probe code (D-33), or when
+                `intensity` is off the dial.
         """
         self.must_not = _validate_must_not(self.must_not)
+        profile(self.intensity)
 
     def to_body(self) -> dict[str, Any]:
         """Render the scenario as a plain body, for matrix substitution.
@@ -645,6 +677,7 @@ def _scenario_from_body(body: Mapping[str, Any]) -> Scenario:
         "expected_errors",
         "allow_side_effects",
         "objective_state_key",
+        "intensity",
         "dry_run",
         "tags",
         "description",
@@ -656,6 +689,7 @@ def _scenario_from_body(body: Mapping[str, Any]) -> Scenario:
         judge=judge,
         limits=limits,
         preset_skipped=skipped,
+        preset=str(preset) if preset else None,
         **{k: v for k, v in data.items() if k in known},
     )
 

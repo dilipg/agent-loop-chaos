@@ -43,14 +43,15 @@
     "code_pointers",
     "reproduce",
     "artifacts",
-    "schema_errors"
+    "schema_errors",
+    "intensity"
   ],
   "properties": {
     "schema_version": {
       "type": "string",
       "pattern": "^\\d+\\.\\d+$",
       "examples": [
-        "1.3"
+        "1.4"
       ]
     },
     "run_id": {
@@ -497,6 +498,10 @@
             "type": "string",
             "pattern": "^[0-9a-f]{6}$",
             "description": "sha256 of (type, canonical params, target, trigger), truncated. Keys the RNG streams so inserting or reordering faults does not re-key the others. See D-03."
+          },
+          "origin": {
+            "type": "string",
+            "description": "Where this fault came from. Absent or empty means the scenario declared it; `intensity:<level>:<preset>` means the intensity dial added it. A reader looking at five faults needs to know which the file actually asked for."
           }
         }
       }
@@ -1233,6 +1238,29 @@
               "additionalProperties": true
             }
           }
+        }
+      }
+    },
+    "intensity": {
+      "type": "object",
+      "description": "How hard this run's plan pushed. `level` is 1 (strict) to 10 (creative); 3 is the identity. Always present, so a reader never has to guess whether a passing run was tested gently.",
+      "additionalProperties": false,
+      "required": [
+        "level",
+        "label",
+        "summary"
+      ],
+      "properties": {
+        "level": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "label": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
         }
       }
     }

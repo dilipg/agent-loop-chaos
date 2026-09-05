@@ -46,7 +46,17 @@ SATISFIES: dict[str, frozenset[str]] = {
     "ignore_and_continue": frozenset({"completed_unaffected", "graceful_degradation"}),
 }
 
-_GROUNDING_CHECKS = frozenset({"no_unsourced_numbers", "no_claim_about"})
+# Every check that catches the agent asserting something it cannot support. All of
+# them classify as `hallucinated`, because "made it up" is one finding whether the
+# invention was a quantity, a source, or a piece of work the agent never did.
+_GROUNDING_CHECKS = frozenset(
+    {
+        "no_unsourced_numbers",
+        "no_claim_about",
+        "no_invented_tools",
+        "no_fabricated_citations",
+    }
+)
 
 
 @dataclass(slots=True)

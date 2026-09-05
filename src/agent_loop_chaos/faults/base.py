@@ -162,6 +162,9 @@ class FaultRecord:
     fire_count: int = 0
     skipped_reason: str | None = None
     fires: list[dict[str, Any]] = field(default_factory=list)
+    #: Empty when the scenario declared this fault; `intensity:<level>:<preset>` when
+    #: the intensity dial added it.
+    origin: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to the `injected_faults[]` shape.
@@ -184,6 +187,8 @@ class FaultRecord:
         }
         if self.fire_count == 0:
             out["skipped_reason"] = self.skipped_reason
+        if self.origin:
+            out["origin"] = self.origin
         return out
 
 

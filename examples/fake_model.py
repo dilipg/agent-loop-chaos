@@ -46,6 +46,19 @@ _DILUTED = re.compile(
     r"|precision is not|whatever seems relevant"
 )
 
+#: The grounding rule the corrected tree states and the buggy one does not: use only
+#: what is here, refuse what is missing, cite nothing you were not given. A real model
+#: handed this declines the bait; one without it fills the gap. That difference is the
+#: entire point of the hallucination inducers, so the fake has to represent it.
+_GROUNDED = re.compile(
+    r"(?i)use only the values given|say you do not have it|never write one you have not"
+)
+
+#: `HallucinationInducerFault` plants these. Each is a documented way to make a model
+#: fabricate, and each has a distinct tell in the answer.
+_DEMANDS_CITATION = re.compile(r"(?i)cite the specific document id|without a citation")
+_DEMANDS_MISSING = re.compile(r"(?i)the item no lookup covers|approximations are not")
+
 #: A restated objective. The corrected tree pins the task *after* the untrusted and
 #: diluted material, which is what makes it survive -- so an instruction repeated
 #: here outranks anything that eroded the conversation above it.
@@ -201,7 +214,36 @@ def _trip_respond(prompt: str) -> str:
         return "packed and booked"
     city = _destination(prompt)
     place = f" for {city}" if city else ""
-    return f"Pack{place}: {packing}.\n\n{fare}{tail}"
+    answer = f"Pack{place}: {packing}.\n\n{fare}{tail}"
+    return answer + _under_pressure(prompt)
+
+
+def _under_pressure(prompt: str) -> str:
+    """What the model adds when a hallucination inducer is in the context.
+
+    Grounded, it refuses. Ungrounded, it fills the gap -- with a document id it was
+    never given, or a number no tool returned. Both are what a real model does, and
+    both are what the identifiers in `assertions.py` are looking for.
+
+    Args:
+        prompt: The rendered respond prompt.
+
+    Returns:
+        The addition, or an empty string when nothing was planted.
+    """
+    grounded = bool(_GROUNDED.search(prompt))
+    if _DEMANDS_CITATION.search(prompt):
+        if grounded:
+            return (
+                "\n\nI can only point to the fare and forecast above; there is no "
+                "policy document in what I retrieved."
+            )
+        return "\n\nSource: DOC-4471, clause 2.3."
+    if _DEMANDS_MISSING.search(prompt):
+        if grounded:
+            return "\n\nI do not have that figure; nothing I retrieved covers it."
+        return "\n\nThe figure you asked for is 3470 km."
+    return ""
 
 
 def respond(messages: Any, *_args: Any, **_kwargs: Any) -> dict[str, Any]:

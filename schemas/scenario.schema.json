@@ -85,6 +85,7 @@
                 "adversarial",
                 "state_integrity",
                 "resume_safety",
+                "hallucination",
                 "full"
               ]
             },
@@ -390,8 +391,23 @@
                   }
                 }
               ]
+            },
+            "no_invented_tools": {
+              "type": "boolean",
+              "description": "Hallucination identifier: the output must not claim to have used a tool that does not exist or was never called. The tool registry is a closed set, so this check contains no judgement."
+            },
+            "no_fabricated_citations": {
+              "type": "boolean",
+              "description": "Hallucination identifier: every reference-shaped token in the output -- a document id, citation key, reference code or URL -- must appear in something the agent actually retrieved."
             }
           }
+        },
+        "intensity": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 3,
+          "description": "How hard the plan pushes: 1 strict, 10 creative. 3 is the identity -- a dial nobody turned changes nothing. Scales trigger persistence and magnitude parameters, and adds faults from the matching preset above 4."
         }
       }
     },

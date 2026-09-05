@@ -1691,3 +1691,129 @@ finished 20 000-event trace indexed all of them past the events they name, and
 regression test is the one from `docs/10` §10: ask a 20 000-event trace for a page at
 `seq 19 000` with retention set to 100, and assert both that the right events come
 back and that fewer than a quarter of the file's bytes were read to find them.
+
+### D-114 — A suite drives a coroutine entrypoint through `arun`
+*2026-09-05. Affects `docs/02-API.md` §10, `docs/06-LANGGRAPH-ADAPTER.md`, phase 08.*
+
+`engine.run` is synchronous and `engine.arun` is not, which is fine when a caller
+picks. A YAML suite does not get to pick — it names `module:attr` and `run_suite`
+resolves it — and `run_suite` called `engine.run` unconditionally. Given an async
+entrypoint that built a coroutine, never awaited it, and reported
+`failure_mode: unknown` with a `RuntimeWarning` on stderr: a verdict about a run that
+did not happen. That is the exact shape of failure this library exists to catch.
+
+`loop.drive(engine, agent, **kwargs)` picks `run` or `asyncio.run(arun(...))` from
+`inspect.iscoroutinefunction`, and both callers route through it — the scenario path
+and `_shared_baseline`, which had the same bug and swallowed the result as "baseline
+could not be produced".
+
+`engine.run` now raises `ConfigError` naming `arun` rather than returning a coroutine
+object. A synchronous method cannot await; saying so is the only honest answer, and a
+silent wrong verdict is worse than a refusal.
+
+Found by running `examples/scenarios/patterns_suite.yaml`: `pattern.async_agent` and
+its hardened twin both "failed" with `unknown`. `tests/test_patterns.py` never caught
+it because it calls `engine.arun` directly, so the suite path had no coverage at all.
+
+### D-115 — `patterns_suite.yaml` is generated, not hand-written
+*2026-09-05. Affects `docs/08-ROADMAP.md`, phase 08.*
+
+`examples/patterns/PATTERNS` was reachable only from `tests/test_patterns.py`. The
+eight shapes are the library's plug-and-play claim, so they need to be runnable from
+the CLI — and from the dashboard.
+
+`examples/scenarios/patterns_suite.yaml` is 16 scenarios: eight naive, eight hardened
+twins. The registry stays the source of truth and the YAML is generated from it by
+`tools/gen_patterns_suite.py`; a hand-maintained copy drifts, and the drift shows up
+as a scenario that proves nothing (D-64). `tools/gen_patterns_suite.py --check` fails
+if the committed file is stale, and a test runs it.
+
+The expected result is exact and asserted: the eight `build` scenarios fail, the eight
+`build_fixed` scenarios pass, and every scenario's fault fires. Eight hardened twins
+passing across eight unrelated loop shapes is the negative-control evidence that the
+probes have no false positives outside the trip-planner demo.
+
+### D-116 — `intensity`: one dial, 1 to 10, applied at plan time
+*2026-09-05. Affects `docs/02-API.md` §10, `docs/03-FAULT-CATALOG.md` §D, `docs/04-SCHEMAS.md`.*
+
+A single integer decides how hard a plan pushes. `1` is strict — the smallest blast
+radius that still proves something. `10` is creative — harsher parameters, relentless
+triggers, and extra faults drawn from the matching preset so a one-fault scenario
+becomes a compound one.
+
+Three rules make it safe to add to a spec this far along:
+
+- **3 is the identity.** Same params, same triggers, same fault set, byte-identical
+  reports, and `plan_hash` unchanged — the level enters the hashed plan only when it
+  is not 3. A dial nobody turned must not move a single existing run.
+- **Nothing stops firing.** Turning it down never reduces a declared probability. A
+  scenario whose fault no longer fires proves nothing (D-64), so "strict" means a
+  smaller blast radius, never a fault that might not happen.
+- **Plan time only.** Scaling happens once, when the plan is frozen. No probe, fault,
+  assertion or judge reads the level at run time, so intensity cannot reach a verdict
+  except through the plan it produced.
+
+The dial decides *how hard*, never *what*: `on_call`, `on_step` and every target are
+left exactly as declared, because moving them would silently retarget the experiment.
+Magnitude scaling is a declarative table in `intensity.py` — a parameter is either
+"bigger is harsher" or "smaller is harsher", and anything categorical (a mutation
+type, a mode, a list of keys) is left alone.
+
+Fault-set expansion never adds a real-action fault. `SAFETY.md` §1 / D-23 require a
+named opt-in for those, and turning a dial to 10 is not one; the refusal is recorded
+rather than silent. Every added fault carries
+`origin: "intensity:<level>:<preset>"` in `plan.json` and `injected_faults[]`, so a
+reader looking at seven faults can always tell which one the file asked for.
+
+`report.intensity` is `{level, label, summary}` and is **always** present — a reader
+must never have to guess whether a passing run was tested gently. Report schema
+1.3 → 1.4.
+
+### D-117 — Hallucination gets inducers and identifiers, not a probe
+*2026-09-05. Affects `docs/03-FAULT-CATALOG.md`, `docs/11-OUTCOMES-AND-ASSERTIONS.md` §4.*
+
+`HallucinationSeedFault` rewrites a response to *be* wrong. `HallucinationInducerFault`
+is the other half and the more honest experiment: it plants a known inducer in the
+prompt and leaves the answer entirely to the agent. Nothing about the response is
+touched, so a run that passes is the agent genuinely declining the bait rather than
+the harness declining to push. Six modes, each a documented way real models are made
+to fabricate: `false_premise`, `unanswerable_request`, `citation_pressure`,
+`authority_bias`, `leading_question`, `entity_lookalike`.
+
+The identifiers are **assertion checks, not probes**, following the precedent that
+removed `fabricated_value` from `probes.py` (`docs/11` §4.3): claim-checking needs the
+scenario's declaration of what counts as sourced, and a probe that fires on a correct
+agent is a bug.
+
+- `no_invented_tools` — the output claims work the agent did not do. The registry and
+  the call log are both exact, so this check contains no judgement at all. Narrowed to
+  a claim of *use* ("I queried X"), never a mention ("X can help").
+- `no_fabricated_citations` — a reference-shaped token (document id, citation key,
+  reference code, URL) that appears in nothing the agent retrieved. Requires
+  structure — letters joined to digits, a bracketed number, a path — so prose and bare
+  numbers can never match. Grounding owns numbers; double-counting them here would be
+  a false positive on a correct answer.
+
+Both are auto-enabled when a hallucination fault fired, alongside
+`no_unsourced_numbers`, and all four grounding-family checks classify as
+`hallucinated`: "made it up" is one finding whether the invention was a quantity, a
+source, or work that never happened.
+
+Two of the six modes split the demo trees (`citation_pressure`,
+`unanswerable_request`) and are in the demo suite. The other four plant real
+conditions but do not move a *scripted* model, so adding them would ship dead
+scenarios (D-64). They are shipped in the `hallucination` preset for use against a
+real endpoint.
+
+### D-118 — "Destructive" means changed, not added
+*2026-09-05. Affects `docs/11-OUTCOMES-AND-ASSERTIONS.md` rule 13.*
+
+`destructive_mutation` decided `hallucination_on_corrupt_data` versus
+`unverified_claim_emitted`, and was computed as "any fault produced a JSON patch". A
+patch of pure `add` operations — an inducer planting a premise, noise appended to a
+context — corrupts nothing, so an agent that then invented a citation was reported as
+hallucinating *on corrupt data* that was never touched.
+
+Destructive now means at least one patch operation is not `add`, or the fault raised.
+The demo's numbers are unchanged; `HallucinationInducerFault` classifies as
+`unverified_claim_emitted`, which is what actually happened.

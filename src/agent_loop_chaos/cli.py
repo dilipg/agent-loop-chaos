@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import ConfigError, MissingExtraError
+from .intensity import profile
 from .version import __version__
 
 __all__ = ["build_parser", "main"]
@@ -148,6 +149,12 @@ def build_parser() -> argparse.ArgumentParser:
         dest="stop_when",
         choices=("all_pass", "no_new_failures", "rounds"),
         help="when to stop a --rounds loop (default: no_new_failures)",
+    )
+    run.add_argument(
+        "--intensity",
+        type=int,
+        metavar="1-10",
+        help="how hard to push: 1 strict, 3 standard (default), 10 creative chaos",
     )
     run.add_argument("--dashboard", action="store_true", help="serve the live dashboard (M10)")
     run.add_argument("--port", type=int, default=7717, help="dashboard port (M10)")
@@ -337,6 +344,11 @@ def _run(args: argparse.Namespace) -> int:
     if getattr(args, "entrypoint", None):
         for scenario in scenarios:
             scenario.entrypoint = args.entrypoint
+    if getattr(args, "intensity", None) is not None:
+        # `profile` raises ConfigError off the dial, which `main` turns into exit 2.
+        level = profile(args.intensity).level
+        for scenario in scenarios:
+            scenario.intensity = level
     out_dir = Path(args.out or ".chaos")
 
     if args.rounds:

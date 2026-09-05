@@ -14,6 +14,7 @@ makes this a conformance suite: the assertions are about the harness, not the ag
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -147,3 +148,60 @@ def test_the_weakness_is_not_announced_in_the_code(name: str) -> None:
     body = source.split('"""', 2)[-1]  # everything after the module docstring
     for giveaway in ("BUG:", "FIXME", "XXX", "the bug is", "deliberately broken"):
         assert giveaway.lower() not in body.lower(), f"{name} announces its own weakness"
+
+
+class TestTheRunnableSuite:
+    """`examples/scenarios/patterns_suite.yaml` — the pool, from the CLI.
+
+    The registry is the source of truth; the YAML is generated from it. A
+    hand-maintained copy drifts, and the drift shows up as a scenario that proves
+    nothing (D-64).
+    """
+
+    def test_the_committed_file_is_current(self, repo_root: Path) -> None:
+        import subprocess
+
+        proc = subprocess.run(
+            [sys.executable, str(repo_root / "tools" / "gen_patterns_suite.py"), "--check"],
+            capture_output=True,
+            text=True,
+            cwd=repo_root,
+        )
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    def test_it_loads_and_covers_every_pattern(self, repo_root: Path) -> None:
+        from agent_loop_chaos.scenarios import load_suite
+
+        suite = load_suite(repo_root / "examples" / "scenarios" / "patterns_suite.yaml")
+        ids = {s.id for s in suite.scenarios}
+        assert ids == {f"pattern.{n}{x}" for n in NAMES for x in ("", ".fixed")}
+
+    def test_every_scenario_declares_a_fault(self, repo_root: Path) -> None:
+        from agent_loop_chaos.scenarios import load_suite
+
+        suite = load_suite(repo_root / "examples" / "scenarios" / "patterns_suite.yaml")
+        assert all(s.faults for s in suite.scenarios)
+
+    @pytest.mark.slow
+    def test_the_whole_suite_splits_clean(self, repo_root: Path, tmp_path: Path) -> None:
+        """Eight weaknesses found, eight hardened twins untouched.
+
+        The single number that says the harness attaches to any loop shape *and*
+        keeps its false-positive rate at zero.
+        """
+        from agent_loop_chaos.loop import run_suite
+        from agent_loop_chaos.scenarios import load_suite
+
+        suite = load_suite(repo_root / "examples" / "scenarios" / "patterns_suite.yaml")
+        results = run_suite(suite.scenarios, out_dir=tmp_path, judge="rules")
+        by_id = {r.scenario_id: r for r in results}
+
+        failed = sorted(i for i, r in by_id.items() if not r.success)
+        assert failed == sorted(f"pattern.{n}" for n in NAMES), (
+            "a naive shape passed or a hardened twin failed; the second is a probe "
+            "false positive and the probe is wrong until proven otherwise"
+        )
+        assert all(
+            [f["type"] for f in by_id[f"pattern.{n}"].injected_faults if f.get("fired")]
+            for n in NAMES
+        ), "a scenario whose fault never fired proves nothing"
