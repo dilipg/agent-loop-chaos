@@ -295,6 +295,9 @@ def _make_handler(server: DashboardServer) -> type[BaseHTTPRequestHandler]:
                 return self._json(api.suite(w))
             if parts == ["api", "runs"]:
                 return self._json(api.runs(w))
+            if parts == ["api", "tasks.md"]:
+                body, ctype = api.tasks(w)
+                return self._send(200, body.encode(), ctype, filename="chaos-findings.md")
             if parts == ["api", "glossary"]:
                 return self._json(api.glossary(w))
             if parts == ["api", "health"]:
@@ -333,7 +336,10 @@ def _make_handler(server: DashboardServer) -> type[BaseHTTPRequestHandler]:
                 body, ctype = api.artifact(server.watcher, run_id, rest[1])
                 if body is None or ctype is None:
                     return self._send(404, b'{"error":"no such artifact"}', "application/json")
-                return self._send(200, body, ctype)
+                # The filename comes from the allow-listed name, never from the query:
+                # the flag only decides *whether* to attach, never what to call it.
+                name = rest[1] if "download" in query else None
+                return self._send(200, body, ctype, filename=name)
             return self._send(404, b'{"error":"not found"}', "application/json")
 
         def _static(self) -> None:
@@ -398,16 +404,21 @@ def _make_handler(server: DashboardServer) -> type[BaseHTTPRequestHandler]:
             body = json.dumps(document, default=str).encode()
             self._send(200, body, "application/json")
 
-        def _send(self, status: int, body: bytes, ctype: str) -> None:
+        def _send(self, status: int, body: bytes, ctype: str, filename: str | None = None) -> None:
             """Send a complete response.
 
             Args:
                 status: HTTP status.
                 body: The bytes.
                 ctype: Content type.
+                filename: When given, offer the body as a download under this name.
+                    Callers pass a name from the artifact allow-list; nothing from the
+                    request ever reaches this header.
             """
             self.send_response(status)
             self.send_header("Content-Type", ctype)
+            if filename:
+                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()

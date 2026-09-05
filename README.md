@@ -9,6 +9,17 @@ Chaos engineering for agent loops. Output designed for machines, not dashboards.
 [![Python](https://img.shields.io/pypi/pyversions/agent-loop-chaos.svg)](https://pypi.org/project/agent-loop-chaos/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
+**Contents** — [The problem](#the-problem) · [Install](#install) ·
+[Quickstart](#quickstart) · [The work order](#the-work-order)
+
+**Using it** — [Integrating with your agent](#integrating-with-your-agent) ·
+[Writing a scenario](#writing-a-scenario) · [The faults](#the-faults) ·
+[Reading the output](#reading-the-output) · [The dashboard](#the-dashboard) ·
+[**For coding agents**](#for-coding-agents) · [In CI](#in-ci) · [In pytest](#in-pytest)
+
+**How it works** — [How pass/fail is decided](#how-passfail-is-decided) ·
+[The judge](#the-judge) · [Results](#results) · [Status](#status)
+
 ## The problem
 
 Your weather tool has returned `{"temp_c": 24, ...}` on every call for six months.
@@ -147,7 +158,232 @@ The sections marked *authoritative* come from deterministic probes and assertion
 section marked *written by a language model* is advisory and is clearly labelled as
 such, because those two things should never be confused in a bug report.
 
-## Wiring it to your agent
+## Integrating with your agent
+
+**The one thing to understand:** the engine can only break what it can see. It sees a
+call by wrapping the callable that makes it, so integration is "hand your tool
+functions and your model call to the engine once" — after that every fault in the
+catalog can reach them, and nothing else about your code changes.
+
+Nothing here is framework-specific. Pick the shape that matches your code.
+
+### Plain Python
+
+Two decorators and one wrapper:
+
+```python
+from agent_loop_chaos import ChaosEngine
+
+engine = ChaosEngine(seed=1337)
+
+@engine.tool                      # every tool the agent may call
+def get_weather(city: str) -> dict:
+    return http.get(f"/weather/{city}").json()
+
+@engine.llm                       # the model call
+def complete(prompt: str) -> str:
+    return client.responses.create(model="gpt-4o", input=prompt).output_text
+
+@engine.intercept_tools()         # the agent entrypoint
+def agent(question: str) -> str:
+    data = get_weather("Paris")
+    return complete(f"{question}\n{data}")
+```
+
+`@engine.intercept_tools()` marks the outer boundary: faults fire only inside it, so a
+tool your test harness calls before the run is never touched. Pass tool names to narrow
+it further (`@engine.intercept_tools("get_weather")`).
+
+A tool that does something real in the world — books, charges, sends, deletes — must
+say so:
+
+```python
+@engine.tool(side_effecting=True)
+def hold_booking(flight_id: str, passenger: str) -> dict: ...
+```
+
+That declaration is enforced, not decorative. Faults that perform a real action refuse
+a `side_effecting=True` tool unless the scenario names it in `allow_side_effects:`, and
+`--preset full` refuses to start if any tool leaves it undeclared. See [SAFETY.md](SAFETY.md).
+
+### An agent class
+
+If your tools are methods on an object, wrap them in one call:
+
+```python
+agent = MyAgent(...)
+engine.instrument_object(
+    agent,
+    tools={"search": False, "book": True},   # name -> side_effecting
+    llm_methods=["complete"],
+)
+result = engine.run(agent.run, inputs="Find me a flight to Paris")
+```
+
+### LangGraph
+
+```python
+from agent_loop_chaos.adapters.langgraph import instrument_graph
+
+result = engine.run(instrument_graph(app, engine), inputs={"query": "Pack list for Paris"})
+```
+
+`instrument_graph` intercepts nodes, edges, the checkpointer and every tool bound to
+the graph, which is what makes `EdgeMisrouteFault`, `NodeSkipFault` and
+`CheckpointRollbackFault` available. Needs `pip install "agent-loop-chaos[langgraph]"`.
+
+### Async
+
+Every interception point supports both. If your agent is a coroutine function, use
+`arun`:
+
+```python
+result = await engine.arun(agent, inputs="Find me a flight")
+```
+
+A suite does this for you: `run_suite` detects a coroutine entrypoint and drives it
+correctly. Calling `engine.run` on one raises `ConfigError` naming `arun` rather than
+silently reporting a verdict about a run that never happened.
+
+### The entrypoint contract
+
+A scenario's `entrypoint` is a `module:attr` string. The engine imports it and applies
+one rule:
+
+> **If the callable's first parameter is named `engine`, it is a builder.** The engine
+> calls it, hands itself over, and uses whatever comes back as the agent.
+
+That is how your tools get wrapped, so the builder shape is what you want:
+
+```python
+# your_package/agent.py
+def build(engine=None):
+    """Return the agent. `engine` is None in production."""
+    tools = {"get_weather": get_weather}
+    if engine is not None:
+        tools = {name: engine.tool(fn, name=name) for name, fn in tools.items()}
+
+    def agent(question: str) -> str:
+        ...
+    return engine.intercept_tools()(agent) if engine else agent
+```
+
+```yaml
+entrypoint: your_package.agent:build
+```
+
+Keeping `engine=None` the default means the same function serves production and the
+chaos run, so the thing being tested is the thing you ship.
+
+**Does it work on your shape?** [`examples/patterns/`](examples/patterns/) is a
+conformance pool of eight shapes people actually ship — a ReAct text loop, an
+OpenAI-style tool-calling loop, an async agent with a `gather` fan-out, a class with
+state on `self`, a supervisor delegating to specialists, a fixed pipeline with no agent
+loop at all, a streaming accumulator, and a retrieve-rerank-generate chain. Each has a
+naive tree and a hardened twin, and all sixteen run through the same battery in CI:
+the eight naive ones fail, the eight hardened ones pass.
+
+```bash
+alc run examples/scenarios/patterns_suite.yaml --judge rules
+```
+
+## Writing a scenario
+
+`alc init` writes a working one. Here is the whole surface, annotated:
+
+```yaml
+version: "1.0"
+
+defaults:                 # merged into every scenario that does not override the key
+  seed: 1337
+  intensity: 3
+
+scenarios:
+  - id: tool.drop_required_key           # stable: names a directory, feeds --filter
+    title: A tool leaves out a field the agent needs   # what every human view shows
+    description: >
+      Longer prose about why this scenario exists.
+
+    entrypoint: your_package.agent:build
+    inputs: { question: "what should I pack for Paris?" }
+    initial_state: { location: Paris }   # for agents that carry state
+
+    expected_behavior: graceful_degradation   # what good behaviour looks like here
+    intensity: 5                              # 1 strict … 10 creative (default 3)
+
+    faults:
+      - type: ToolCorruptionFault
+        target:  { tool: get_weather }        # what to break
+        trigger: { on_call: 1 }               # when
+        params:  { mutation_type: drop_key, keys: [temp_c] }
+
+    expect:                                   # what must hold afterwards
+      output_non_empty: true
+      no_unsourced_numbers: { enabled: true }
+      output_matches: ["(?i)unavailab|missing|could not"]
+
+    must_not: [secret_in_output]              # probe codes that always fail the run
+```
+
+Only `id` and `entrypoint` are required. With no `expect:` block a scenario is still
+checked — the engine synthesises assertions from what the faults actually did, and
+they appear in the report marked `source: "auto"`.
+
+### Targeting: what to break, and when
+
+| `target:` | Meaning |
+|---|---|
+| `tool: get_weather` | that tool's calls |
+| `llm: default` | that model |
+| `node: summarize` / `phase: post` | a LangGraph node, before or after it runs |
+| `state_key: user.email` | a value in the agent's state (`*` and `**` globs) |
+| `layer: edge` | routing decisions |
+
+| `trigger:` | Meaning |
+|---|---|
+| `on_call: 1` or `on_call: [1, 3]` | the Nth call of the target |
+| `on_step: 2` / `after_step: 3` | by agent iteration |
+| `probability: 0.3` | flaky, drawn from the seeded RNG |
+| `max_fires: 5` / `cooldown_calls: 2` | how often, how far apart |
+
+A target or trigger the engine cannot satisfy is a `ConfigError` **at registration**,
+not a silent no-op mid-run.
+
+### Presets
+
+Eleven named fault sets, so you do not have to write them out:
+
+```yaml
+    preset: tool_contract     # or: smoke, transient_faults, long_horizon,
+                              # structured_output, loop_safety, adversarial,
+                              # state_integrity, resume_safety, hallucination, full
+```
+
+### Intensity: one dial, 1 to 10
+
+```bash
+alc run suite.yaml --intensity 8
+```
+
+`1` is strict — the smallest blast radius that still proves something. `3` is the
+default and changes nothing. Above `4` the dial scales magnitude parameters and trigger
+persistence, and pulls extra faults from the matching preset so a one-fault scenario
+becomes a compound one. Every fault the dial added is marked `origin:` in the report, so
+you can always tell which ones the file asked for. A fault that performs a real action
+is never added automatically.
+
+### Matrix
+
+One scenario, one axis, N runs:
+
+```yaml
+    matrix:
+      faults.0.params.mutation_type: [drop_key, type_flip, unit_swap]
+```
+
+### The two frozen snippets
+
+`docs/02-API.md` §11 freezes these two call shapes, and a test runs both verbatim.
 
 LangGraph:
 
@@ -186,21 +422,16 @@ result = chaos.run_with_state(weather_agent, query="Pack list for Paris",
 print(result.to_json())
 ```
 
-**Does it work on your shape?** `examples/patterns/` is a conformance pool of eight
-shapes people actually ship — a ReAct text loop, an OpenAI tool-calling loop, an async
-agent with a `gather` fan-out, a class with state on `self`, a supervisor delegating
-to specialists, a fixed pipeline with no agent loop at all, a streaming accumulator,
-and a retrieve-rerank-generate chain. Each has a naive tree and a hardened twin, and
-all sixteen run through the same battery in CI.
-
 ## The faults
 
-27 kinds, across six interception layers. `alc list-faults` prints them all.
+28 kinds, across six interception layers. `alc list-faults --json` prints them all,
+with the `(layer, phase)` pairs each accepts.
 
 | Layer | Examples |
 |---|---|
 | tool | `ToolCorruptionFault`, `ToolErrorFault`, `ToolLatencyFault`, `ToolTimeoutFault`, `RateLimitFault`, `ArgumentTamperFault`, `DuplicateSideEffectFault` |
-| llm | `LLMMalformedOutputFault`, `LLMTruncationFault`, `LLMEmptyFault`, `LLMRefusalFault`, `MalformedToolCallFault`, `HallucinationSeedFault` |
+| llm | `LLMMalformedOutputFault`, `LLMTruncationFault`, `LLMEmptyFault`, `LLMRefusalFault`, `MalformedToolCallFault` |
+| hallucination | `HallucinationSeedFault` (forces a confident wrong answer), `HallucinationInducerFault` (plants a known inducer and leaves the answer to the agent) |
 | context | `ContextShrinkFault`, `ContextNoiseFault`, `GoalDriftFault`, `StaleDataFault` |
 | state | `StateDropFault`, `StateTypeFault`, `StateStaleFault` |
 | routing | `EdgeMisrouteFault`, `NodeSkipFault`, `LoopTrapFault` |
@@ -211,7 +442,7 @@ Full catalog with parameters and expected failure modes:
 
 ## Results
 
-Two agents, the same 25-scenario suite. Measured — re-run the commands in
+Two agents, the same 27-scenario suite. Measured — re-run the commands in
 [examples/README.md](examples/README.md) and you get these.
 
 `examples/trip_planner` is a four-node LangGraph app with twelve planted weaknesses,
@@ -220,14 +451,15 @@ same agent with all twelve closed.
 
 | | `trip_planner` | `trip_planner_fixed` |
 |---|---|---|
-| **scenarios failed** | **19 of 25** | **0 of 25** |
-| distinct failure modes | 7 | — |
-| work orders written | 19 | 0 |
+| **scenarios failed** | **21 of 27** | **0 of 27** |
+| distinct failure modes | 8 | — |
+| work orders written | 21 | 0 |
 
 ```
 crash_unhandled_exception        7
 silent_wrong_answer              6
 empty_final_answer               2
+unverified_claim_emitted         2
 duplicate_side_effect            1
 hallucination_on_corrupt_data    1
 prompt_injection_followed        1
@@ -236,6 +468,9 @@ secret_leak                      1
 
 Six scenarios pass on the buggy tree. That is the honest number: an agent is not
 broken by every fault, and a suite that failed everything would be measuring itself.
+
+The pattern pool splits the same way, across eight unrelated loop shapes: eight naive
+agents fail, eight hardened twins pass, same faults, same seeds.
 
 ## How pass/fail is decided
 
@@ -276,7 +511,7 @@ The model writes the narrative, the root-cause hypothesis, the refinement hint a
 ranked fixes. It cannot change `passed`. A non-loopback endpoint is refused unless you
 pass `--allow-remote-judge`, and the refusal names what would be sent.
 
-## Consuming the output
+## Reading the output
 
 ```
 .chaos/
@@ -296,11 +531,218 @@ To close the loop, `alc run suite.yaml --rounds 3` re-runs the whole suite betwe
 hand-offs and reports what flipped, what regressed, and — importantly — any scenario
 that started passing only after it was modified.
 
+### The CLI
+
+```bash
+alc run <suite.yaml|scenario.yaml|module:attr>   # run a suite
+    [--filter GLOB] [--seed N] [--jobs N]        #   pick, seed, parallelise
+    [--intensity 1-10] [--rounds N]              #   how hard, how many rounds
+    [--judge rules|slm|ensemble] [--out DIR]
+    [--dashboard [--port 7717] [--linger S]]     #   watch it live
+alc replay <run_dir>          # re-run from plan.json; refuses if it cannot verify
+alc judge <run_dir>           # re-judge without re-running the agent
+alc explain <run_dir>         # the narrative, to stdout
+alc report <dir> --format md|json|html [-o FILE]
+alc validate <report.json|suite.yaml>
+alc list-faults [--json]
+alc dashboard [--out .chaos] [--port 7717] [--once]
+alc init                      # scaffold chaos/quickstart.yaml
+```
+
+## The dashboard
+
+```bash
+alc dashboard --out .chaos            # or: alc run suite.yaml --dashboard
+```
+
+Stdlib only — no Flask, no npm, no build step, no external asset. It binds to
+localhost, is read-only (there is no handler for any method but `GET`), and tails
+`trace.jsonl` while a suite is still running.
+
+It opens on a **report view**: per run, in plain English, what we broke, what the agent
+did, what we wanted instead, how bad it is, how we know, and what to fix — with a
+button into the trace and a button that copies the work order. The **trace view** is
+one click away: a filterable, virtualised timeline where the injected faults are
+visually unmistakable, with before/after diffs, the exact prompts, the state at each
+step, and the verdict with clickable evidence links.
+
+`alc report .chaos --format html -o report.html` writes the same page as one
+self-contained file with the data inlined — no server, no network. That is the
+CI-artifact and share-a-finding path.
+
+## For coding agents
+
+This is what the library is for. Everything below is designed so a coding agent —
+Claude Code, Cursor, Codex, an in-house harness — can run it, read the result, fix the
+agent, and prove the fix, without a human in the loop.
+
+### The loop
+
+```bash
+alc run chaos/suite.yaml --judge rules --out .chaos   # 1. find what breaks
+alc report .chaos --format md -o findings.md          # 2. read every finding
+#                                                       3. fix the agent
+alc run chaos/suite.yaml --judge rules --out .chaos   # 4. prove it
+```
+
+`findings.md` is the whole hand-off: every failure's complete work order in one file.
+Each one states what was injected, what the agent did, the deterministic evidence, the
+exact file and line to start at, and what "fixed" means for that scenario. Nothing in
+it is invented at render time — every value is read from `report.json`.
+
+The dashboard's **Download all work orders** button produces the same file, and
+`GET /api/tasks.md` serves it if your harness would rather fetch than shell out.
+
+### Have the tool drive the loop for you
+
+```bash
+alc run chaos/suite.yaml --rounds 3 --judge rules
+```
+
+Between rounds it re-runs the whole suite and reports what flipped, what regressed,
+and — the one that matters — any scenario that started passing only after it was
+modified. It hashes the scenarios, the `must_not` lists and the probes between rounds,
+so **editing the test to make it pass is detected and reported as a regression, not a
+fix.** Exit code `4` means the harness itself was altered.
+
+### Reading the result programmatically
+
+```bash
+alc run chaos/suite.yaml --judge rules --json        # exactly one JSON object, nothing else
+```
+
+```jsonc
+{
+  "passed": 6,
+  "failed": 21,
+  "results": [
+    {
+      "scenario_id": "tool.unit_swap",
+      "title": "A tool answers in the wrong unit",
+      "success": false,
+      "failure_mode": "silent_wrong_answer",
+      "severity": "high",
+      "run_dir": ".chaos/tool.unit_swap/run-a0c8380e",
+      "agent_task": ".chaos/tool.unit_swap/run-a0c8380e/AGENT_TASK.md"
+    }
+  ]
+}
+```
+
+Or read the files directly — everything is schema-validated and stable:
+
+| Path | What to do with it |
+|---|---|
+| `.chaos/suite.json` | the summary. Poll it while a run is in flight; `status` goes `running` → `completed` |
+| `.chaos/<scenario>/<run>/AGENT_TASK.md` | **the work order.** Act on this one |
+| `.chaos/<scenario>/<run>/report.json` | the same finding, structured. `symptoms[]`, `assertions[]`, `code_pointers[]` |
+| `.chaos/<scenario>/<run>/trace.jsonl` | every event, if you need to see exactly what happened |
+
+`report.json` validates against [`schemas/chaos_report.schema.json`](schemas/), so a
+harness can rely on the field names. `code_pointers[]` gives `{file, line, symbol, why}`
+— usually the fastest way in.
+
+### Rules for an agent acting on a finding
+
+These are in every work order, and they are the difference between a fix and a
+laundered failure:
+
+1. **Fix the agent, not the test.** Do not edit the scenario, its `expect` block, its
+   `must_not` list, or the probes. The refinement loop hashes all three and reports a
+   pass that follows such an edit as a regression.
+2. **The fault stays injected.** "Passing" means the agent handles the injected fault,
+   not that the fault stopped happening.
+3. **Re-run before claiming success.** Same seed, same verdict — `alc replay <run_dir>`
+   re-runs exactly that experiment, and refuses rather than guessing if it cannot
+   reproduce the plan faithfully.
+4. **Sections marked *written by a language model* are advisory.** The verdict, the
+   symptoms and the assertions are computed; the narrative and the ranked fixes are a
+   hypothesis. Check them.
+
+### Adding it to a project's instructions
+
+Worth pasting into `CLAUDE.md`, `AGENTS.md`, or your harness's system prompt:
+
+```markdown
+## Chaos tests
+
+Run `alc run chaos/suite.yaml --judge rules` before claiming an agent change is done.
+Failures write a complete work order to `.chaos/<scenario>/<run>/AGENT_TASK.md`;
+`alc report .chaos --format md` collects them all into one file.
+
+Fix the agent, never the scenario or the probes — the tool detects that and reports it
+as a regression. Exit codes: 0 all passed, 1 a scenario failed, 2 usage, 3 internal,
+4 tampering.
+```
+
+## In CI
+
+Exit codes are the integration: `0` all passed, `1` a scenario failed, `2` config or
+usage error, `3` internal error, `4` tampering detected.
+
+```yaml
+# .github/workflows/chaos.yml
+- run: pip install "agent-loop-chaos[yaml]"
+- run: alc run chaos/suite.yaml --judge rules --out .chaos
+  # --judge rules makes no network call at all, so this is hermetic and reproducible.
+- if: always()
+  run: alc report .chaos --format html -o chaos-report.html
+- if: always()
+  uses: actions/upload-artifact@v4
+  with: { name: chaos-report, path: chaos-report.html }
+```
+
+`--json` prints exactly one JSON object to stdout and nothing else, so a gate can be a
+one-liner:
+
+```bash
+alc run chaos/suite.yaml --judge rules --json | jq -e '.failed == 0'
+```
+
+`suite.json` is the machine-readable summary, written at suite start and updated after
+every scenario, atomically — so a job can poll it while the run is in flight.
+
+## In pytest
+
+The whole API is importable, so a chaos run can be an ordinary test:
+
+```python
+import pytest
+from agent_loop_chaos import ChaosEngine
+from agent_loop_chaos.faults import ToolCorruptionFault
+
+@pytest.mark.parametrize("mutation", ["drop_key", "type_flip", "empty_json", "unit_swap"])
+def test_the_agent_survives_a_broken_tool(mutation, tmp_path):
+    engine = ChaosEngine(seed=1337, out_dir=tmp_path, judge="rules")
+    engine.register_fault(ToolCorruptionFault(mutation_type=mutation),
+                          target_tool="get_weather")
+    result = engine.run(build_agent(engine), inputs="what should I pack for Paris?")
+    assert result.success, result.failure_mode
+```
+
+Or run a whole suite and assert on the aggregate:
+
+```python
+from agent_loop_chaos.loop import run_suite
+from agent_loop_chaos import load_suite
+
+def test_the_chaos_suite_passes(tmp_path):
+    suite = load_suite("chaos/suite.yaml")
+    results = run_suite(suite.scenarios, out_dir=tmp_path, judge="rules")
+    failed = [r.scenario_id for r in results if not r.success]
+    assert not failed, failed
+```
+
+Same seed, same verdict: a chaos test is as reproducible as any other unit test,
+provided the agent itself is deterministic ([D-07](docs/DECISIONS.md) states the exact
+boundary).
+
 ## Status
 
-Pre-alpha, version 0.1.0. The engine, 27 faults, 20 probes, the assertions layer, the
-judges, the refinement loop and the demo agent are implemented and tested. The live
-dashboard is v0.2.0. See [docs/08-ROADMAP.md](docs/08-ROADMAP.md).
+Pre-alpha, version 0.1.0. Everything described above is implemented and tested: the
+engine, 28 faults, 20 probes, the assertions layer, the judges, the refinement loop,
+the two demo agents, the eight-shape conformance pool, and the live dashboard with its
+single-file HTML export. See [docs/08-ROADMAP.md](docs/08-ROADMAP.md).
 
 - [FAQ](docs/FAQ.md) — why not evals, how to add a fault, how to run offline, what to
   do when a probe has a false positive

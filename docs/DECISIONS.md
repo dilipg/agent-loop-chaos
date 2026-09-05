@@ -1879,3 +1879,46 @@ as an example is also documentation.
 Matrix expansion appends the axis value to the title as well as to the id. Four
 products reading "Hidden instructions arrive inside retrieved content" is a wall, not
 a listing; the id shape stays exactly as D-15 fixes it.
+
+### D-121 — The README is the library's front door, and it is tested
+*2026-09-05. Affects `README.md`, `CLAUDE.md`, `docs/02-API.md` §10.*
+
+`README.md` was written when this repository was a spec pack with no code, and
+`CLAUDE.md` still described it as "a build handover document". Eleven phases later that
+was wrong, and a reader arriving at the project got positioning where they needed
+integration.
+
+It is now the library's front door: install, integration by agent shape, the entrypoint
+contract, scenario syntax with targeting and triggers, presets, intensity, the fault
+catalog, output layout, the dashboard, a section for coding agents, CI, and pytest.
+
+Two things went stale silently before this: the fault count and the demo suite's
+numbers. Both are now asserted — `tests/test_readme_snippets.py` checks the fault
+count, the probe count, every preset name, every CLI subcommand and the demo suite's
+size against the code, and runs every integration snippet verbatim. Changing the
+catalog or the CLI surface fails there until the README is updated with it.
+
+Reviewing it found two real defects rather than only prose problems: `tool_calls[]`
+entries are keyed `tool`, not `name`, so a snippet reading `c["name"]` would have
+raised; and the documented `--json` shape named `severity` and `agent_task`, which
+`alc run --json` did not emit. The fields were added rather than the documentation
+trimmed — the path to the work order is the single most useful thing a harness can be
+handed.
+
+### D-122 — Getting the work orders out in one piece
+*2026-09-05. Affects `docs/10-DASHBOARD.md` §5/§7, `docs/04-SCHEMAS.md` §9.*
+
+`AGENT_TASK.md` is the product, and a reader looking at twenty-one failures needs the
+whole set as one file they can hand over — not twenty-one clicks, and not a
+copy-to-clipboard that loses everything after the first.
+
+`GET /api/tasks.md` concatenates every failing run's work order, newest problem first,
+behind a short header saying what the file is and the rule that matters (fix the agent,
+not the scenario). The report view offers it as **Download all work orders**;
+`alc report <out_dir> --format md` writes the identical file from the terminal.
+
+Two safety points, both tested. `Content-Disposition` is only ever built from an
+allow-listed artifact name — the `?download=1` flag decides *whether* to attach, never
+what to call the file, so a filename cannot be smuggled through the query string. And a
+passing run contributes nothing: a work order is written for a failure, and a pass has
+nothing to hand over.

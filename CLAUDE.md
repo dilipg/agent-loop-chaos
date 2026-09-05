@@ -34,8 +34,12 @@ When two documents disagree, higher wins:
 5. `SAFETY.md` — gates that must exist in code, not just in prose.
 6. Everything else in `docs/`.
 
-`README.md` describes the *pack*, not the library's users — it is a build handover
-document. `docs/00-VISION.md` holds positioning and the v0.1 non-goals.
+`README.md` is now the **library's** front door — install, integration, scenario
+syntax, CLI, CI and pytest usage — not a build handover document. Its snippets and its
+numbers are tested (`tests/test_readme_snippets.py`), so changing the fault catalog,
+the probe list, the presets, the CLI surface or the demo suite's size will fail there
+until the README is updated with it. `docs/00-VISION.md` holds positioning and the v0.1
+non-goals.
 
 ## Commands
 

@@ -409,9 +409,15 @@ def _run(args: argparse.Namespace) -> int:
                     "results": [
                         {
                             "scenario_id": r.scenario_id,
+                            # The human name and the path to the work order: a harness
+                            # reading this wants to know what broke and what to open,
+                            # without a second pass over the filesystem.
+                            "title": r.scenario_title,
                             "success": r.success,
                             "failure_mode": r.failure_mode,
+                            "severity": r.severity,
                             "run_dir": r.artifacts.get("run_dir"),
+                            "agent_task": r.artifacts.get("agent_task"),
                         }
                         for r in results
                     ],
@@ -646,12 +652,45 @@ def _report(args: argparse.Namespace) -> int:
             print(page)
         return EXIT_OK
 
-    report, _path = _load_report(Path(args.path))
+    path = Path(args.path)
+    if args.format == "md" and not (path / "report.json").is_file() and path.is_dir():
+        # A suite directory: every failing run's work order, as one file. This is the
+        # terminal twin of the dashboard's "download all work orders", and the thing
+        # you actually hand to a coding agent.
+        from .dashboard import api
+        from .dashboard.watcher import RunDirWatcher
+
+        watcher = RunDirWatcher(path)
+        watcher.poll()
+        body, _ctype = api.tasks(watcher)
+        return _emit(body, args.output)
+
+    report, _path = _load_report(path)
     if args.format == "json":
         print(json.dumps(report, indent=2, sort_keys=True))
         return EXIT_OK
     rendered = render_agent_task(ChaosResult.from_dict(report))
-    print(rendered or f"# {report.get('scenario_id')}\n\nThis run passed; no work order.")
+    return _emit(
+        rendered or f"# {report.get('scenario_id')}\n\nThis run passed; no work order.",
+        args.output,
+    )
+
+
+def _emit(body: str, output: str | None) -> int:
+    """Write a rendered document to a file or to stdout.
+
+    Args:
+        body: The document.
+        output: A path, or `None` for stdout.
+
+    Returns:
+        `EXIT_OK`.
+    """
+    if output:
+        Path(output).write_text(body, encoding="utf-8")
+        print(f"wrote {output}", file=sys.stderr)
+    else:
+        print(body)
     return EXIT_OK
 
 

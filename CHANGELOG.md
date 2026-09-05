@@ -9,6 +9,32 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+### A README you can integrate from, and a one-click hand-off
+
+**D-121.** `README.md` was written when this repository was a spec pack with no code.
+It is now the library's front door: install, integration by agent shape (plain Python,
+an agent class, LangGraph, async), the entrypoint contract, scenario syntax with
+targeting and triggers, presets, intensity, output layout, the dashboard, **a section
+for coding agents**, CI, and pytest.
+
+Its snippets and its numbers are now tested. `tests/test_readme_snippets.py` runs every
+integration snippet verbatim and checks the fault count, the probe count, every preset
+name, every CLI subcommand and the demo suite's size against the code — changing the
+catalog or the CLI surface fails there until the README is updated with it.
+
+Reviewing it found two real defects, not just stale prose: `tool_calls[]` entries are
+keyed `tool`, not `name`; and `alc run --json` did not emit `severity` or `agent_task`.
+The fields were added — the path to the work order is the most useful thing a harness
+can be handed. `--json` results now carry `title`, `severity`, `run_dir` and
+`agent_task`.
+
+**D-122.** `GET /api/tasks.md` concatenates every failing run's work order into one
+file, behind a header saying what it is and the rule that matters. The report view
+offers it as **Download all work orders**; `alc report <out_dir> --format md` writes the
+identical file from the terminal. `Content-Disposition` is built only from an
+allow-listed artifact name, so `?download=1` decides whether to attach and never what
+to call the file.
+
 ### Runs say what they were, not only what they are called
 
 **D-120.** `pattern.async_agent.fixed` names a directory and feeds `--filter`, and
