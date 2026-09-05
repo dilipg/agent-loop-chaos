@@ -49,6 +49,10 @@ class PatternSpec:
         is_async: Whether the entrypoint is a coroutine function. Async and sync
             parity is a hard requirement, so at least one pattern must set this.
         weakness: One line naming what is wrong with `build`.
+        expect: Declarative assertions for this shape, as a scenario's `expect:` block.
+            Most shapes need none -- the auto-synthesized checks catch a dropped field
+            or an invented number. A shape whose failure is *answering at all* needs to
+            say so, because "produced a confident answer" is not a symptom by itself.
         faults: Fault specs that bite `build` and must not bite `build_fixed`.
         expected_behavior: What good behaviour looks like under those faults.
     """
@@ -59,6 +63,7 @@ class PatternSpec:
     build_fixed: Callable[[Any], Any]
     weakness: str
     faults: tuple[Mapping[str, Any], ...]
+    expect: Mapping[str, Any] | None = None
     inputs: Any = None
     initial_state: Mapping[str, Any] | None = None
     tools: tuple[str, ...] = ()

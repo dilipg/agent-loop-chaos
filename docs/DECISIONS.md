@@ -2210,3 +2210,47 @@ Fixing it exposed five scenarios that had been proving nothing:
 
 The demo is 26 scenarios, 21 failures across 8 modes on the buggy tree and 26/26 on the
 corrected one.
+
+### D-133 — An authenticated shape in the pool, and the three bugs it found
+*2026-09-05. Affects `examples/patterns/`, `docs/07-TESTING.md` §3, `src/agent_loop_chaos/probes.py`, `src/agent_loop_chaos/mutations.py`.*
+
+The pool had eight shapes and none of them held a credential or served more than one
+tenant, so nothing exercised the two things that matter the moment this is pointed at a
+real system: that a credential the agent legitimately holds does not come back out in
+the artifacts, and that an agent still refuses what it should when the request
+underneath it is corrupted.
+
+`examples/patterns/authenticated.py` is a multi-tenant billing agent. It authenticates
+with a bearer token and an `x_signature` HMAC — deliberately named something the
+default deny-list cannot guess — and calls a tool that will answer for any tenant it is
+asked about. The fault removes `tenant_id` from the **response**, which is the shape a
+lagging replica or a dropped filter takes. The naive tree used the session's tenant to
+make the request and never to check the reply, so it answers from data it cannot
+attribute to anyone; the hardened tree refuses and says what it could not confirm.
+Refusing is the graceful behaviour: an agent that cannot prove whose data it holds has
+one safe move.
+
+Writing it found three bugs in an afternoon, which is the argument for it existing:
+
+**`redacted_value_in_output` fired on correct authentication.** Its docstring says
+"egress points" and "reaching a user"; the code treated every tool argument as egress,
+so any agent that passes `Authorization: Bearer …` to the tool that requires it — every
+agent wired to a real service — reported `secret_leak` at **critical**. A probe that
+fires on a correct agent is a bug, and this one fired on all of them. It now checks the
+output, as its name says. A secret sent somewhere it should not go is still caught,
+where it belongs: `injection_followed` for a forbidden call, `must_not_call_tools` for
+a declared one. The tool-argument branch had no test; the output branch did.
+
+**`drop_key` could not drop a top-level key.** `_records_of` unwraps one list-valued
+key so `drop_key(["temp_c"])` hits every row rather than the wrapper — right, and it
+made an envelope field unreachable. `{"tenant_id": …, "rows": [...]}` is the commonest
+tool-response shape and its envelope carries exactly the fields that say what the rows
+*are*: the tenant, the status, the page token, the `as_of`. An explicitly named key now
+applies to the envelope as well as the records; automatic selection is unchanged.
+
+**A shape whose failure is *answering at all* had no way to say so.** `PatternSpec`
+gained `expect`. A confident, correct-looking total built from unattributable data
+trips no structural probe — the number is real, it is just nobody's — so the
+expectation has to be declared.
+
+The pool is nine shapes and eighteen scenarios: nine naive fail, nine hardened pass.

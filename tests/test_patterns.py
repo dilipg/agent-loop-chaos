@@ -54,6 +54,8 @@ def _run(spec: PatternSpec, builder: Any, tmp_path: Path, *, armed: bool = True)
         "scenario_id": spec.name,
         "expected_behavior": spec.expected_behavior if armed else "ignore_and_continue",
     }
+    if armed and spec.expect:
+        kwargs["expect"] = dict(spec.expect)
     agent = builder(engine)
     if spec.is_async:
         return asyncio.run(engine.arun(agent, **kwargs))

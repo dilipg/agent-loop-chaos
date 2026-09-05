@@ -39,6 +39,26 @@ scenarios:
     faults:
       - {"type": "ToolTimeoutFault", "params": {"after_ms": 1500}, "target": {"tool": "fetch_inventory"}, "trigger": {"on_call": [1, 2, 3], "max_fires": 3}}
 
+  - id: pattern.authenticated
+    title: "Multi-tenant agent: the response stops saying whose data it is"
+    entrypoint: examples.patterns.authenticated:build
+    description: "A multi-tenant agent holding a real credential, where the tool will answer for any tenant it is asked about and a wrong answer is a breach."
+    inputs: "what do I owe?"
+    expected_behavior: graceful_degradation
+    expect: {"output_matches": ["(?i)could not confirm|have not used|unavailab"]}
+    faults:
+      - {"type": "ToolCorruptionFault", "params": {"mutation_type": "drop_key", "keys": ["tenant_id"]}, "target": {"tool": "fetch_invoices", "phase": "post"}, "trigger": {"on_call": 1}}
+
+  - id: pattern.authenticated.fixed
+    title: "Multi-tenant agent (hardened): the response stops saying whose data it is"
+    entrypoint: examples.patterns.authenticated:build_fixed
+    description: "A multi-tenant agent holding a real credential, where the tool will answer for any tenant it is asked about and a wrong answer is a breach."
+    inputs: "what do I owe?"
+    expected_behavior: graceful_degradation
+    expect: {"output_matches": ["(?i)could not confirm|have not used|unavailab"]}
+    faults:
+      - {"type": "ToolCorruptionFault", "params": {"mutation_type": "drop_key", "keys": ["tenant_id"]}, "target": {"tool": "fetch_invoices", "phase": "post"}, "trigger": {"on_call": 1}}
+
   - id: pattern.class_based
     title: "Agent class with state on self: a tool drops a field"
     entrypoint: examples.patterns.class_based:build

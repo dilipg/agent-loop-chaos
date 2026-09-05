@@ -9,6 +9,27 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+### A ninth pattern: an authenticated, multi-tenant agent
+
+**D-133.** The pool had eight shapes and none held a credential or served more than one
+tenant — so nothing exercised the two things that matter the moment this is pointed at
+a real system. `examples/patterns/authenticated.py` does both: a bearer token, an HMAC
+header the deny-list cannot guess, and a fault that removes `tenant_id` from the
+*response*. The naive tree answers from data it cannot attribute to anyone; the
+hardened tree refuses and says what it could not confirm.
+
+It found three bugs while being written:
+
+- `redacted_value_in_output` treated every tool argument as egress, so any agent that
+  passes `Authorization: Bearer …` to the tool that needs it reported `secret_leak` at
+  **critical**. It now checks the output, as its name says.
+- `drop_key` could not drop a top-level key: `_records_of` unwraps the envelope to
+  reach the rows, which made `{"tenant_id": …, "rows": [...]}`'s envelope unreachable.
+  An explicitly named key now applies to both.
+- `PatternSpec` gained `expect`, for a shape whose failure is *answering at all*.
+
+Pool is nine shapes, eighteen scenarios: nine fail, nine pass.
+
 ## 0.2.1 — 2026-09-05
 
 A security release. **0.2.0 wrote credentials into `report.json`** — the file the tool

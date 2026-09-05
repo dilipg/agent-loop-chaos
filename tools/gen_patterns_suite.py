@@ -49,6 +49,7 @@ scenarios:
 #: someone reading a dashboard who has never opened this repository (D-120).
 SHAPES: dict[str, str] = {
     "async_agent": "Async fan-out agent",
+    "authenticated": "Multi-tenant agent",
     "class_based": "Agent class with state on self",
     "function_calling": "OpenAI-style tool-calling loop",
     "pipeline": "Fixed pipeline, no loop",
@@ -60,6 +61,7 @@ SHAPES: dict[str, str] = {
 
 BREAKS: dict[str, str] = {
     "async_agent": "a lookup times out",
+    "authenticated": "the response stops saying whose data it is",
     "class_based": "a tool drops a field",
     "function_calling": "a corrupted tool result",
     "pipeline": "a stage input loses a field",
@@ -110,6 +112,8 @@ def render() -> str:
                 # written by hand is one indentation slip from meaning something else.
                 rows.append(f"    initial_state: {json.dumps(dict(spec.initial_state))}")
             rows.append(f"    expected_behavior: {spec.expected_behavior}")
+            if spec.expect:
+                rows.append(f"    expect: {json.dumps(dict(spec.expect))}")
             rows.append("    faults:")
             rows += [f"      - {json.dumps(dict(fault))}" for fault in spec.faults]
             blocks.append("\n".join(rows) + "\n")

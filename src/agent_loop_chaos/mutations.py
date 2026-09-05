@@ -229,8 +229,16 @@ def _apply_to_paths(
     if not copied:
         return working
     records = _records_of(working)
+    keys = params.get("keys")
+    if keys is not None and isinstance(working, dict) and working not in records:
+        # An explicitly named key also applies to the envelope. `_records_of` unwraps
+        # one list-valued key so `drop_key(["temp_c"])` hits every row rather than the
+        # wrapper -- right for a row field, and it made an envelope field such as
+        # `tenant_id`, `status` or `as_of` unreachable (D-133). Automatic selection is
+        # unchanged: with no `keys`, the records are still the target.
+        records = [working, *records]
     paths = _choose_paths(
-        records, params.get("keys"), int(params.get("count", 1)), int(params.get("depth", 3)), rng
+        records, keys, int(params.get("count", 1)), int(params.get("depth", 3)), rng
     )
     for record in records:
         for path in paths:

@@ -228,3 +228,43 @@ def test_duplicate_side_effect_fires_when_the_idempotency_key_repeats() -> None:
     ]
     ctx = probe_ctx(tool_registry=side_effecting("charge", idempotency_arg="idem"))
     assert fired("duplicate_side_effect", run_probes(trace, ctx))
+
+
+def test_redacted_value_in_output_ignores_a_credential_passed_to_a_tool() -> None:
+    """Authenticating to your own backend is not egress (D-133).
+
+    The probe treated every tool argument as an egress point, so any agent that
+    passes `Authorization: Bearer …` to the tool that requires it -- which is every
+    agent wired to a real service -- reported `secret_leak` at critical severity. A
+    probe that fires on a correct agent is a bug, and this one fired on all of them.
+    """
+    trace = tool_pair(
+        1,
+        "fetch_invoices",
+        {"tenant_id": "acme", "authorization": "<redacted:authorization>"},
+        {"rows": []},
+    )
+    assert not fired("redacted_value_in_output", run_probes(trace, probe_ctx()))
+
+
+def test_redacted_value_in_output_still_fires_when_it_reaches_the_answer() -> None:
+    """The case the probe exists for is unchanged: it left the system."""
+    trace = tool_pair(
+        1, "fetch_invoices", {"authorization": "<redacted:authorization>"}, {"rows": []}
+    )
+    ctx = probe_ctx(final_output="Your key is <redacted:api_key>.")
+    assert fired("redacted_value_in_output", run_probes(trace, ctx))
+
+
+def test_the_probe_name_matches_what_it_checks() -> None:
+    """`redacted_value_in_output` fires on the output. Anything else needs a rename."""
+    import inspect
+
+    from agent_loop_chaos.probes import PROBES
+
+    probe = next(p for p in PROBES if p.code == "redacted_value_in_output")
+    source = inspect.getsource(type(probe))
+    assert "tool_requests(" not in source, (
+        "the probe reads tool calls again; either it fires on non-egress or it needs "
+        "a name that says so"
+    )

@@ -519,3 +519,59 @@ def test_an_envelope_with_several_lists_is_left_alone() -> None:
     """Guessing which list holds the records would be worse than doing nothing."""
     payload = {"a": [{"x": 1}], "b": [{"x": 2}]}
     assert MUTATIONS["drop_key"](payload, rng(), keys=["x"]) == payload
+
+
+class TestAnExplicitKeyReachesTheEnvelope:
+    """D-133: `{"tenant_id": …, "rows": [...]}` is the commonest tool-response shape,
+    and its envelope carries the fields that say what the rows *are* -- the tenant, the
+    status, the page token, the `as_of` timestamp.
+
+    `_records_of` unwraps one list-valued key so that `drop_key(["temp_c"])` hits every
+    row rather than the wrapper, which is right. It also made an envelope-level key
+    unreachable: `drop_key(["tenant_id"])` reported "applied drop_key but nothing
+    changed" and, before D-132, counted that as a fire.
+
+    An *explicitly named* key now applies to the envelope as well as the rows. Keys
+    chosen automatically still target the records, because that is the useful default.
+    """
+
+    def _drop(self, payload: Any, **params: Any) -> Any:
+        import copy
+
+        from agent_loop_chaos.mutations import MUTATIONS
+        from agent_loop_chaos.seeding import rng
+
+        return MUTATIONS["drop_key"](copy.deepcopy(payload), rng(1337, "t"), **params)
+
+    def test_a_named_envelope_key_is_dropped(self) -> None:
+        result = self._drop({"tenant_id": "acme", "rows": [{"a": 1}]}, keys=["tenant_id"])
+        assert "tenant_id" not in result
+        assert result["rows"] == [{"a": 1}], "the rows must be left alone"
+
+    def test_a_named_row_key_still_reaches_every_row(self) -> None:
+        result = self._drop(
+            {"rows": [{"temp_c": 1, "b": 2}, {"temp_c": 3, "b": 4}]}, keys=["temp_c"]
+        )
+        assert result["rows"] == [{"b": 2}, {"b": 4}]
+
+    def test_a_key_on_both_is_dropped_from_both(self) -> None:
+        result = self._drop(
+            {"tenant_id": "acme", "rows": [{"tenant_id": "acme", "a": 1}]}, keys=["tenant_id"]
+        )
+        assert "tenant_id" not in result
+        assert result["rows"] == [{"a": 1}]
+
+    def test_a_bare_list_is_unaffected(self) -> None:
+        result = self._drop([{"temp_c": 1}, {"temp_c": 2}], keys=["temp_c"])
+        assert result == [{}, {}]
+
+    def test_a_key_that_is_not_there_changes_nothing(self) -> None:
+        payload = {"tenant_id": "acme", "rows": [{"a": 1}]}
+        assert self._drop(payload, keys=["nope"]) == payload
+
+    def test_an_automatically_chosen_key_still_targets_the_records(self) -> None:
+        """Unchanged: with no `keys`, the envelope is still unwrapped."""
+        payload = {"rows": [{"a": 1, "b": 2}, {"a": 3, "b": 4}]}
+        result = self._drop(payload, count=1)
+        assert "rows" in result, "the envelope key was chosen instead of a record key"
+        assert all(len(row) == 1 for row in result["rows"])

@@ -318,12 +318,13 @@ Keeping `engine=None` the default means the same function serves production and 
 chaos run, so the thing being tested is the thing you ship.
 
 **Does it work on your shape?** [`examples/patterns/`](examples/patterns/) is a
-conformance pool of eight shapes people actually ship — a ReAct text loop, an
+conformance pool of nine shapes people actually ship — a ReAct text loop, an
 OpenAI-style tool-calling loop, an async agent with a `gather` fan-out, a class with
 state on `self`, a supervisor delegating to specialists, a fixed pipeline with no agent
-loop at all, a streaming accumulator, and a retrieve-rerank-generate chain. Each has a
-naive tree and a hardened twin, and all sixteen run through the same battery in CI:
-the eight naive ones fail, the eight hardened ones pass.
+loop at all, a streaming accumulator, a retrieve-rerank-generate chain, and a
+multi-tenant agent holding a real credential. Each has a naive tree and a hardened
+twin, and all eighteen run through the same battery in CI: the nine naive ones fail,
+the nine hardened ones pass.
 
 ```bash
 alc run examples/scenarios/patterns_suite.yaml --judge rules
@@ -514,8 +515,8 @@ secret_leak                      1
 Five scenarios pass on the buggy tree. That is the honest number: an agent is not
 broken by every fault, and a suite that failed everything would be measuring itself.
 
-The pattern pool splits the same way, across eight unrelated loop shapes: eight naive
-agents fail, eight hardened twins pass, same faults, same seeds.
+The pattern pool splits the same way, across nine unrelated loop shapes: nine naive
+agents fail, nine hardened twins pass, same faults, same seeds.
 
 ## How pass/fail is decided
 
