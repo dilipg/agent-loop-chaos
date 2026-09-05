@@ -2146,3 +2146,67 @@ and no job carries `continue-on-error` or `|| true`.
 
 Verified by reproducing all three jobs locally in clean venvs, and the test matrix on
 3.10, 3.11, 3.12 and 3.13.
+
+### D-131 — The report redacts what the trace redacts
+*2026-09-05. Affects `SAFETY.md` §2, `CLAUDE.md`, `docs/04-SCHEMAS.md` §9.*
+
+`CLAUDE.md` states the invariant: *every payload passes through `redact.py` before
+serialization*. `TraceRecorder` honoured it. `report.tool_calls[]` and
+`report.llm_exchanges[]` are assembled in the engine and did not, so a bearer token in
+a tool's keyword arguments was masked in `trace.jsonl` and printed in full in the
+report beside it — and `report.json` is the file written to be attached to tickets and
+handed to coding agents.
+
+`ChaosEngine._scrub` now applies the same deny-list, the same `redact_keys`, and the
+same canary exemption to both blocks. Redaction, not deletion: the argument name
+survives so a reader can still see the call was authenticated.
+
+Two related findings from the same investigation:
+
+**The `sk-` value pattern missed every modern key.** It required 16 alphanumerics
+straight after `sk-`, and every current provider issues prefixed keys — `sk-proj-`,
+`sk-ant-api03-`, `sk-live-`, `rk-test-` — where a hyphen appears four characters in.
+The pattern now allows up to three short segments before a long alphanumeric tail, and
+tests pin both directions: the five real prefixed shapes are caught, and
+`task-management-system`, `risk-assessment-report-2026` and `the risk-free rate` are
+left alone, because a pattern loose enough to catch prose redacts the evidence.
+
+**A custom credential name still leaks, by design.** The deny-list cannot guess
+`x_signature`. `ChaosEngine(redact_keys=["x_signature"])` closes it, and a test asserts
+both the leak without it and the fix with it, so the behaviour is stated somewhere
+executable rather than only in prose.
+
+The engine itself never holds a credential: it wraps the agent's callables and the
+agent authenticates exactly as it does in production. A test asserts no `ChaosEngine`
+parameter is capable of carrying one.
+
+### D-132 — A mutation that changed nothing is not a fire
+*2026-09-05. Affects `docs/11-OUTCOMES-AND-ASSERTIONS.md`, D-64, D-95, D-109.*
+
+Third in the family. A fault whose mutation produced an empty patch recorded
+`fired: true` alongside its own note saying *"applied drop_key but nothing changed"*.
+That inflates `suite.json`'s `coverage`, which is read as "this fault kind was
+exercised", and it suppresses the "nothing fired, this scenario proves nothing" warning
+for a run that proved nothing.
+
+It is easy to hit against a real agent: `ArgumentTamperFault(arg_names=["tenant_id"])`
+finds nothing to tamper with when the agent passes `tenant_id` positionally. Faults
+that legitimately record no mutation — `ToolErrorFault` raising, `ToolLatencyFault`
+delaying — are unaffected, as is `NoopFault`, whose `noop_is_a_fire` already says
+reaching the crossing *is* the observation.
+
+Fixing it exposed five scenarios that had been proving nothing:
+
+- `context.middle_out_shrink` shrank "from 1 to 1 messages, ~0 tokens removed" — the
+  demo agent renders one message per model call, so a middle-out shrink has nothing
+  between the ends to remove. Removed from the demo suite; the fault is still swept by
+  `tests/test_full_catalog.py`.
+- `state.misroute_edge` "misrouted the edge out of 'summarize' to 'respond' instead of
+  'respond'" — it forced the router to the destination it was already taking. Now
+  `plan -> ask_clarify`, which skips every data-fetching node.
+- Three cases in the revenue-review matrix: `unit_swap` (no unit-bearing field in that
+  agent), `context_shrink` (same one-message shape) and `loop_trap` (`query_invoices`
+  is called once, so pinning its result to itself changes nothing).
+
+The demo is 26 scenarios, 21 failures across 8 modes on the buggy tree and 26/26 on the
+corrected one.

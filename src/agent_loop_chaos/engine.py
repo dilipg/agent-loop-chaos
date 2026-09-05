@@ -63,6 +63,7 @@ from .faults.base import (
 from .intensity import DEFAULT_LEVEL, profile
 from .metrics import compute_delta, compute_metrics
 from .probes import ProbeContext, run_probes
+from .redact import redact
 from .report import ChaosResult, assemble, extract_code_context
 from .seeding import canonical_json, sha256_of
 from .targeting import Target, Trigger, matches, should_fire
@@ -1169,8 +1170,24 @@ class ChaosEngine:
             # Checked here rather than where a terminal action is resolved: that
             # happens after this loop, and by then the fire is already recorded.
             unsupported = not _action_is_performable(outcome.action, crossing.layer)
-            if unsupported or (
-                outcome.action == "noop" and not outcome.delay_ms and not armed.fault.noop_is_a_fire
+            # A mutation whose patch is empty changed nothing -- its own note says so.
+            # Easy to hit against a real agent: `arg_names=["tenant_id"]` finds nothing
+            # to tamper with when the agent passes it positionally (D-132).
+            inert = (
+                outcome.mutation is not None
+                and not outcome.mutation.json_patch
+                and not outcome.mutation.unrepresentable
+                and not outcome.mutation.mutation_skipped_uncopyable
+                and not armed.fault.noop_is_a_fire
+            )
+            if (
+                unsupported
+                or inert
+                or (
+                    outcome.action == "noop"
+                    and not outcome.delay_ms
+                    and not armed.fault.noop_is_a_fire
+                )
             ):
                 # The fault ran and correctly decided to do nothing -- inside its rate
                 # budget, at a node it does not target, on a response with no tool
@@ -2329,9 +2346,14 @@ class ChaosEngine:
                     "step": crossing.step,
                     "tool": crossing.name,
                     "call_index": crossing.call_index,
-                    "args": list(crossing.args),
-                    "kwargs": dict(crossing.kwargs),
-                    "result": result,
+                    # Redacted here, not only in the trace. `report.json` and the work
+                    # order rendered from it are written to be attached to tickets and
+                    # handed to coding agents, and an agent under test holds real
+                    # credentials -- a bearer token in a tool's keyword arguments was
+                    # masked in `trace.jsonl` and printed in full beside it (D-131).
+                    "args": self._scrub(list(crossing.args)),
+                    "kwargs": self._scrub(dict(crossing.kwargs)),
+                    "result": self._scrub(result),
                     "ok": ok,
                     "error": error,
                     "duration_ms": int(duration_ms),
@@ -2345,13 +2367,30 @@ class ChaosEngine:
                 {
                     "step": crossing.step,
                     "llm": crossing.name,
-                    "exact_prompt": _render_prompt(messages),
-                    "messages": messages,
-                    "raw_response": None if result is None else str(result)[:8000],
+                    "exact_prompt": self._scrub(_render_prompt(messages)),
+                    "messages": self._scrub(messages),
+                    "raw_response": None if result is None else self._scrub(str(result)[:8000]),
                     "finish_reason": None if ok else "error",
                     "faulted": faulted,
                 }
             )
+
+    def _scrub(self, payload: Any) -> Any:
+        """Mask known secret shapes on their way into the report.
+
+        The trace gets this from `TraceRecorder`; the report's `tool_calls[]` and
+        `llm_exchanges[]` blocks are assembled here and need it too. Same deny-list,
+        same extra keys, same canary exemption -- a divergence between the two would
+        be a leak in whichever one was forgotten.
+
+        Args:
+            payload: Anything about to be recorded.
+
+        Returns:
+            The payload with known secrets replaced by a labelled placeholder.
+        """
+        state = self._state()
+        return redact(payload, self.redact_keys, allow=(state.ctx.canary,))
 
     def _error_phase(self, crossing: Crossing, exc: BaseException, started: float) -> Any:
         """Emit the error event and route the error crossing.

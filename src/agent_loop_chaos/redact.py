@@ -30,7 +30,12 @@ DEFAULT_KEY_PATTERNS: tuple[tuple[str, str], ...] = (
 
 # Value shapes that are secrets wherever they appear, whatever the key is called.
 DEFAULT_VALUE_PATTERNS: tuple[tuple[str, str], ...] = (
-    ("openai_key", r"sk-[A-Za-z0-9]{16,}"),
+    # Every current provider issues *prefixed* keys -- `sk-proj-`, `sk-ant-api03-`,
+    # `sk-live-`, `rk-test-`. A pattern demanding 16 alphanumerics straight after
+    # `sk-` is defeated by a hyphen four characters in, which is where the real keys
+    # put one. Segments are allowed, and the tail must still be long and alphanumeric
+    # so that "task-management-system" and "risk-assessment-report" stay readable.
+    ("openai_key", r"\b[sr]k-(?:[A-Za-z0-9]{2,12}-){0,3}[A-Za-z0-9]{16,}\b"),
     ("github_token", r"ghp_[A-Za-z0-9]{20,}"),
     ("aws_access_key", r"AKIA[0-9A-Z]{16}"),
     ("slack_token", r"xox[bap]-[A-Za-z0-9-]+"),

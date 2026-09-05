@@ -163,19 +163,6 @@ scenarios:
         params: { mode: missing_required, required: [packing_list] }
 
   # --------------------------------------------------------------- long horizon
-  - id: context.middle_out_shrink
-    title: "The middle of the conversation is dropped"
-    description: Context halved from step 3 onward; does the objective survive?
-    expect:
-      # The objective is in the middle of the conversation, which is what a
-      # middle-out shrink takes first.
-      output_mentions_any: ["Paris"]
-    faults:
-      - type: ContextShrinkFault
-        target: { llm: default }
-        trigger: { after_step: 3, max_fires: null }
-        params: { keep_ratio: 0.4, strategy: middle_out }
-
   - id: context.conflicting_instruction
     title: "A contradictory instruction appears mid-conversation"
     faults:
@@ -282,12 +269,16 @@ scenarios:
 
   - id: state.misroute_edge
     title: "The agent is sent down the wrong branch"
-    description: The router sends the run straight to the answer, skipping the data.
+    description: >
+      The router is forced down the clarify branch, so every data-fetching node is
+      skipped. `summarize -> respond` was the previous destination and is also where
+      the router already goes, so it changed nothing and the scenario proved nothing
+      (D-132).
     faults:
       - type: EdgeMisrouteFault
         target: { layer: edge, phase: pre }
         trigger: { on_call: 1 }
-        params: { from_node: summarize, force_to: respond }
+        params: { from_node: plan, force_to: ask_clarify }
 
   # ------------------------------------------------------------------ resume safety
   - id: resume.checkpoint_rollback

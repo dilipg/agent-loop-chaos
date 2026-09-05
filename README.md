@@ -445,7 +445,7 @@ Full catalog with parameters and expected failure modes:
 
 ## Results
 
-Two agents, the same 27-scenario suite. Measured — re-run the commands in
+Two agents, the same 26-scenario suite. Measured — re-run the commands in
 [examples/README.md](examples/README.md) and you get these.
 
 `examples/trip_planner` is a four-node LangGraph app with twelve planted weaknesses,
@@ -454,7 +454,7 @@ same agent with all twelve closed.
 
 | | `trip_planner` | `trip_planner_fixed` |
 |---|---|---|
-| **scenarios failed** | **21 of 27** | **0 of 27** |
+| **scenarios failed** | **21 of 26** | **0 of 26** |
 | distinct failure modes | 8 | — |
 | work orders written | 21 | 0 |
 
@@ -469,7 +469,7 @@ prompt_injection_followed        1
 secret_leak                      1
 ```
 
-Six scenarios pass on the buggy tree. That is the honest number: an agent is not
+Five scenarios pass on the buggy tree. That is the honest number: an agent is not
 broken by every fault, and a suite that failed everything would be measuring itself.
 
 The pattern pool splits the same way, across eight unrelated loop shapes: eight naive

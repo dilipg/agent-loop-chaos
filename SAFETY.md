@@ -115,3 +115,54 @@ stall CI. If your agent calls a paid API, a chaos suite will spend money: set
 If you find a way for the harness to cause a real-world side effect that the gate in
 §1 should have blocked, that is a security bug, not a feature request. Open an issue
 titled `safety:` with the fault, the target, and the scenario that reached it.
+
+---
+
+## 5. Pointing it at an authenticated agent
+
+The engine never holds a credential. It wraps your callables, and your agent
+authenticates exactly as it does in production — so there is nothing to configure and
+no secret to hand over. What matters is the other direction: a credential the agent
+legitimately holds must not come back out in the artifacts, because `report.json` and
+`AGENT_TASK.md` are written to be attached to tickets and read by coding agents.
+
+**What is redacted automatically.** Keys matching
+`api_key|secret|token|bearer|password|authorization|auth|cookie|session|credential`,
+and values matching known shapes — `sk-…`/`rk-…` including prefixed forms
+(`sk-proj-`, `sk-ant-api03-`, `sk-live-`), `ghp_`, `AKIA`, `xoxb-`, JWTs, and PEM
+private keys. Everything in the trace **and** in the report goes through it (D-131).
+
+**What is not.** A credential under a name the deny-list cannot guess —
+`x_signature`, `x_hub_signature`, an internal HMAC header. Declare it:
+
+```python
+ChaosEngine(redact_keys=["x_signature", "x_.*_secret"])
+```
+
+```yaml
+# a suite cannot set this yet; pass it when constructing the engine
+```
+
+**Check it, do not assume it.** One assertion is enough, and it is worth adding to
+your own test suite:
+
+```python
+result = engine.run(agent, inputs="…")
+assert os.environ["MY_API_KEY"] not in json.dumps(result.to_dict())
+```
+
+**Real actions.** §1 applies with full force here. Declare every tool that writes:
+`@engine.tool(side_effecting=True)`. The three real-action faults then refuse it
+unless the scenario names it in `allow_side_effects:`, and `--preset full` refuses to
+start while any tool leaves the flag undeclared.
+
+**A sensible progression.** Start against a staging tenant with read-only tools and no
+`allow_side_effects`. Then add the write tools, still without opting in — the gate
+keeps them untouched while everything around them is broken. Only then opt one tool in
+at a time, and only where a duplicate is recoverable.
+
+**Access control is a thing to test, not only to protect.** `ArgumentTamperFault` on a
+`tenant_id`, `StateDropFault` on the authorisation context, and
+`PromptInjectionFault(objective="escalate_scope")` all ask the question that matters:
+when the harness corrupts the request, does the agent still refuse what it should
+refuse, or does it serve another tenant's data?

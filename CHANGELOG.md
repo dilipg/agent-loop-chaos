@@ -9,6 +9,22 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+### Credentials, and a third dishonest-fire bug
+
+- **D-131** `report.tool_calls[]` and `report.llm_exchanges[]` bypassed redaction. A
+  bearer token in a tool's keyword arguments was masked in `trace.jsonl` and printed in
+  full in the report beside it — and the report is the file attached to tickets. Same
+  deny-list, same `redact_keys`, same canary exemption, both places now. The `sk-`
+  value pattern also missed every modern prefixed key (`sk-proj-`, `sk-ant-api03-`,
+  `sk-live-`); it now catches them without redacting `risk-assessment-report`.
+  `SAFETY.md` §5 is new: pointing it at an authenticated agent.
+- **D-132** A fault whose mutation produced an empty patch recorded `fired: true`
+  beside its own note saying "nothing changed" — inflating coverage and suppressing the
+  "this scenario proves nothing" warning. Fixing it exposed five scenarios that had
+  been proving nothing, including one that misrouted an edge to the destination it was
+  already taking. Demo is now 26 scenarios: 21 failures across 8 modes, 26/26 on the
+  corrected tree.
+
 ### CI is green
 
 - **D-130** Two jobs had been failing on every commit since they were written, neither

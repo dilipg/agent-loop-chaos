@@ -385,10 +385,6 @@ FAULTS: dict[str, tuple[Any, Target]] = {
         {"type": "ToolCorruptionFault", "params": {"mutation_type": "empty_json"}},
         Target(tool="query_invoices"),
     ),
-    "unit_swap": (
-        {"type": "ToolCorruptionFault", "params": {"mutation_type": "unit_swap"}},
-        Target(tool="load_accounts"),
-    ),
     "type_flip": (
         {"type": "ToolCorruptionFault", "params": {"mutation_type": "stringify_numbers"}},
         Target(tool="query_usage"),
@@ -410,8 +406,17 @@ FAULTS: dict[str, tuple[Any, Target]] = {
         Target(llm="reviewer"),
     ),
     "empty_llm": ({"type": "LLMEmptyFault", "params": {}}, Target(llm="reviewer")),
-    "context_shrink": ({"type": "ContextShrinkFault", "params": {}}, Target(llm="reviewer")),
-    "loop_trap": ({"type": "LoopTrapFault", "params": {}}, Target(tool="query_invoices")),
+    # Three faults are deliberately absent, because none of them can bite *this*
+    # agent and a fault that cannot bite proves nothing about surviving it (D-132):
+    #
+    #   unit_swap       -- revenue-review carries no unit-bearing field to swap.
+    #   context_shrink  -- the agent renders one message per model call, so a
+    #                      middle-out shrink has nothing between the ends to remove.
+    #   loop_trap       -- `query_invoices` is called once, so pinning its result to
+    #                      itself changes nothing.
+    #
+    # They were in this matrix and reported `fired`, which read as coverage the run
+    # never had. `tests/test_full_catalog.py` still sweeps all three across every tree.
     "injection": (
         {"type": "PromptInjectionFault", "params": {"objective": "exfiltrate_secret"}},
         Target(tool="load_accounts"),

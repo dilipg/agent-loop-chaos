@@ -243,3 +243,84 @@ def test_the_packaged_data_files_are_readable_from_the_package() -> None:
 
     assert len(load_corpus()) >= 15
     assert _load_corpus(), "the noise corpus must be readable as package data"
+
+
+class TestAMutationThatChangedNothingIsNotAFire:
+    """D-132, the third in the family of D-95 and D-109.
+
+    A fault whose mutation produced an empty patch has, by its own note, "applied
+    drop_key but nothing changed". Recording that as a fire inflates `suite.json`'s
+    `coverage` -- which is read as "this fault kind was exercised" -- and suppresses
+    the "nothing fired, this scenario proves nothing" warning for a run that proved
+    nothing (D-64).
+
+    It is easy to hit against a real agent: `ArgumentTamperFault(arg_names=["x"])`
+    finds nothing to tamper with when the agent passes `x` positionally.
+    """
+
+    @staticmethod
+    def _run(tmp_path: Any, positional: bool) -> Any:
+        from agent_loop_chaos import ChaosEngine
+        from agent_loop_chaos.faults import ArgumentTamperFault
+        from agent_loop_chaos.targeting import Target, Trigger
+
+        engine = ChaosEngine(seed=1337, out_dir=tmp_path, judge="rules", write_bundle=False)
+
+        @engine.tool
+        def list_invoices(tenant_id: str) -> dict[str, Any]:
+            return {"seen": tenant_id}
+
+        @engine.intercept_tools()
+        def agent(question: str) -> str:
+            return str(list_invoices("acme") if positional else list_invoices(tenant_id="acme"))
+
+        engine.register_fault(
+            ArgumentTamperFault(mutation_type="drop_key", arg_names=["tenant_id"]),
+            target=Target(layer="tool", tool="list_invoices", phase="pre"),
+            trigger=Trigger(on_call=1),
+        )
+        return engine.run(agent, inputs="list my invoices")
+
+    def test_an_empty_patch_is_recorded_as_a_skip(self, tmp_path: Any) -> None:
+        record = self._run(tmp_path, positional=True).injected_faults[0]
+        assert record["fired"] is False
+        assert record["skipped_reason"], "a skip with no reason is worse than none"
+
+    def test_the_skip_says_what_happened(self, tmp_path: Any) -> None:
+        record = self._run(tmp_path, positional=True).injected_faults[0]
+        assert "nothing changed" in record["skipped_reason"]
+
+    def test_a_real_change_still_fires(self, tmp_path: Any) -> None:
+        record = self._run(tmp_path, positional=False).injected_faults[0]
+        assert record["fired"] is True
+        assert record["fires"][0]["json_patch"]
+
+    def test_the_run_warns_that_nothing_was_proved(self, tmp_path: Any) -> None:
+        """The whole reason this matters: the warning must reach the operator."""
+        result = self._run(tmp_path, positional=True)
+        assert not [f for f in result.injected_faults if f["fired"]]
+
+    def test_a_fault_with_no_mutation_is_unaffected(self, tmp_path: Any) -> None:
+        """`ToolErrorFault` raises and records no mutation; it still fires."""
+        from agent_loop_chaos import ChaosEngine
+        from agent_loop_chaos.faults import ToolErrorFault
+        from agent_loop_chaos.targeting import Trigger
+
+        engine = ChaosEngine(seed=1337, out_dir=tmp_path, judge="rules", write_bundle=False)
+
+        @engine.tool
+        def fetch(x: str) -> dict[str, Any]:
+            return {"ok": True}
+
+        @engine.intercept_tools()
+        def agent(question: str) -> str:
+            try:
+                return str(fetch("a"))
+            except Exception as exc:  # the agent handles it, which is not the point here
+                return f"failed: {type(exc).__name__}"
+
+        engine.register_fault(
+            ToolErrorFault(mode="exception"), target_tool="fetch", trigger=Trigger(on_call=1)
+        )
+        record = engine.run(agent, inputs="q").injected_faults[0]
+        assert record["fired"] is True
