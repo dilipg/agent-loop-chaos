@@ -595,6 +595,15 @@ class ChaosEngine:
         """
 
         def decorate(target: Callable[..., Any]) -> Callable[..., Any]:
+            if _is_langchain_tool(target):
+                # `@tool` produces a `StructuredTool`: not callable, invoked through
+                # `.invoke()`, and `inspect.signature` on it raises. It is also *the*
+                # way tools are declared in a LangChain or LangGraph codebase, so
+                # refusing one means refusing to instrument most of them (D-138).
+                wrapped: Callable[..., Any] = self._wrap_langchain_tool(
+                    target, name=name, side_effecting=side_effecting, schema=schema
+                )
+                return wrapped
             tool_name = name or target.__name__
             self._tools[tool_name] = ToolInfo(
                 name=tool_name,
@@ -607,6 +616,51 @@ class ChaosEngine:
         if fn is None:
             return decorate
         return decorate(fn)
+
+    def _wrap_langchain_tool(
+        self,
+        target: Any,
+        *,
+        name: str | None,
+        side_effecting: bool | None,
+        schema: dict[str, Any] | None,
+    ) -> Any:
+        """Instrument a LangChain tool in place, keeping its identity.
+
+        The tool object is returned unchanged -- only its underlying `func` and
+        `coroutine` are replaced by wrappers. A registry, a bound model or a `ToolNode`
+        already holds this object; handing back a different one would leave every one
+        of those calling the unwrapped function, which is the silent no-op this library
+        exists to catch.
+
+        Args:
+            target: A `BaseTool` -- anything with `name` and `invoke`.
+            name: Override for the crossing name. Defaults to the tool's own.
+            side_effecting: Whether it performs a real action (`SAFETY.md` §1).
+            schema: JSON Schema for its arguments.
+
+        Returns:
+            The same tool object, now instrumented.
+        """
+        tool_name = name or str(getattr(target, "name", None) or type(target).__name__)
+        inner = getattr(target, "func", None)
+        coroutine = getattr(target, "coroutine", None)
+        self._tools[tool_name] = ToolInfo(
+            name=tool_name,
+            schema=schema or getattr(target, "args", None),
+            side_effecting=side_effecting,
+            is_async=inner is None and coroutine is not None,
+        )
+        if inner is not None:
+            target.func = build_wrapper(self, inner, layer="tool", name=tool_name)
+        if coroutine is not None:
+            target.coroutine = build_wrapper(self, coroutine, layer="tool", name=tool_name)
+        if inner is None and coroutine is None:  # pragma: no cover - exotic BaseTool
+            raise ConfigError(
+                f"cannot instrument tool {tool_name!r}: it exposes neither `func` nor "
+                "`coroutine`. Wrap the function it calls with `engine.tool` instead."
+            )
+        return target
 
     def llm(
         self, fn: Callable[..., Any] | None = None, *, name: str = "default"
@@ -3864,6 +3918,26 @@ def _action_is_performable(action: str, layer: str) -> bool:
 #: nature -- a resume redoes the work since the last durable checkpoint, not the run --
 #: and a long run must not accumulate every node it ever entered.
 _ROLLBACK_WINDOW = 32
+
+
+def _is_langchain_tool(obj: Any) -> bool:
+    """Whether this is a LangChain tool object rather than a plain callable.
+
+    Duck-typed on purpose: importing `langchain_core` to check would make an optional
+    extra mandatory. A `BaseTool` has a `name`, an `invoke`, and is not itself callable.
+
+    Args:
+        obj: The candidate.
+
+    Returns:
+        True for a LangChain tool.
+    """
+    return (
+        not callable(obj)
+        and hasattr(obj, "invoke")
+        and hasattr(obj, "name")
+        and (hasattr(obj, "func") or hasattr(obj, "coroutine"))
+    )
 
 
 #: Frames that own nothing. A failure inside them belongs to their caller.

@@ -347,3 +347,24 @@ class TestCheckpointerNeedsNoCallerConfig:
         graph = instrument_graph(compiled, engine, intercept_checkpoints=True)
         out = graph.invoke({"query": "x"}, {"configurable": {"thread_id": "mine"}})
         assert out
+
+
+def test_the_extra_allows_the_current_langgraph(repo_root: Path) -> None:
+    """D-138: the extra pinned `<0.7`, so `pip install ...[langgraph]` resolved 0.6.x
+    while every current project is on 1.x -- the extra was uninstallable alongside
+    them. The adapter is version-agnostic across the range; the pin was not."""
+    import re
+
+    text = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
+    pin = re.search(r'langgraph = \["langgraph([^"]*)"', text)
+    assert pin, "the langgraph extra no longer declares a pin"
+    assert "<0.7" not in pin.group(1), "the extra still caps below LangGraph 1.x"
+    assert "<2" in pin.group(1), "the extra should cap at the next major, not float free"
+
+
+def test_ci_runs_both_langgraph_majors(repo_root: Path) -> None:
+    """One column proved 0.x. Nothing proved 1.x until it was added."""
+    yaml = pytest.importorskip("yaml", reason="the yaml extra is not installed")
+    workflow = yaml.safe_load((repo_root / ".github/workflows/ci.yml").read_text())
+    column = workflow["jobs"]["test"]["strategy"]["matrix"]["langgraph"]
+    assert {"v0", "v1", "none"} <= set(column)

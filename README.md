@@ -39,7 +39,7 @@ agent handled it, and writes the finding as a work order a coding agent can exec
 
 ```bash
 # not on PyPI yet -- install from the tag
-pip install "agent-loop-chaos[yaml] @ git+https://github.com/dilipg/agent-loop-chaos@v0.2.4"
+pip install "agent-loop-chaos[yaml] @ git+https://github.com/dilipg/agent-loop-chaos@v0.2.5"
 ```
 
 Once it is published, `pip install "agent-loop-chaos[yaml]"`.
@@ -796,7 +796,7 @@ boundary).
 
 ## Status
 
-Pre-alpha, version 0.2.4. Everything described above is implemented and tested: the
+Pre-alpha, version 0.2.5. Everything described above is implemented and tested: the
 engine, 28 faults, 20 probes, the assertions layer, the judges, the refinement loop,
 the two demo agents, the eight-shape conformance pool, and the live dashboard with its
 single-file HTML export. See [docs/08-ROADMAP.md](docs/08-ROADMAP.md).

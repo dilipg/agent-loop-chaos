@@ -9,6 +9,25 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+## 0.2.5 — 2026-09-05
+
+**Two blockers for any current LangGraph or LangChain codebase**, both found by
+checking the library against a real one rather than against its own examples.
+
+- **D-138** The `langgraph` extra pinned `langgraph>=0.2,<0.7`. Every current project
+  is on 1.x, so `pip install "agent-loop-chaos[langgraph]"` was uninstallable
+  alongside them — and the adapter had therefore never been run against 1.x at all.
+  It turns out to be **version-agnostic across the range**: the whole suite, 3810
+  tests, passes unchanged on LangGraph 1.2.4. The cap is now `<2`, and CI runs the
+  matrix against both majors so it stays true.
+- **D-139** `engine.tool()` raised `TypeError: … is not a callable object` on a
+  LangChain `@tool`. A `StructuredTool` is not callable — it is invoked through
+  `.invoke()` — and `@tool` is *the* way tools are declared in a LangChain or
+  LangGraph codebase, so a project whose shared tool layer is `@tool` primitives could
+  not be instrumented at all. It is now accepted and wrapped **in place**, keeping the
+  tool's identity so a registry, a bound model or a `ToolNode` already holding it goes
+  through the wrapper without rebinding.
+
 ## 0.2.4 — 2026-09-05
 
 Whether a fault bit anything no longer depends on the seed, and there is now a path

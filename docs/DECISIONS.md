@@ -2371,3 +2371,44 @@ of damage than the one that was asked for.
 
 No golden refresh: every shipped scenario names its `keys:` explicitly, which is its
 own argument for doing so.
+
+### D-138 — The LangGraph pin was two majors behind reality
+*2026-09-05. Affects `pyproject.toml`, `.github/workflows/ci.yml`, `docs/06-LANGGRAPH-ADAPTER.md`.*
+
+The extra declared `langgraph>=0.2,<0.7`. That cap was accurate when it was written and
+LangGraph is now on **1.2.4**, so `pip install "agent-loop-chaos[langgraph]"` either
+resolved 0.6.x or failed to resolve at all next to a current project's own pin. Nobody
+on a current LangGraph could install the extra — and because the development venv
+honoured the cap, **the adapter had never once been run against 1.x**.
+
+It is version-agnostic across the whole range. The full suite — 3810 tests, adapter
+included — passes unchanged on 1.2.4, and a probe mirroring a real 1.x codebase
+(Pydantic `BaseModel` state with `Annotated` reducers, a multi-node `StateGraph`, the
+list-form parallel fan-in that compiles to a `NamedBarrierValue`) behaves identically on
+0.6.11 and 1.2.4. The cap was superstition, not compatibility.
+
+Now `<2`, and the CI matrix installs **both** majors explicitly — `v0` at the floor of
+the range and `v1` at what projects actually use — rather than whichever one pip
+happens to resolve. A range nothing tests at both ends is a guess.
+
+### D-139 — A LangChain `@tool` is a tool
+*2026-09-05. Affects `docs/02-API.md`, `docs/06-LANGGRAPH-ADAPTER.md`.*
+
+`engine.tool(cite_source)` on a `@tool`-decorated function raised
+`TypeError: StructuredTool(...) is not a callable object`, from `inspect.signature`. A
+`BaseTool` is not callable: it is invoked through `.invoke()`.
+
+`@tool` is *the* way tools are declared in a LangChain or LangGraph codebase. A project
+whose shared platform layer is `@tool` primitives — which is the normal shape — could
+not be instrumented at all, and the failure came out as a `TypeError` from `inspect`
+rather than as anything a reader could act on.
+
+The tool is now instrumented **in place**: its `func` and `coroutine` are replaced by
+wrappers and the same object is returned. Handing back a different object would be the
+easier implementation and the wrong one — a registry, a model the tool is bound to, or
+a `ToolNode` already holds this instance, and every one of those would keep calling the
+unwrapped function. A silent no-op is precisely what this library exists to catch.
+
+Detection is duck-typed (`name`, `invoke`, and a `func` or `coroutine`, while not being
+callable) rather than an `isinstance` check, because importing `langchain_core` to
+decide would make an optional extra mandatory.

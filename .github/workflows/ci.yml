@@ -39,7 +39,11 @@ jobs:
       fail-fast: false
       matrix:
         python: ["3.10", "3.11", "3.12", "3.13"]
-        langgraph: [pinned, none]
+        # `v0` and `v1` are both installed on purpose. The extra allowed only
+        # `<0.7` until D-138, so the adapter had never been run against LangGraph 1.x
+        # -- which is what everyone is on. The adapter turns out to be
+        # version-agnostic across the range; this column is what keeps it that way.
+        langgraph: [v0, v1, none]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -53,9 +57,12 @@ jobs:
       - name: install (core only)
         if: matrix.langgraph == 'none'
         run: pip install -e ".[dev]"
-      - name: install (with langgraph)
-        if: matrix.langgraph == 'pinned'
-        run: pip install -e ".[dev,langgraph]"
+      - name: install (LangGraph 0.x, the floor of the supported range)
+        if: matrix.langgraph == 'v0'
+        run: pip install -e ".[dev,langgraph]" "langgraph<0.7"
+      - name: install (LangGraph 1.x, what current projects use)
+        if: matrix.langgraph == 'v1'
+        run: pip install -e ".[dev,langgraph]" "langgraph>=1,<2"
 
       # Coverage is gated, not merely reported: fail_under = 85 lives in
       # pyproject.toml's [tool.coverage.report], so this step enforces it.
