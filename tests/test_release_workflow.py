@@ -84,9 +84,20 @@ class TestItCanBeRehearsed:
         triggers = workflow[True]
         assert triggers["workflow_dispatch"]["inputs"]["target"]["default"] == "testpypi"
 
-    def test_a_tag_publishes_for_real(self, workflow: dict[str, Any]) -> None:
+    def test_a_tag_runs_the_gate_and_builds(self, workflow: dict[str, Any]) -> None:
         triggers = workflow[True]
         assert triggers["push"]["tags"] == ["v*"]
+
+    def test_uploading_needs_an_explicit_opt_in(self, workflow: dict[str, Any]) -> None:
+        """A tag verifies and builds; uploading is a separate decision.
+
+        Trusted publishing needs a pending publisher registered on PyPI first. Before
+        that exists every tag would leave a failed run on a repository people are being
+        pointed at, for a step nobody had asked for.
+        """
+        guard = workflow["jobs"]["publish"]["if"]
+        assert "workflow_dispatch" in guard
+        assert "PYPI_ENABLED" in guard
 
 
 def test_the_setup_it_needs_is_written_down(repo_root: Path) -> None:

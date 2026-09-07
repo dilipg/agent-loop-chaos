@@ -20,6 +20,10 @@
 # After that, a release is:
 #
 #   git tag -a v0.3.0 -m "0.3.0" && git push origin v0.3.0
+#
+# Until that setup exists, a tag still runs the gate and builds the wheel -- including
+# the clean-venv install that caught D-123 -- and simply does not upload. Set the
+# repository variable PYPI_ENABLED=true to turn uploading on.
 name: Release
 
 on:
@@ -103,6 +107,12 @@ jobs:
   publish:
     name: publish to ${{ github.event.inputs.target || 'pypi' }}
     needs: build
+    # A tag verifies and builds; uploading is a separate decision. Until the pending
+    # publisher below exists, an upload attempt fails and leaves a red run on a
+    # repository people are being pointed at -- for a step nobody asked for yet. Set the
+    # repository variable PYPI_ENABLED=true once PyPI is configured, or publish by hand
+    # with workflow_dispatch.
+    if: github.event_name == 'workflow_dispatch' || vars.PYPI_ENABLED == 'true'
     runs-on: ubuntu-latest
     environment: ${{ github.event.inputs.target || 'pypi' }}
     permissions:

@@ -9,6 +9,13 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+## 0.3.0 — 2026-09-07
+
+Point it at a repository nobody wrote for it. The engine could always break an agent it
+could see; this release is about seeing one it was never handed. Everything below was
+found or driven by running against a real ten-node LangGraph service and by installing
+into a clean virtualenv and following the README as a newcomer.
+
 ### Added
 
 - **README: "Onboarding a real repo".** Onboarding the first real service took ~200
