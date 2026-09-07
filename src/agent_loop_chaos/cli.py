@@ -1089,7 +1089,11 @@ def _doctor(args: argparse.Namespace) -> int:
     if graphs:
         print("Graphs compiled at import (name these with `seams: {graph: ...}`)")
         for name in graphs:
-            print(f"  ok  {name}")
+            nodes = _graph_nodes(name)
+            shown = (
+                f"  ({len(nodes)} nodes: {', '.join(nodes[:6])}{' …' if len(nodes) > 6 else ''})"
+            )
+            print(f"  ok  {name}{shown if nodes else ''}")
         print(
             "  ^ node, edge, state and checkpoint faults need the graph object, and a\n"
             "    graph built once at module level never hands it to anyone. Naming it\n"
@@ -1126,8 +1130,34 @@ def _doctor(args: argparse.Namespace) -> int:
         return 1
 
     print("\nA suite that targets what was found:\n")
-    print(_doctor_suite(args.target, args.inputs, llms, tools, graphs))
+    nodes = _graph_nodes(graphs[0]) if graphs else []
+    print(_doctor_suite(args.target, args.inputs, llms, tools, graphs, nodes))
     return 0
+
+
+def _graph_nodes(path: str) -> list[str]:
+    """Read the node names off a compiled graph named by dotted path.
+
+    A suite naming `your_node_name` is something to edit; one naming a real node is
+    something to run, and the names are already on the object.
+
+    Args:
+        path: A ``module:attr`` path to a compiled graph.
+
+    Returns:
+        The node names, or an empty list when they cannot be read.
+    """
+    module_name, _, attribute = str(path).partition(":")
+    module = sys.modules.get(module_name)
+    graph = getattr(module, attribute, None) if module is not None else None
+    if graph is None:
+        return []
+    try:
+        from .adapters.langgraph import node_slots
+
+        return [name for name, _get, _set in node_slots(graph)]
+    except Exception:  # pragma: no cover - an unfamiliar graph shape
+        return []
 
 
 def _compiled_graphs(target: str) -> list[str]:
@@ -1171,6 +1201,7 @@ def _doctor_suite(
     llms: Sequence[str],
     tools: Sequence[str],
     graphs: Sequence[str] = (),
+    nodes: Sequence[str] = (),
 ) -> str:
     """Render a starter suite for the seams a probe found.
 
@@ -1180,6 +1211,7 @@ def _doctor_suite(
         llms: Model names discovered.
         tools: Tool names discovered.
         graphs: Module-level compiled graphs discovered.
+        nodes: Node names on the first of them, so the suite names a real one.
 
     Returns:
         YAML, ready to paste into a file and run.
@@ -1208,13 +1240,14 @@ def _doctor_suite(
             f"        target: {{ llm: {json.dumps(llms[0])}, phase: post }}",
         ]
     if graphs:
+        node = json.dumps(nodes[0] if nodes else "your_node_name")
         lines += [
             "  - id: graph.a_node_is_skipped",
             '    title: "A node does not run"',
             "    expected_behavior: graceful_degradation",
             "    faults:",
             "      - type: NodeSkipFault",
-            "        target: { layer: node, node: your_node_name }",
+            f"        target: {{ layer: node, node: {node} }}",
         ]
     if tools:
         lines += [

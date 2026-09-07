@@ -202,3 +202,15 @@ class TestItFindsAGraphCompiledAtImport:
         main(["doctor", "tests.fakes.internal_graph:run_singleton", "--inputs", "q", "--json"])
         payload = json.loads(capsys.readouterr().out)
         assert any("COMPILED" in g for g in payload["graphs"])
+
+    def test_the_suite_names_a_real_node(
+        self, tmp_path: Any, monkeypatch: Any, capsys: Any
+    ) -> None:
+        """A placeholder makes the suite something to edit; a real name makes it
+        something to run. The node names are on the graph it just found."""
+        pytest.importorskip("langgraph")
+        monkeypatch.chdir(tmp_path)
+        main(["doctor", "tests.fakes.internal_graph:run_singleton", "--inputs", "q"])
+        out = capsys.readouterr().out
+        assert "gather" in out, "the graph's own node names were not shown"
+        assert "your_node_name" not in out, "the suite still carries a placeholder"
