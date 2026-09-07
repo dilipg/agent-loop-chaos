@@ -68,7 +68,12 @@ def test_importing_the_package_does_not_even_need_jsonschema_eagerly() -> None:
 
 @pytest.mark.parametrize(
     "module",
-    ["agent_loop_chaos.faults", "agent_loop_chaos.judges", "agent_loop_chaos.adapters"],
+    [
+        "agent_loop_chaos.faults",
+        "agent_loop_chaos.judges",
+        "agent_loop_chaos.adapters",
+        "agent_loop_chaos.interceptors",
+    ],
 )
 def test_family_packages_import_without_extras(module: str) -> None:
     """`faults`, `judges` and `adapters` import with no optional dependency installed.
@@ -83,3 +88,23 @@ def test_family_packages_import_without_extras(module: str) -> None:
         "print(','.join(sorted(leaked)))\n"
     )
     assert _run_probe(snippet) == ""
+
+
+def test_listing_the_interceptors_imports_none_of_what_they_patch() -> None:
+    """Building the strategy list must not import `httpx` or `langchain_core`.
+
+    Every strategy names a library it patches, so the naive implementation imports all
+    of them to find out which are present -- turning two optional extras into hard
+    dependencies. `available()` uses `find_spec`, and the import happens inside
+    `attach()`, which is the only place it is known to be needed.
+    """
+    snippet = (
+        "import sys\n"
+        "from agent_loop_chaos.interceptors import default_strategies\n"
+        "names = [s.name for s in default_strategies()]\n"
+        "assert names, 'no strategies were built'\n"
+        f"forbidden = {FORBIDDEN!r}\n"
+        "print(','.join(sorted({m for m in sys.modules if m.split('.')[0] in forbidden})))"
+    )
+    out = _run_probe(snippet)
+    assert out == "", f"listing the interceptors imported: {out}"
