@@ -2562,3 +2562,31 @@ One hazard worth writing down: `Cassette` defines `__len__`, so a freshly opened
 **falsy**. `cassette or fallback()` silently discarded it and the first recording run
 stored nothing. Use `is not None` for any object with a length.
 
+### D-145 — The pytest plugin ships as an entry point, and must stay out of the way
+*2026-09-07. Affects `pyproject.toml`, `docs/02-API.md` §13.*
+
+A project with a working test suite has already solved the expensive half of onboarding:
+constructing the app offline, with fake databases and a stub model in its `conftest.py`.
+The `chaos_engine` fixture makes that work reachable, so no fixture format needs
+inventing.
+
+Shipping it as a `pytest11` entry point means it loads in **every** pytest run in any
+environment where this library is installed, which imposes three rules:
+
+- **No autouse fixture.** One here would run in every unrelated project's suite. A test
+  asserts none exists.
+- **No optional dependency at import.** The module imports `pytest` and typing only;
+  `ChaosEngine` is imported inside the fixture. A test asserts that importing the plugin
+  pulls in neither `httpx` nor `langchain_core`.
+- **The marker is registered.** An unregistered `chaos` marker raises
+  `PytestUnknownMarkWarning`, which a project running `-W error` would see as a failure
+  caused by us.
+
+One consequence found while testing this, and worth stating plainly: **an entry-point
+plugin that fails to import stops pytest from starting at all.** In an environment where
+this library is installed but not importable -- the hidden-`.pth` case of D-125, which
+`tools/doctor.py` detects -- installing it turns a broken install into a total
+collection failure rather than an import error in one test. That is arguably the correct
+loud failure, but it is a sharper edge than a library normally has, so it is documented
+rather than discovered.
+

@@ -952,7 +952,26 @@ every scenario, atomically — so a job can poll it while the run is in flight.
 
 ## In pytest
 
-The whole API is importable, so a chaos run can be an ordinary test:
+**Your fixtures are the chaos fixtures.** If your project has a working test suite, it
+has already solved the expensive half of this — building the app offline, with fake
+databases and a stub model. A `chaos_engine` fixture is available as soon as the library
+is installed, with nothing to add to `conftest.py`:
+
+```python
+import pytest
+from agent_loop_chaos.faults import NodeSkipFault
+
+@pytest.mark.chaos(intercept=True)              # optional: seed, seams, cassette, judge
+def test_it_degrades(chaos_engine, graph, seeded_db):   # graph, seeded_db are yours
+    chaos_engine.register_fault(NodeSkipFault(), target_node="revalidation")
+    result = chaos_engine.run(graph, inputs={"query": "what changed this week?"})
+    assert result.success, result.failure_mode
+```
+
+It defaults to the rules judge (no network) and writes no bundle, so a test run leaves
+nothing behind.
+
+The whole API is importable too, so a chaos run can be an ordinary test:
 
 ```python
 import pytest

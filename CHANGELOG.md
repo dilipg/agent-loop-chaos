@@ -36,6 +36,12 @@ library — see `docs/04-SCHEMAS.md` §2.
   `defaults:`, or `alc run --intercept`. Neither optional dependency becomes a hard
   one: availability is `find_spec`, the import is inside `attach()`, and a test asserts
   that listing the strategies imports nothing they patch.
+- **A pytest plugin.** `chaos_engine` is available as soon as the library is installed
+  — a `pytest11` entry point, nothing to add to `conftest.py` — so a project's own
+  fixtures build the agent and the library supplies only the engine. Configure with
+  `@pytest.mark.chaos(intercept=True, seed=99, …)`. It loads in every pytest run
+  everywhere, so it carries no autouse fixture, imports no optional dependency, and
+  registers its marker; tests assert all three (**D-145**).
 - **`alc run --record` / `--replay-cassette` now do something.** Both flags were
   declared on the parser and read by no code; the only test covering them asserted that
   they parse, so it passed for as long as they were dead. Recording covers every

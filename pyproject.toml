@@ -55,6 +55,12 @@ dev = [
     "pyyaml>=6",
 ]
 
+[project.entry-points.pytest11]
+# A project with a working test suite has already solved offline construction. This
+# makes that work reachable: `chaos_engine` hands over a configured engine and their
+# own fixtures build the agent. It must stay out of the way -- see pytest_plugin.py.
+agent_loop_chaos = "agent_loop_chaos.pytest_plugin"
+
 [project.scripts]
 alc = "agent_loop_chaos.cli:main"
 

@@ -708,3 +708,32 @@ would be the library inventing a finding rather than observing one.
 strategy attached raises `ConfigError` carrying `diagnose()` -- every strategy tried and
 why each could not help. A scenario whose fault had nothing to attach to proves nothing
 (D-64) and must not read as a pass.
+
+## 13. The pytest plugin
+
+Ships as a `pytest11` entry point, so it is available as soon as the library is
+installed -- nothing to add to `conftest.py`.
+
+```python
+@pytest.fixture
+def chaos_engine(request, tmp_path) -> ChaosEngine: ...
+```
+
+Defaults: `seed=1337`, `judge="rules"` (no network), `write_bundle=False` (a test run
+does not litter the repository with `.chaos` directories) and `out_dir=tmp_path`.
+`@pytest.mark.chaos(**options)` overrides any `ChaosEngine` keyword -- `seed`,
+`intercept`, `seams`, `cassette` (a path string is opened in replay mode), `judge`,
+`intensity`.
+
+```python
+@pytest.mark.chaos(intercept=True)
+def test_it_degrades(chaos_engine, graph, seeded_db):   # graph, seeded_db are yours
+    chaos_engine.register_fault(NodeSkipFault(), target_node="revalidation")
+    result = chaos_engine.run(graph, inputs={...})
+    assert result.success, result.failure_mode
+```
+
+The point is the second and third arguments: a project's own fixtures build the agent,
+and this supplies only the engine. See D-145 for the rules an entry-point plugin has to
+follow.
+
