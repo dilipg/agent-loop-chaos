@@ -36,6 +36,26 @@ library — see `docs/04-SCHEMAS.md` §2.
   `defaults:`, or `alc run --intercept`. Neither optional dependency becomes a hard
   one: availability is `find_spec`, the import is inside `attach()`, and a test asserts
   that listing the strategies imports nothing they patch.
+- **A run writes `index.html` beside `suite.json`,** so looking at a result is opening
+  a file rather than remembering a second command. The data is inline, so it needs no
+  server. `--no-html` skips it, and an export failure never fails the run — the page is
+  the least important thing in the bundle.
+- **Nine more declared-but-dead options, found by sweeping for the D-144 defect**
+  (**D-147**). `--dry-run` promised "arm every fault but fire none" and every fault
+  fired; `--allow-side-effects` dropped an explicit safety opt-in; `--trace-level` and
+  `--preset` did nothing; and the schema accepted `skip:`, `trace_level:`, `adapter:`
+  and `baseline:` while the loader dropped all four — so a scenario marked `skip: true`
+  ran anyway. `--suggest-fixes` is removed rather than wired: it promised a ranked fix
+  list no judge accepts an option for.
+- Two sweep tests so there is no tenth: every parser `dest` must have a reader, and
+  every `scenarioBody` property must have a `Scenario` field.
+
+### Fixed
+
+- `examples/scenarios/demo_suite.yaml` said `adapter: langgraph` while its entrypoint
+  returns a plain callable, so the correct adapter is `vanilla`. The value had been
+  wrong for as long as nothing read it — dead configuration drifts into being wrong,
+  and then wiring it looks like a regression.
 - Three `seams:` defects, all found by pointing it at a real service and none
   reachable from a fixture-backed test (**D-146**): a method seam took `self` for the
   LLM payload and so silently disabled every prompt-side fault; a seam could not be

@@ -368,6 +368,20 @@ class Scenario:
     #: A recorded cassette to replay instead of calling out, so a suite runs with no
     #: credential and no network. Record one with `alc run --record <path>`.
     cassette: str | None = None
+
+    #: Do not run this scenario. The schema has always accepted `skip:` and the loader
+    #: dropped it, so a scenario its author had disabled ran anyway (D-147).
+    skip: bool = False
+
+    #: How much payload detail to record for this scenario, overriding the engine's.
+    trace_level: str | None = None
+
+    #: Force an adapter instead of sniffing one. `"auto"` is the sniff.
+    adapter: str = "auto"
+
+    #: Whether to run an unfaulted baseline for the diff. `False` skips it for a
+    #: scenario expensive enough that one is not worth the time.
+    baseline: bool = True
     #: Extra key patterns to redact, on top of the default deny-list. Belongs in the
     #: suite file because it is a property of the agent, not of one invocation: an
     #: internal credential header is named the same on every run (D-134).
@@ -707,6 +721,10 @@ def _scenario_from_body(body: Mapping[str, Any]) -> Scenario:
         "intercept",
         "seams",
         "cassette",
+        "skip",
+        "trace_level",
+        "adapter",
+        "baseline",
         "redact_keys",
         "dry_run",
         "tags",

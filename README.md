@@ -797,6 +797,9 @@ alc init                      # scaffold chaos/quickstart.yaml
 alc doctor [module:attr]      # what can be attached here, and what a probe run saw
 ```
 
+A run writes `.chaos/index.html` beside `suite.json` — open it to read the result, no
+server and no second command. `--no-html` skips it.
+
 ## The dashboard
 
 ```bash

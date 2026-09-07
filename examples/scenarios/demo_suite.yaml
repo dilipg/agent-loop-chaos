@@ -11,7 +11,10 @@ version: "1.0"
 
 defaults:
   entrypoint: examples.trip_planner.app:build_app
-  adapter: langgraph
+  # No `adapter:` here on purpose. `build_app` instruments the graph itself and returns
+  # a plain callable, so the sniff correctly picks the vanilla adapter. This file said
+  # `adapter: langgraph` for as long as the key was ignored -- dead configuration drifts
+  # into being wrong, which is why honouring it broke the demo (D-147).
   inputs:
     query: "3-day packing list for Paris, and the cheapest flight from Delhi"
   initial_state:

@@ -35,6 +35,7 @@ from .scenarios import ChaosSuite, Scenario
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .targeting import Trigger
+    from .trace import TraceLevel
 
 __all__ = [
     "LoopReport",
@@ -427,6 +428,12 @@ def run_suite(
     results: list[ChaosResult] = []
     # One baseline per (entrypoint, inputs). Recomputing it per scenario would double
     # the cost of every suite for an answer that cannot have changed.
+    # `skip:` is honoured here rather than by the caller, so every entry point --
+    # `alc run`, the refinement loop, a direct `run_suite` -- respects it (D-147).
+    skipped = [s for s in scenarios if s.skip]
+    if skipped:
+        log.info("skipping %d scenario(s) marked skip: %s", len(skipped), [s.id for s in skipped])
+    scenarios = [s for s in scenarios if not s.skip]
     baselines: dict[str, Any] = {}
     tapes: dict[str, Any] = {}
 
@@ -475,6 +482,8 @@ def run_suite(
             intercept=scenario.intercept,
             seams=scenario.seams,
             cassette=tape,
+            # The schema constrains the value to the three the engine accepts.
+            trace_level=cast("TraceLevel", scenario.trace_level or "standard"),
         )
         specs, dial_skipped = plan_specs(scenario)
         for spec in specs:
@@ -498,6 +507,7 @@ def run_suite(
             allow_side_effects=scenario.allow_side_effects,
             baseline=baselines.get(_baseline_key(scenario)),
             attempt=attempt,
+            adapter=cast('Literal["auto", "vanilla", "langgraph"]', scenario.adapter),
         )
 
     _publish("running", planned[0] if planned else None)
@@ -507,7 +517,7 @@ def run_suite(
         # workers racing to fill the same key would run the baseline twice and give
         # two scenarios different references.
         for scenario in scenarios:
-            if not scenario.dry_run:
+            if not scenario.dry_run and scenario.baseline:
                 _shared_baseline(
                     baselines,
                     scenario,

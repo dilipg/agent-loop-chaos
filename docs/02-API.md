@@ -325,6 +325,10 @@ class Scenario:
     description: str | None = None
     matrix: dict[str, list] | None = None        # cartesian expansion over fault params/seeds
     intercept: bool = False                      # attach the interceptors (§12)
+    skip: bool = False                           # do not run this scenario
+    trace_level: str | None = None               # override the engine's, per scenario
+    adapter: str = "auto"                        # "auto" | "vanilla" | "langgraph"
+    baseline: bool = True                        # run the unfaulted baseline for a diff
     seams: dict[str, list[str]] = field(default_factory=dict)   # dotted paths (§12)
 
     def expand(self) -> list[Scenario]: ...      # applies `matrix`; ids get "[k=v]" suffixes
@@ -534,7 +538,9 @@ alc run <suite.yaml|scenario.yaml|module:attr>   [--seed N] [--jobs N] [--judge 
                                                  [--trace-level L] [--filter GLOB] [--fail-fast]
                                                  [--no-baseline] [--dry-run] [--json]
                                                  [--rounds N] [--stop-when …]
-                                                 [--intensity 1-10] [--intercept]
+                                                 [--intensity 1-10] [--intercept] [--no-html]
+                                                 [--dry-run] [--preset NAME] [--trace-level L]
+                                                 [--allow-side-effects a,b]
                                                  [--dashboard] [--port N] [--linger S]
 alc replay <run_dir> [--seed N]
 alc judge <run_dir> [--judge …] [--model …] [--base-url U] [--transport T]

@@ -117,12 +117,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="comma-separated tools a real-action fault may target (SAFETY.md section 1)",
     )
     run.add_argument(
-        "--suggest-fixes",
-        dest="suggest_fixes",
-        action="store_true",
-        help="ask the judge for a ranked fix list (one extra model call per failure)",
-    )
-    run.add_argument(
         "--entrypoint",
         help="override every scenario's entrypoint (MODULE:ATTR); how the same suite "
         "is run against a corrected tree",
@@ -152,6 +146,12 @@ def build_parser() -> argparse.ArgumentParser:
         dest="stop_when",
         choices=("all_pass", "no_new_failures", "rounds"),
         help="when to stop a --rounds loop (default: no_new_failures)",
+    )
+    run.add_argument(
+        "--no-html",
+        dest="no_html",
+        action="store_true",
+        help="skip the index.html a run writes beside suite.json",
     )
     run.add_argument(
         "--intercept",
@@ -348,6 +348,66 @@ def _list_faults(*, as_json: bool) -> int:
     return EXIT_OK
 
 
+def _apply_run_overrides(args: argparse.Namespace, scenarios: Sequence[Any]) -> None:
+    """Apply every `alc run` flag that overrides what the suite file said.
+
+    One place on purpose. Five flags were declared on the parser and applied by nothing
+    -- `--dry-run` among them, whose help promises "arm every fault but fire none"
+    while every fault fired (D-147). Scattering the overrides is what let that happen,
+    and a sweep test now asserts no flag is left unread.
+
+    Args:
+        args: Parsed `run` arguments.
+        scenarios: The scenarios to mutate in place.
+
+    Raises:
+        ConfigError: On an intensity off the dial or an unknown preset name. `main`
+            turns both into exit 2.
+    """
+    from .scenarios import resolve_preset
+
+    if getattr(args, "entrypoint", None):
+        for scenario in scenarios:
+            scenario.entrypoint = args.entrypoint
+    if getattr(args, "redact_keys", None):
+        # Added, never replacing: a one-off must not silently discard a credential
+        # pattern the suite file declared (D-134).
+        for scenario in scenarios:
+            scenario.redact_keys = [
+                *scenario.redact_keys,
+                *(k for k in args.redact_keys if k not in scenario.redact_keys),
+            ]
+    if getattr(args, "intercept", False):
+        for scenario in scenarios:
+            scenario.intercept = True
+    if getattr(args, "dry_run", False):
+        for scenario in scenarios:
+            scenario.dry_run = True
+    if getattr(args, "trace_level", None):
+        for scenario in scenarios:
+            scenario.trace_level = args.trace_level
+    if getattr(args, "allow_side_effects", None):
+        allowed = [name.strip() for name in str(args.allow_side_effects).split(",") if name.strip()]
+        for scenario in scenarios:
+            scenario.allow_side_effects = [
+                *scenario.allow_side_effects,
+                *(n for n in allowed if n not in scenario.allow_side_effects),
+            ]
+    if getattr(args, "preset", None):
+        # Replaces the declared faults rather than adding to them: "run a named preset"
+        # reads as "run this instead", and adding would make the flag's effect depend on
+        # what the file happened to contain (D-147).
+        resolved, _ = resolve_preset(str(args.preset))
+        specs = [spec.to_dict() for spec in resolved]
+        for scenario in scenarios:
+            scenario.faults = [dict(spec) for spec in specs]
+    if getattr(args, "intensity", None) is not None:
+        # `profile` raises ConfigError off the dial, which `main` turns into exit 2.
+        level = profile(args.intensity).level
+        for scenario in scenarios:
+            scenario.intensity = level
+
+
 def _load_report(run_dir: Path) -> tuple[dict[str, Any], Path]:
     """Read a stored report, accepting either a run directory or the file itself.
 
@@ -381,25 +441,7 @@ def _run(args: argparse.Namespace) -> int:
 
     suite = load_suite(args.target)
     scenarios = [s for s in suite.scenarios if _selected(s.id, args.filter)]
-    if getattr(args, "entrypoint", None):
-        for scenario in scenarios:
-            scenario.entrypoint = args.entrypoint
-    if getattr(args, "redact_keys", None):
-        # Added, never replacing: a one-off must not silently discard a credential
-        # pattern the suite file declared (D-134).
-        for scenario in scenarios:
-            scenario.redact_keys = [
-                *scenario.redact_keys,
-                *(k for k in args.redact_keys if k not in scenario.redact_keys),
-            ]
-    if getattr(args, "intercept", False):
-        for scenario in scenarios:
-            scenario.intercept = True
-    if getattr(args, "intensity", None) is not None:
-        # `profile` raises ConfigError off the dial, which `main` turns into exit 2.
-        level = profile(args.intensity).level
-        for scenario in scenarios:
-            scenario.intensity = level
+    _apply_run_overrides(args, scenarios)
     out_dir = Path(args.out or ".chaos")
 
     if args.rounds:
@@ -455,8 +497,11 @@ def _run(args: argparse.Namespace) -> int:
             with contextlib.suppress(KeyboardInterrupt):
                 time.sleep(linger)
         server.stop()
+    page = _write_page(out_dir) if not getattr(args, "no_html", False) else None
     if not args.json and not quiet:
         _print_summary(results, out_dir, colour=colour)
+        if page is not None:
+            print(f"  open {page}", file=sys.stderr)
     if args.json:
         print(
             json.dumps(
@@ -921,6 +966,32 @@ Edit `entrypoint` and the tool name in `quickstart.yaml` to match your agent. Ev
 failure writes an `AGENT_TASK.md` under `.chaos/` — hand it to a coding agent as-is.
 `alc list-faults` shows what else you can inject.
 """
+
+
+def _write_page(out_dir: Path) -> Path | None:
+    """Render the finished bundle as one openable page.
+
+    `report.json` is written for machines, and rendering it used to mean a second
+    command nobody remembers. The page carries its data inline, so opening it from the
+    filesystem is enough -- no server, no `alc report` step.
+
+    Args:
+        out_dir: The output directory holding `suite.json`.
+
+    Returns:
+        The path written, or `None` when it could not be. An export problem is not a
+        run problem: the page is the least important thing in the bundle, and the
+        library must never turn its own trouble into a failure of the run it observed.
+    """
+    from .dashboard import export
+
+    target = Path(out_dir) / "index.html"
+    try:
+        target.write_text(export.export_html(out_dir), encoding="utf-8")
+    except Exception as exc:
+        log.debug("could not write %s: %s", target, exc)
+        return None
+    return target
 
 
 def _open_cassette(args: argparse.Namespace) -> Any:

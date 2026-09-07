@@ -2618,3 +2618,42 @@ module-level function and writes the target to match whatever the code produced.
 the same lesson as D-136 and D-141: the tests that find real defects are the ones run
 against a codebase nobody wrote for the library.
 
+### D-147 — Nine more declared-but-dead options, and two sweeps so there is no tenth
+*2026-09-07. Affects `docs/02-API.md` §6, §10, `schemas/scenario.schema.json`.*
+
+D-144 wired two dead CLI flags. Looking for others found nine more options that a user
+could set and nothing would read:
+
+**Flags on `alc run`**, none of which had an `args.<dest>` reader anywhere:
+
+- `--dry-run` — **the serious one.** Its help promises "arm every fault but fire none",
+  and every fault fired. Anyone previewing a plan against side-effecting tools got a
+  real injection.
+- `--allow-side-effects` — an explicit safety opt-in, dropped. It fails closed, so the
+  gate stayed shut and the flag merely looked broken.
+- `--trace-level`, `--preset` — silently ignored.
+- `--suggest-fixes` — **removed rather than wired.** It promised "a ranked fix list (one
+  extra model call per failure)" and no judge accepts such an option; `suggested_fixes`
+  already comes from the SLM and ensemble judges. A flag for a feature that does not
+  exist is worse than no flag.
+
+**Keys in `scenarioBody`** that the schema accepted and the loader dropped, which is
+worse than rejecting them: the author gets no error and no effect. `skip:` was the
+notable one — a scenario its author had disabled ran anyway. Also `trace_level:`,
+`adapter:` and `baseline:`, all now stored on `Scenario` and honoured by `run_suite`.
+
+`--preset` was ambiguous ("run a named preset instead of a scenario file"). It replaces
+the declared faults rather than adding to them: "instead of" reads that way, and adding
+would make the flag's effect depend on whatever the file happened to contain.
+
+**Wiring `adapter:` broke our own demo suite, which is the finding worth keeping.**
+`examples/scenarios/demo_suite.yaml` had said `adapter: langgraph` since it was written,
+while `build_app` instruments the graph itself and returns a plain callable — so the
+correct adapter is `vanilla`, and the sniff had been picking it all along. The declared
+value was wrong for as long as nothing read it. Dead configuration does not stay inert;
+it drifts into being wrong, and then wiring it looks like a regression.
+
+Two sweep tests are the guard, in `tests/cli/test_declared_options_are_honoured.py`:
+every parser `dest` has a reader in the library source, and every `scenarioBody`
+property has a `Scenario` field. Both would have caught D-144 on the day it landed.
+
