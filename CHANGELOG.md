@@ -9,6 +9,30 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+## 0.2.4 — 2026-09-05
+
+Whether a fault bit anything no longer depends on the seed, and there is now a path
+for reporting the bugs colleagues will find.
+
+- **D-137** A mutation chose its target without checking it could act on it, so
+  `stringify_numbers` on `{"temp_c": 24, "city": "Paris", "humidity": 48}` picked
+  `city` on two seeds in five and silently did nothing. Every real payload mixes field
+  types, so seven mutations had a seed-dependent chance of being a wasted scenario.
+  They now sample only from eligible fields — measured across 100 seeds, all seven went
+  from 40–60% to **100/100**. An explicitly named `keys:` is still honoured whether or
+  not the mutation can act, because a scenario naming a field means it.
+- Issue templates, with a dedicated one for **a probe firing on correct behaviour** —
+  the report that matters most and the one a user is least likely to send, because
+  their default assumption is that they misconfigured something. It says plainly that
+  it is our bug, cites the time it really happened, and notes that `report.json` is
+  redacted before it is written so it is normally safe to attach.
+- FAQ troubleshooting for the first hour: a fault that did nothing (four causes, in the
+  order they occur), `ModuleNotFoundError` after a clean install, and a `secret_leak`
+  finding you do not believe.
+- The install line is the PEP 508 `name[extras] @ git+https://…` form pinned to the
+  current tag — `#egg=` is deprecated and pip 26 refuses it. A test asserts the pinned
+  tag exists and matches `__version__`.
+
 ## 0.2.3 — 2026-09-05
 
 **A third credential path, and the test that found it.** `injected_faults[].fires[]`

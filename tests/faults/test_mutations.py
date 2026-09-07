@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import copy
 import random
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from hypothesis import given, settings
@@ -575,3 +575,85 @@ class TestAnExplicitKeyReachesTheEnvelope:
         result = self._drop(payload, count=1)
         assert "rows" in result, "the envelope key was chosen instead of a record key"
         assert all(len(row) == 1 for row in result["rows"])
+
+
+class TestAMutationTargetsWhatItCanActOn:
+    """D-137: whether a fault bit anything must not depend on the seed.
+
+    `_choose_paths` sampled from *every* candidate path, and each mutation then acted
+    only on values of the kind it understands. So `stringify_numbers` on
+    `{"temp_c": 24, "city": "Paris", "humidity": 48}` picked `city` on two seeds in
+    five and silently did nothing:
+
+        seed 1337 -> humidity stringified
+        seed    7 -> no change
+        seed   42 -> no change
+
+    Every real payload mixes field types, so every one of these mutations had a
+    seed-dependent chance of being a wasted scenario. A mutation now samples only
+    from paths it can actually act on. Where none is eligible it still changes
+    nothing -- and D-132 records that as a skip rather than a fire.
+    """
+
+    PAYLOAD: ClassVar[dict[str, Any]] = {
+        "temp_c": 24,
+        "city": "Paris",
+        "humidity": 48,
+        "tags": ["a", "b", "c"],
+        "note": "a fairly long descriptive string that can be truncated",
+    }
+
+    def _apply(self, name: str, seed: int, payload: Any = None) -> Any:
+        import copy
+
+        from agent_loop_chaos.mutations import MUTATIONS
+        from agent_loop_chaos.seeding import rng
+
+        return MUTATIONS[name](
+            copy.deepcopy(self.PAYLOAD if payload is None else payload), rng(seed, "s")
+        )
+
+    @pytest.mark.parametrize(
+        "name",
+        ["stringify_numbers", "negative_numbers", "nan_numbers", "unit_swap", "truncate_string"],
+    )
+    @pytest.mark.parametrize("seed", [1337, 7, 42, 99, 2024, 5, 61])
+    def test_it_bites_on_every_seed(self, name: str, seed: int) -> None:
+        """The payload has a field each of these can act on, so it must act."""
+        assert self._apply(name, seed) != self.PAYLOAD, (
+            f"{name} did nothing on seed {seed}; it chose a field it cannot act on"
+        )
+
+    @pytest.mark.parametrize("seed", [1337, 7, 42, 99])
+    def test_a_list_mutation_finds_the_list(self, seed: int) -> None:
+        payload = {"rows": [{"a": 1}, {"a": 2}, {"a": 3}], "status": "ok", "count": 3}
+        assert self._apply("truncate_list", seed, payload) != payload
+
+    @pytest.mark.parametrize(
+        "name", ["stringify_numbers", "negative_numbers", "unit_swap", "truncate_string"]
+    )
+    def test_a_payload_with_nothing_eligible_changes_nothing(self, name: str) -> None:
+        """Honest, and D-132 turns it into a skip rather than a fire."""
+        payload = {"flag": True, "nested": {"other": None}}
+        assert self._apply(name, 1337, payload) == payload
+
+    def test_an_explicit_key_is_still_honoured_over_eligibility(self) -> None:
+        """A scenario naming a field means it, even if the mutation cannot act."""
+        payload = {"city": "Paris"}
+        assert self._apply_keys("stringify_numbers", payload, ["city"]) == payload
+
+    def _apply_keys(self, name: str, payload: Any, keys: list[str]) -> Any:
+        import copy
+
+        from agent_loop_chaos.mutations import MUTATIONS
+        from agent_loop_chaos.seeding import rng
+
+        return MUTATIONS[name](copy.deepcopy(payload), rng(1337, "s"), keys=keys)
+
+    def test_it_stays_deterministic(self) -> None:
+        assert self._apply("stringify_numbers", 1337) == self._apply("stringify_numbers", 1337)
+
+    def test_two_seeds_can_still_choose_differently(self) -> None:
+        """Eligibility narrows the pool; it must not collapse it to one choice."""
+        chosen = {str(self._apply("stringify_numbers", seed)) for seed in range(1, 40)}
+        assert len(chosen) > 1, "every seed now picks the same field"

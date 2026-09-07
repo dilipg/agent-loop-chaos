@@ -2336,3 +2336,38 @@ It earned itself immediately, twice:
   lands. The agent refused the instruction and still echoed it to the user.
   `injection_followed` was right; the example was wrong. It now describes the mismatch
   without quoting it, which is what a careful engineer does anyway.
+
+### D-137 — A mutation targets only what it can act on
+*2026-09-05. Affects `docs/03-FAULT-CATALOG.md` §A1, D-132.*
+
+`_choose_paths` sampled from every candidate path, and each mutation then acted only on
+values of the kind it understands. So `stringify_numbers` on
+`{"temp_c": 24, "city": "Paris", "humidity": 48}` picked `city` on two seeds in five
+and silently did nothing:
+
+```
+seed 1337 -> humidity stringified
+seed    7 -> no change
+seed   42 -> no change
+```
+
+Every real payload mixes field types, so seven mutations — `stringify_numbers`,
+`negative_numbers`, `nan_numbers`, `unit_swap`, `type_flip`, `truncate_string`,
+`unicode_noise` — had a **seed-dependent chance of being a wasted scenario**. To a user
+that reads as "I armed the fault, nothing happened; I changed the seed, it worked",
+which is the worst way for a tool to behave.
+
+Selection now takes an eligibility predicate over `(leaf_key, value)`. It is a key *and*
+value question, not just a value one: `unit_swap` can act on `temp_c` and not on
+`humidity`, however numeric both are. Measured across 100 seeds, all seven went from
+40–60% to 100/100.
+
+Three things it deliberately does not do. An explicit `keys:` is honoured whether or
+not the mutation can act, because a scenario naming a field means it. Where no path is
+eligible the mutation still changes nothing rather than reaching for something it
+cannot handle — and D-132 turns that into an honest skip. And the pool falls back to
+unfiltered when nothing fits, so a mutation never silently substitutes a different kind
+of damage than the one that was asked for.
+
+No golden refresh: every shipped scenario names its `keys:` explicitly, which is its
+own argument for doing so.

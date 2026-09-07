@@ -1,0 +1,50 @@
+name: Something else is broken
+description: A crash, a wrong number, a fault that did nothing, a CLI that refused.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two things worth knowing before you write this up, because both have been real
+        bugs rather than user error:
+
+        - **A fault that reports it fired but changed nothing.** If a run says a fault
+          fired and you cannot see what it did, check `injected_faults[].fires[].json_patch`.
+          An empty patch there is a bug in us.
+        - **`ModuleNotFoundError: agent_loop_chaos` after a successful install.** On
+          macOS with iCloud Desktop & Documents sync, the file provider hides `.pth`
+          files and Python skips them. Run `make doctor`; the fix is a virtualenv
+          outside the synced directory.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`alc --version`"
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python and OS
+      placeholder: "3.12 on macOS 15 / 3.11 on Ubuntu 24.04"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: The command, and the smallest scenario that shows it
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: The full traceback, or the relevant part of `report.json`.
+      render: shell

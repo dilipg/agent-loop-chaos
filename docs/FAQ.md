@@ -203,3 +203,69 @@ alc run chaos/suite.yaml --judge rules --json --quiet > result.json
 ```
 
 `--judge rules` is the CI default for a reason: no endpoint, no network, reproducible.
+
+## Troubleshooting: I armed a fault and nothing happened
+
+Four causes, in the order they actually occur. The report tells you which:
+`injected_faults[0].skipped_reason` names it, and `fired: false` with no reason is
+itself a bug worth reporting.
+
+**1. The target does not match a name the engine saw.** `target: {tool: get_weather}`
+matches the *registered* name, which is the function's name unless you passed
+`name=`. A bare `@engine.llm` registers the model as `"default"`, not as the
+function's name — this has caught us, in our own test suite. `alc explain <run_dir>`
+lists what the engine actually intercepted.
+
+**2. The fault has nothing to act on.** `drop_key(keys=["tenant_id"])` finds nothing
+when the agent passes `tenant_id` positionally, and `unit_swap` finds nothing in a
+payload with no unit-bearing field. From v0.2.3 this records a skip naming the
+reason rather than counting as a fire, and from v0.2.4 a mutation only chooses fields
+it can act on — so this should now be rare, and a silent no-op is a bug.
+
+**3. The trigger never came up.** `on_call: 3` on a tool the agent calls twice never
+fires. So does `on_step: 2` for an agent that finishes in one step. Check
+`metrics.tool_calls` and `metrics.steps` in the report against what the trigger asked
+for.
+
+**4. The gate refused it at registration.** `ArgumentTamperFault`,
+`DuplicateSideEffectFault` and `CheckpointRollbackFault` refuse a tool declared
+`side_effecting=True` unless the scenario names it in `allow_side_effects:`. That is a
+`ConfigError` at start, not a silent skip — read the message, it names the tool.
+
+## Troubleshooting: `ModuleNotFoundError` after a successful install
+
+On macOS with iCloud's "Desktop & Documents" sync, the file provider sets `UF_HIDDEN`
+on files it manages and CPython's `site.py` **skips hidden `.pth` files** — so an
+editable install inside a synced directory silently stops resolving, mid-session, with
+no diagnostic beyond a missing module.
+
+```bash
+make doctor
+```
+
+`chflags nohidden` clears the flag and the provider puts it back. The fix is a
+virtualenv outside the synced tree; the checkout can stay where it is, because only
+`.pth` files are skipped and never source files.
+
+```bash
+make venv VENV=~/.venvs/agent-loop-chaos
+. ~/.venvs/agent-loop-chaos/bin/activate
+```
+
+## Troubleshooting: it says my agent leaked a secret and I do not think it did
+
+Report it — see the *false positive* issue template. This exact bug shipped:
+`redacted_value_in_output` treated every tool argument as an egress point, so any agent
+passing `Authorization: Bearer …` to the tool that requires it produced a
+`secret_leak` finding at critical severity. Fixed in v0.2.2.
+
+If the finding is `secret_in_output` and your credential really is in the answer, that
+one is usually right — check `final_output` in the report.
+
+If a credential of yours appears in the *report itself* under a name we could not
+guess, declare it and re-run:
+
+```yaml
+defaults:
+  redact_keys: ["x_signature", "x_.*_secret"]
+```

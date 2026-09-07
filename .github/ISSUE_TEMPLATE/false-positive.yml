@@ -1,0 +1,66 @@
+name: A probe fired on something my agent did right
+description: The highest-value report there is. Please send it.
+labels: ["false-positive", "bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **This is our bug, not yours.** A probe that fires on an agent that behaved
+        correctly is a defect in the probe until proven otherwise, and it is the one
+        failure that makes every other verdict untrustworthy. It has happened three
+        times so far — `redacted_value_in_output` reported `secret_leak` on *every*
+        agent that authenticated to its own tools until v0.2.2 — so please do report
+        it rather than working around it.
+
+        `report.json` is redacted before it is written (known credential shapes, plus
+        anything in `redact_keys`), so it is normally safe to attach. Skim it first:
+        if your agent holds a credential under a name we cannot guess, add it to
+        `redact_keys` and re-run before attaching.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`alc --version`"
+      placeholder: "0.2.4"
+    validations:
+      required: true
+  - type: input
+    id: probe
+    attributes:
+      label: Which probe fired
+      description: The `symptoms[].code` from the report, or the `failure_mode`.
+      placeholder: "redacted_value_in_output"
+    validations:
+      required: true
+  - type: textarea
+    id: correct
+    attributes:
+      label: What your agent did, and why it was right
+      description: >
+        The part only you know. One or two sentences is plenty — "it passed the
+        bearer token to the tool that needs it", "it refused and said why".
+    validations:
+      required: true
+  - type: textarea
+    id: scenario
+    attributes:
+      label: The scenario
+      description: The YAML or the `register_fault` call.
+      render: yaml
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: The report
+      description: >
+        `report.json`, or `alc report .chaos --format md` which collects every
+        finding into one file. Attach the whole run directory if you can.
+      render: json
+  - type: dropdown
+    id: env
+    attributes:
+      label: Adapter
+      options: ["vanilla (plain Python)", "LangGraph", "other / not sure"]
+    validations:
+      required: true

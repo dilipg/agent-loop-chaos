@@ -1,0 +1,12 @@
+blank_issues_enabled: true
+contact_links:
+  - name: A fault did nothing on my agent
+    url: https://github.com/dilipg/agent-loop-chaos/blob/main/docs/FAQ.md
+    about: >
+      Usually a targeting mismatch rather than a bug -- the FAQ's troubleshooting
+      section walks the four common causes. If none of them fit, open a bug.
+  - name: Pointing it at an agent with real credentials
+    url: https://github.com/dilipg/agent-loop-chaos/blob/main/SAFETY.md
+    about: >
+      SAFETY.md section 5. The engine never needs a credential of its own; what
+      matters is redact_keys and the side-effect gate.

@@ -159,7 +159,12 @@ def _candidate_paths(record: Any, depth: int, prefix: str = "") -> list[str]:
 
 
 def _choose_paths(
-    records: list[Any], keys: list[str] | None, count: int, depth: int, rng: Any
+    records: list[Any],
+    keys: list[str] | None,
+    count: int,
+    depth: int,
+    rng: Any,
+    eligible: Callable[[str, Any], bool] | None = None,
 ) -> list[str]:
     """Decide which dotted paths to act on.
 
@@ -169,17 +174,35 @@ def _choose_paths(
         count: How many to choose when `keys` is `None`.
         depth: Recursion limit for candidate discovery.
         rng: The seeded generator.
+        eligible: Called as `(leaf_key, value)`; only paths it accepts are
+            sampled. Without it, `stringify_numbers` on
+            `{"temp_c": 24, "city": "Paris"}` picked `city` on two seeds in five and
+            silently did nothing -- so whether a fault bit anything depended on the
+            seed, on any payload with mixed field types, which is every real one
+            (D-137). Falls back to the unfiltered pool when nothing is eligible, so
+            the mutation still records an honest no-change rather than a silent skip
+            of its own.
 
     Returns:
         The chosen paths. Selection is `rng.sample(sorted(candidates), count)`, so
         the choice is reproducible and independent of dict ordering.
     """
     if keys is not None:
+        # A scenario naming a field means it, whether or not this mutation can act.
         return list(keys)
     candidates: set[str] = set()
     for record in records:
         candidates.update(_candidate_paths(record, depth))
     ordered = sorted(candidates)
+    if eligible is not None:
+        fit = sorted(
+            path
+            for path in ordered
+            for record in records
+            if (found := _parent_and_leaf(record, path)) is not None
+            and eligible(found[1], found[0][found[1]])
+        )
+        ordered = fit or ordered
     if not ordered:
         return []
     chosen: list[str] = rng.sample(ordered, min(count, len(ordered)))
@@ -208,11 +231,55 @@ def _parent_and_leaf(record: Any, path: str) -> tuple[Any, str] | None:
     return None
 
 
+def _is_number(key: str, value: Any) -> bool:
+    """Whether a numeric mutation can act here.
+
+    Args:
+        key: The leaf key.
+        value: The candidate value.
+
+    Returns:
+        True for a real int or float. `bool` is excluded: flipping a flag's sign or
+        stringifying it is not the failure any of these faults is modelling.
+    """
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _is_text(key: str, value: Any) -> bool:
+    """Whether a string mutation can act here.
+
+    Args:
+        key: The leaf key.
+        value: The candidate value.
+
+    Returns:
+        True for a string long enough for a truncation to be visible.
+    """
+    return isinstance(value, str) and len(value) > 1
+
+
+def _has_unit(key: str, value: Any) -> bool:
+    """Whether `unit_swap` can act here.
+
+    Eligibility is about the *name*: swapping a unit needs a field that declares one,
+    so `temp_c` qualifies and `humidity` does not, however numeric it is.
+
+    Args:
+        key: The leaf key.
+        value: The candidate value.
+
+    Returns:
+        True when the key names a unit this module can convert.
+    """
+    return _is_number(key, value) and _unit_for(key) is not None
+
+
 def _apply_to_paths(
     value: Any,
     rng: Any,
     params: dict[str, Any],
     action: Callable[[Any, str], None],
+    eligible: Callable[[str, Any], bool] | None = None,
 ) -> Any:
     """Deep-copy `value` and run `action` at every selected path.
 
@@ -221,6 +288,8 @@ def _apply_to_paths(
         rng: The seeded generator.
         params: Mutation params; `keys`, `count` and `depth` are consumed here.
         action: Called as ``action(parent_mapping, leaf_key)`` for each hit.
+        eligible: Which values this mutation can act on, so it does not spend its one
+            choice on a field it will ignore (D-137).
 
     Returns:
         The mutated copy, or the original when it could not be copied.
@@ -238,7 +307,12 @@ def _apply_to_paths(
         # unchanged: with no `keys`, the records are still the target.
         records = [working, *records]
     paths = _choose_paths(
-        records, keys, int(params.get("count", 1)), int(params.get("depth", 3)), rng
+        records,
+        keys,
+        int(params.get("count", 1)),
+        int(params.get("depth", 3)),
+        rng,
+        eligible,
     )
     for record in records:
         for path in paths:
@@ -379,7 +453,7 @@ def type_flip(value: Any, rng: Any, **params: Any) -> Any:
             else:
                 parent[leaf] = "N/A"
 
-    return _apply_to_paths(value, rng, params, flip)
+    return _apply_to_paths(value, rng, params, flip, _is_number)
 
 
 @_register("stringify_numbers")
@@ -400,7 +474,7 @@ def stringify_numbers(value: Any, rng: Any, **params: Any) -> Any:
         if isinstance(current, (int, float)) and not isinstance(current, bool):
             parent[leaf] = str(current)
 
-    return _apply_to_paths(value, rng, params, stringify)
+    return _apply_to_paths(value, rng, params, stringify, _is_number)
 
 
 @_register("negative_numbers")
@@ -421,7 +495,7 @@ def negative_numbers(value: Any, rng: Any, **params: Any) -> Any:
         if isinstance(current, (int, float)) and not isinstance(current, bool):
             parent[leaf] = -current
 
-    return _apply_to_paths(value, rng, params, flip_sign)
+    return _apply_to_paths(value, rng, params, flip_sign, _is_number)
 
 
 @_register("nan_numbers")
@@ -449,7 +523,7 @@ def nan_numbers(value: Any, rng: Any, **params: Any) -> Any:
         if isinstance(parent[leaf], (int, float)) and not isinstance(parent[leaf], bool):
             parent[leaf] = dict(encoded)
 
-    return _apply_to_paths(value, rng, params, to_non_finite)
+    return _apply_to_paths(value, rng, params, to_non_finite, _is_number)
 
 
 @_register("unit_swap")
@@ -479,7 +553,7 @@ def unit_swap(value: Any, rng: Any, **params: Any) -> Any:
         if convert is not None:
             parent[leaf] = round(convert(float(current)), 6)
 
-    return _apply_to_paths(value, rng, params, swap)
+    return _apply_to_paths(value, rng, params, swap, _has_unit)
 
 
 # --------------------------------------------------------------- string mutations
@@ -516,7 +590,7 @@ def truncate_string(value: Any, rng: Any, **params: Any) -> Any:
         if isinstance(current, str) and current:
             parent[leaf] = current[: max(1, int(len(current) * fraction))]
 
-    return _apply_to_paths(value, rng, params, cut)
+    return _apply_to_paths(value, rng, params, cut, _is_text)
 
 
 @_register("unicode_noise")
@@ -540,7 +614,7 @@ def unicode_noise(value: Any, rng: Any, **params: Any) -> Any:
         mark = _NOISE_MARKS[rng.randrange(len(_NOISE_MARKS))]
         parent[leaf] = current[:position] + mark + current[position:]
 
-    return _apply_to_paths(value, rng, params, add_noise)
+    return _apply_to_paths(value, rng, params, add_noise, _is_text)
 
 
 @_register("json_as_string")

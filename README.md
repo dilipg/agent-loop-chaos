@@ -38,8 +38,11 @@ agent handled it, and writes the finding as a work order a coding agent can exec
 ## Install
 
 ```bash
-pip install "agent-loop-chaos[yaml]"
+# not on PyPI yet -- install from the tag
+pip install "agent-loop-chaos[yaml] @ git+https://github.com/dilipg/agent-loop-chaos@v0.2.4"
 ```
+
+Once it is published, `pip install "agent-loop-chaos[yaml]"`.
 
 `jsonschema` is the only *required* dependency — `pip install agent-loop-chaos` on its
 own works and reads JSON suites. The `[yaml]` extra is worth taking anyway, because
@@ -48,8 +51,9 @@ scaffolds JSON instead and says so, rather than writing a file the next command 
 read.)
 
 ```bash
-pip install "agent-loop-chaos[langgraph]"   # LangGraph adapter
-pip install "agent-loop-chaos[slm]"         # httpx, for a local model judge
+# ...[langgraph]   the LangGraph adapter
+# ...[slm]         httpx, for a local model judge
+# ...[all]         all three
 ```
 
 ## Quickstart
@@ -792,13 +796,17 @@ boundary).
 
 ## Status
 
-Pre-alpha, version 0.2.3. Everything described above is implemented and tested: the
+Pre-alpha, version 0.2.4. Everything described above is implemented and tested: the
 engine, 28 faults, 20 probes, the assertions layer, the judges, the refinement loop,
 the two demo agents, the eight-shape conformance pool, and the live dashboard with its
 single-file HTML export. See [docs/08-ROADMAP.md](docs/08-ROADMAP.md).
 
-- [FAQ](docs/FAQ.md) — why not evals, how to add a fault, how to run offline, what to
-  do when a probe has a false positive
+- [FAQ](docs/FAQ.md) — why not evals, how to add a fault, how to run offline, and
+  **troubleshooting**: a fault that did nothing, `ModuleNotFoundError` after a clean
+  install, and what to do when a probe fires on correct behaviour
+- **Found a probe firing on something your agent did right?** That is our bug, and the
+  most useful report you can send: [open a false-positive issue](.github/ISSUE_TEMPLATE/false-positive.yml).
+  `report.json` is redacted before it is written, so it is normally safe to attach
 - [Architecture](docs/01-ARCHITECTURE.md) · [API](docs/02-API.md) ·
   [Safety](SAFETY.md) · [Contributing](CONTRIBUTING.md)
 - [docs/DECISIONS.md](docs/DECISIONS.md) — every design decision, dated, including the

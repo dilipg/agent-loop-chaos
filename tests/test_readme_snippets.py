@@ -391,3 +391,45 @@ class TestTheReadmeCoversRunningAgainstARealAgent:
         shown = set(re.findall(r"^      ([a-z_]+):", block, re.M))
         assert shown, "the annotated scenario no longer shows an expect block"
         assert shown <= declared, f"the README shows checks that do not exist: {shown - declared}"
+
+
+class TestTheInstallLineIsUsable:
+    """Until it is on PyPI, the install line is the first thing that can be wrong.
+
+    `#egg=` is deprecated and pip 26 will refuse it, so the README must show the
+    PEP 508 `name[extras] @ url` form (D-137).
+    """
+
+    def test_it_says_it_is_not_on_pypi_yet(self) -> None:
+        install = _readme().split("## Install")[1].split("## ")[0]
+        assert "not on PyPI yet" in install
+
+    def test_it_uses_the_pep_508_form(self) -> None:
+        install = _readme().split("## Install")[1].split("## ")[0]
+        assert "@ git+https://" in install
+        assert "#egg=" not in install, "pip 26 refuses the egg fragment"
+
+    def test_it_pins_a_tag_that_exists(self, repo_root: Path) -> None:
+        """An install line pointing at a tag nobody cut is worse than none."""
+        import re
+        import subprocess
+
+        install = _readme().split("## Install")[1].split("## ")[0]
+        pinned = re.search(r"@(v\d+\.\d+\.\d+)", install)
+        assert pinned, "the install line names no tag"
+        tags = subprocess.run(
+            ["git", "tag"], capture_output=True, text=True, cwd=repo_root
+        ).stdout.split()
+        assert pinned.group(1) in tags, f"{pinned.group(1)} is not a tag"
+
+    def test_the_pinned_tag_is_the_current_version(self, repo_root: Path) -> None:
+        import re
+
+        from agent_loop_chaos import __version__
+
+        install = _readme().split("## Install")[1].split("## ")[0]
+        pinned = re.search(r"@v(\d+\.\d+\.\d+)", install)
+        assert pinned and pinned.group(1) == __version__, (
+            f"the README installs v{pinned.group(1) if pinned else '?'} but the code is "
+            f"{__version__}"
+        )
