@@ -23,6 +23,7 @@ import hashlib
 import inspect
 import json
 import logging
+import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -248,10 +249,22 @@ def resolve_entrypoint(entrypoint: Any, engine: Any) -> Any:
         if ":" not in text:
             raise ConfigError(f"entrypoint must be 'module:attr'; got {text!r}")
         module_name, _, attr = text.partition(":")
+        _allow_project_imports()
         try:
             resolved = getattr(importlib.import_module(module_name), attr)
         except (ImportError, AttributeError) as exc:
             raise ConfigError(f"cannot import entrypoint {text!r}: {exc}") from exc
+        except Exception as exc:
+            # The service raised while importing -- settings validated at import time is
+            # the usual cause. That is the caller's configuration, not a library fault,
+            # and reporting it as an internal error sends them to debug the wrong
+            # codebase (D-149).
+            raise ConfigError(
+                f"importing entrypoint {text!r} raised "
+                f"{type(exc).__name__}: {exc}. This is your project's own error, not a "
+                "chaos failure -- settings validated at import are the usual cause, and "
+                "dummy values are enough because the engine never dials out."
+            ) from exc
 
     try:
         parameters = list(inspect.signature(resolved).parameters)
@@ -260,6 +273,22 @@ def resolve_entrypoint(entrypoint: Any, engine: Any) -> Any:
     if parameters and parameters[0] == "engine":
         return resolved(engine)
     return resolved
+
+
+def _allow_project_imports() -> None:
+    """Put the working directory on `sys.path`, as `python -m` and pytest both do.
+
+    A service is normally run from its own root, where the interpreter has already put
+    that directory on the path. A console script has not, so `alc doctor
+    app.service:answer` failed with `No module named 'app'` until the reader thought to
+    set `PYTHONPATH` -- a poor first five minutes for something whose whole claim is
+    that it works on your repository (D-149).
+    """
+    import os
+
+    cwd = os.getcwd()
+    if cwd not in sys.path:
+        sys.path.insert(0, cwd)
 
 
 def _baseline_key(scenario: Scenario) -> str:

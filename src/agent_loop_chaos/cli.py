@@ -1070,10 +1070,11 @@ def _doctor(args: argparse.Namespace) -> int:
 
     llms = sorted({str(x.get("llm")) for x in result.llm_exchanges if x.get("llm")})
     tools = sorted({str(x.get("tool")) for x in result.tool_calls if x.get("tool")})
-    found = bool(llms or tools)
+    graphs = _compiled_graphs(args.target)
+    found = bool(llms or tools or graphs)
 
     if args.json:
-        print(json.dumps({"strategies": strategies, "llm": llms, "tools": tools}))
+        print(json.dumps({"strategies": strategies, "llm": llms, "tools": tools, "graphs": graphs}))
         return 0 if found else 1
 
     print(f"Probed {args.target} with no faults injected.\n")
@@ -1085,6 +1086,15 @@ def _doctor(args: argparse.Namespace) -> int:
         print("Tools found (target with `tool:`)")
         for name in tools:
             print(f"  ok  {name}")
+    if graphs:
+        print("Graphs compiled at import (name these with `seams: {graph: ...}`)")
+        for name in graphs:
+            print(f"  ok  {name}")
+        print(
+            "  ^ node, edge, state and checkpoint faults need the graph object, and a\n"
+            "    graph built once at module level never hands it to anyone. Naming it\n"
+            "    is enough; a graph compiled inside the call needs nothing."
+        )
     if not found and not result.success and not result.metrics.get("steps"):
         # Found while probing a real service: the agent crashed on the input given, and
         # reporting that as "no seam found" sent the reader after a hand-rolled client
@@ -1116,12 +1126,51 @@ def _doctor(args: argparse.Namespace) -> int:
         return 1
 
     print("\nA suite that targets what was found:\n")
-    print(_doctor_suite(args.target, args.inputs, llms, tools))
+    print(_doctor_suite(args.target, args.inputs, llms, tools, graphs))
     return 0
 
 
+def _compiled_graphs(target: str) -> list[str]:
+    """Find compiled LangGraph objects sitting at module level in the target's package.
+
+    The shape that silently loses every graph-layer fault: a service compiles its graph
+    once and reuses it, so the engine is handed nothing and the probe reports only an
+    llm seam. Nothing else would tell the reader that node, edge, state and checkpoint
+    faults are one `seams:` line away (D-149).
+
+    Args:
+        target: The probed ``module:attr`` entrypoint.
+
+    Returns:
+        ``module:attr`` paths, sorted, or an empty list when there are none.
+    """
+    # The entrypoint's own module, and no wider. Scanning the whole top-level package
+    # finds graphs in modules this run never touched, and a suggestion pointing at an
+    # unrelated graph is worse than none. A service keeps the singleton beside the
+    # function that invokes it -- `_workflow` and `run_user_pipeline` in one file -- so
+    # this is where it actually is.
+    name = str(target).partition(":")[0]
+    module = sys.modules.get(name)
+    found: list[str] = []
+    if module is not None:
+        for attribute in dir(module):
+            if attribute.startswith("__"):
+                continue
+            try:
+                value = getattr(module, attribute)
+            except Exception:  # pragma: no cover - a module with exotic descriptors
+                continue
+            if hasattr(value, "invoke") and hasattr(value, "get_graph"):
+                found.append(f"{name}:{attribute}")
+    return sorted(set(found))
+
+
 def _doctor_suite(
-    target: str, inputs: str | None, llms: Sequence[str], tools: Sequence[str]
+    target: str,
+    inputs: str | None,
+    llms: Sequence[str],
+    tools: Sequence[str],
+    graphs: Sequence[str] = (),
 ) -> str:
     """Render a starter suite for the seams a probe found.
 
@@ -1130,6 +1179,7 @@ def _doctor_suite(
         inputs: What it was given.
         llms: Model names discovered.
         tools: Tool names discovered.
+        graphs: Module-level compiled graphs discovered.
 
     Returns:
         YAML, ready to paste into a file and run.
@@ -1141,8 +1191,13 @@ def _doctor_suite(
         f"  inputs: {json.dumps(inputs or 'your question here')}",
         "  intercept: true",
         "  seed: 1337",
-        "scenarios:",
     ]
+    if graphs:
+        lines += [
+            "  seams:",
+            f"    graph: [{json.dumps(graphs[0])}]",
+        ]
+    lines.append("scenarios:")
     if llms:
         lines += [
             "  - id: llm.reply_is_truncated",
@@ -1151,6 +1206,15 @@ def _doctor_suite(
             "    faults:",
             "      - type: LLMTruncationFault",
             f"        target: {{ llm: {json.dumps(llms[0])}, phase: post }}",
+        ]
+    if graphs:
+        lines += [
+            "  - id: graph.a_node_is_skipped",
+            '    title: "A node does not run"',
+            "    expected_behavior: graceful_degradation",
+            "    faults:",
+            "      - type: NodeSkipFault",
+            "        target: { layer: node, node: your_node_name }",
         ]
     if tools:
         lines += [

@@ -36,6 +36,14 @@ library — see `docs/04-SCHEMAS.md` §2.
   `defaults:`, or `alc run --intercept`. Neither optional dependency becomes a hard
   one: availability is `find_spec`, the import is inside `attach()`, and a test asserts
   that listing the strategies imports nothing they patch.
+- **Three things a newcomer hits in the first five minutes** (**D-149**), found by
+  installing into a clean virtualenv and following the README from scratch: a
+  `module:attr` entrypoint failed with `No module named 'app'` unless `PYTHONPATH` was
+  set (the working directory is now added, as `python -m` and pytest do); a service that
+  raised on import exited `3`, which means *the library* broke, rather than `2` with a
+  message saying whose error it is; and `alc doctor` never mentioned a graph compiled at
+  module level, so it reported an llm seam and looked successful while every graph-layer
+  fault was quietly unavailable.
 - **Node, edge, state and checkpoint faults now reach a graph nobody hands over**
   (**D-148**). `instrument_graph(app, engine)` needs the graph object and a real service
   usually has none to give, which is what harness files were for. Two shapes are now

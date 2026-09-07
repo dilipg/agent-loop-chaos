@@ -2689,3 +2689,31 @@ instrumented, `NodeSkipFault` and `StateDropFault` both firing, from two dummy e
 the service's own `AsyncMongoMockClient` test pattern, `GenericFakeChatModel` from
 langchain-core, and one `seams: {graph: ...}` line.
 
+### D-149 — Three things a newcomer hits in the first five minutes
+*2026-09-07. Affects `docs/02-API.md` §10.*
+
+Installing into a clean virtualenv and following the README as somebody who had never
+seen the project found three, none of which any existing test could have caught because
+every test runs from a repository root with the package already importable.
+
+- **`No module named 'app'`.** A service is normally run from its own root, where the
+  interpreter has already put that directory on `sys.path` -- which is what `python -m`
+  and pytest both do. A console script has not, so every `module:attr` entrypoint failed
+  until the reader thought to set `PYTHONPATH`. `resolve_entrypoint` now inserts the
+  working directory, as those two do.
+- **A service that raises on import exited 3.** Exit 3 means the library broke. Settings
+  validated at import are the commonest first obstacle, and sending a coding agent to
+  debug *this* codebase when the caller's own settings module raised is the most
+  expensive wrong turn the tool can cause. It is a `ConfigError` now -- exit 2 -- and the
+  message says whose error it is and that dummy values are enough.
+- **`doctor` never mentioned the graph it could not reach.** A service that compiles its
+  graph once at module level hands the engine nothing, so the probe reported an llm seam
+  and looked successful while node, edge, state and checkpoint faults were quietly
+  unavailable. It now names any compiled graph in the entrypoint's own module and prints
+  the `seams: {graph: ...}` line that reaches it.
+
+The scan is deliberately the entrypoint's **own module** and no wider. Scanning the
+top-level package finds graphs in modules the run never touched, and a suggestion
+pointing at an unrelated graph is worse than none. A service keeps the singleton beside
+the function that invokes it, which is where this looks.
+

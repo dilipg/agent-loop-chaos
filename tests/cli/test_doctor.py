@@ -105,3 +105,100 @@ class TestItDistinguishesACrashFromAnAbsence:
         assert "failed before reaching" in out
         assert "--inputs" in out, "the likeliest cause must be named"
         assert "No tool or llm seam was reached" not in out, "that diagnosis is misleading here"
+
+
+class TestItWorksFromAProjectRoot:
+    """Found by installing into a clean venv and following the README as a newcomer.
+
+    A service is usually run from its own root with the package importable because the
+    interpreter put the working directory on the path -- which is what `python -m` and
+    pytest both do. A console script does not, so `alc doctor app.service:answer` failed
+    with `No module named 'app'` until the reader thought to set `PYTHONPATH`.
+    """
+
+    def test_a_module_in_the_working_directory_is_importable(
+        self, tmp_path: Any, monkeypatch: Any, capsys: Any
+    ) -> None:
+        (tmp_path / "svc_ok.py").write_text(
+            "def answer(q=None):\n    return 'fine'\n", encoding="utf-8"
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+        code = main(["doctor", "svc_ok:answer", "--inputs", "q"])
+        assert code in (0, 1), capsys.readouterr().out
+
+
+class TestAProblemInTheProjectIsNotAnInternalError:
+    """Exit 3 means "the library broke". A service that cannot import is not that.
+
+    Sending a coding agent to debug the chaos library when its own settings module
+    raised is the most expensive wrong turn this tool can cause.
+    """
+
+    def test_a_failing_import_is_a_usage_error(
+        self, tmp_path: Any, monkeypatch: Any, capsys: Any
+    ) -> None:
+        (tmp_path / "svc_boom.py").write_text(
+            'raise KeyError("Missing required env var: SERVICE_DB_URI")\n', encoding="utf-8"
+        )
+        monkeypatch.chdir(tmp_path)
+        code = main(["doctor", "svc_boom:answer", "--inputs", "q"])
+        err = capsys.readouterr().err
+        assert code == 2, "a service that cannot import is the caller's problem, not ours"
+        assert "SERVICE_DB_URI" in err, "the cause must survive into the message"
+        assert "Traceback" not in err, "a raw traceback reads as a library crash"
+
+    def test_the_same_holds_for_alc_run(self, tmp_path: Any, monkeypatch: Any) -> None:
+        import json
+
+        (tmp_path / "svc_boom2.py").write_text(
+            'raise KeyError("Missing required env var: SERVICE_DB_URI")\n', encoding="utf-8"
+        )
+        suite = tmp_path / "suite.json"
+        suite.write_text(
+            json.dumps(
+                {
+                    "version": "1.0",
+                    "scenarios": [{"id": "s.1", "entrypoint": "svc_boom2:answer", "faults": []}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        assert main(["run", str(suite), "--judge", "rules", "--no-html"]) == 2
+
+
+class TestItFindsAGraphCompiledAtImport:
+    """The shape that silently loses every node and state fault.
+
+    A service that compiles its graph once at module level hands the engine nothing, so
+    the probe sees an llm seam and reports success -- while node, edge, state and
+    checkpoint faults, the ones a multi-node pipeline most needs, are quietly
+    unavailable. `doctor` has to say so, because nothing else will.
+    """
+
+    def test_it_names_the_graph_and_how_to_reach_it(
+        self, tmp_path: Any, monkeypatch: Any, capsys: Any
+    ) -> None:
+        pytest.importorskip("langgraph")
+        monkeypatch.chdir(tmp_path)
+        main(["doctor", "tests.fakes.internal_graph:run_singleton", "--inputs", "q"])
+        out = capsys.readouterr().out
+        assert "COMPILED" in out, "the module-level graph was not found"
+        assert "seams" in out and "graph" in out, "the fix was not named"
+
+    def test_the_suite_it_prints_targets_a_node(
+        self, tmp_path: Any, monkeypatch: Any, capsys: Any
+    ) -> None:
+        pytest.importorskip("langgraph")
+        monkeypatch.chdir(tmp_path)
+        main(["doctor", "tests.fakes.internal_graph:run_singleton", "--inputs", "q"])
+        out = capsys.readouterr().out
+        assert "NodeSkipFault" in out, "the suggested suite skips the graph layers"
+
+    def test_json_reports_the_graphs(self, tmp_path: Any, monkeypatch: Any, capsys: Any) -> None:
+        pytest.importorskip("langgraph")
+        monkeypatch.chdir(tmp_path)
+        main(["doctor", "tests.fakes.internal_graph:run_singleton", "--inputs", "q", "--json"])
+        payload = json.loads(capsys.readouterr().out)
+        assert any("COMPILED" in g for g in payload["graphs"])
