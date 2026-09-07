@@ -29,6 +29,7 @@ import sys
 import time
 import traceback
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -219,6 +220,7 @@ class ChaosEngine:
         judge_options: Mapping[str, Any] | None = None,
         narrate_all: bool = False,
         intensity: int = DEFAULT_LEVEL,
+        intercept: bool = False,
     ) -> None:
         """Initialise an engine.
 
@@ -247,6 +249,10 @@ class ChaosEngine:
                 written. Used throughout the test suite; off by default so a
                 production run is not slowed by it.
             intensity: How hard this run's plan pushes, 1 (strict) to 10 (creative).
+            intercept: Attach the interceptors for the duration of a run, so an agent
+                that wraps nothing still produces `tool` and `llm` crossings. Off by
+                default: patching a process-wide HTTP client is not something to do
+                behind a caller's back.
                 Recorded in `plan.json` and the report. The dial scales **fault
                 specs**, so a suite, a preset or `--intensity` gets scaled faults;
                 a `Fault` object handed to `register_fault` directly is taken as
@@ -276,6 +282,8 @@ class ChaosEngine:
         self.intensity = profile(intensity).level
         self._judge_impl: Any | None = None
 
+        self.intercept = bool(intercept)
+        self._attach_report: Any = None
         self._faults: list[_ArmedFault] = []
         self._tools: dict[str, ToolInfo] = {}
         self._fault_counter = 0
@@ -1067,6 +1075,50 @@ class ChaosEngine:
         pattern = armed.target.tool
         # No tool constraint at all is broader than a glob, so it counts as one.
         return pattern is None or any(ch in pattern for ch in "*?[")
+
+    def _intercept_layers(self) -> set[str]:
+        """The payload layers this plan needs a strategy to have attached.
+
+        Returns:
+            The subset of ``{"llm", "tool"}`` the registered faults target. A plan of
+            node or state faults needs neither, so it is never refused for want of one.
+        """
+        wanted: set[str] = set()
+        for armed in self._faults:
+            layer = armed.target.implied_layer()
+            if layer in ("llm", "tool"):
+                wanted.add(layer)
+        return wanted
+
+    @contextmanager
+    def _interception(self) -> Iterator[None]:
+        """Attach the interceptors for the duration of one run.
+
+        Yields:
+            Nothing. The patches are in place for the body and removed after it,
+            whatever happens inside.
+
+        Raises:
+            ConfigError: When `intercept` is on and no strategy could attach a layer
+                this plan needs. Running anyway would produce a green report about an
+                agent nothing was injected into, which is the failure this exists to
+                prevent (D-64).
+        """
+        if not self.intercept:
+            yield
+            return
+        from . import interceptors
+
+        registry = interceptors.Registry(interceptors.default_strategies())
+        report = registry.attach(self)
+        self._attach_report = report
+        try:
+            missing = sorted(self._intercept_layers() - report.layers())
+            if missing:
+                raise ConfigError(report.diagnose(missing[0]))  # type: ignore[arg-type]
+            yield
+        finally:
+            registry.detach()
 
     def _armed_for(self, crossing: Crossing) -> list[_ArmedFault]:
         """Select the faults whose target matches this crossing.
@@ -2643,24 +2695,25 @@ class ChaosEngine:
                 f"{getattr(target, '__name__', target)!r} is a coroutine function; "
                 "use `await engine.arun(...)` instead of `engine.run(...)`"
             )
-        return self._execute(
-            target,
-            inputs=inputs,
-            initial_state=initial_state,
-            scenario_id=scenario_id,
-            expected_behavior=expected_behavior,
-            must_not=must_not,
-            dry_run=dry_run,
-            attempt=attempt,
-            adapter=adapter,
-            baseline=baseline,
-            seed=seed,
-            is_async=False,
-            expect=expect,
-            expected_errors=expected_errors,
-            scenario_title=scenario_title,
-            scenario_description=scenario_description,
-        )
+        with self._interception():
+            return self._execute(
+                target,
+                inputs=inputs,
+                initial_state=initial_state,
+                scenario_id=scenario_id,
+                expected_behavior=expected_behavior,
+                must_not=must_not,
+                dry_run=dry_run,
+                attempt=attempt,
+                adapter=adapter,
+                baseline=baseline,
+                seed=seed,
+                is_async=False,
+                expect=expect,
+                expected_errors=expected_errors,
+                scenario_title=scenario_title,
+                scenario_description=scenario_description,
+            )
 
     async def arun(
         self,
@@ -2709,23 +2762,26 @@ class ChaosEngine:
         Returns:
             The assembled `ChaosResult`.
         """
-        return await self._aexecute(
-            target,
-            inputs=inputs,
-            initial_state=initial_state,
-            scenario_id=scenario_id,
-            expected_behavior=expected_behavior,
-            must_not=must_not,
-            dry_run=dry_run,
-            attempt=attempt,
-            adapter=adapter,
-            baseline=baseline,
-            seed=seed,
-            expect=expect,
-            expected_errors=expected_errors,
-            scenario_title=scenario_title,
-            scenario_description=scenario_description,
-        )
+        # A sync context manager is right here: attaching and restoring a patch is
+        # synchronous work, and the body it guards is the awaited run.
+        with self._interception():
+            return await self._aexecute(
+                target,
+                inputs=inputs,
+                initial_state=initial_state,
+                scenario_id=scenario_id,
+                expected_behavior=expected_behavior,
+                must_not=must_not,
+                dry_run=dry_run,
+                attempt=attempt,
+                adapter=adapter,
+                baseline=baseline,
+                seed=seed,
+                expect=expect,
+                expected_errors=expected_errors,
+                scenario_title=scenario_title,
+                scenario_description=scenario_description,
+            )
 
     def run_with_state(
         self,

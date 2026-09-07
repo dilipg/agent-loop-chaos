@@ -24,6 +24,22 @@ library — see `docs/04-SCHEMAS.md` §2.
 - A README test asserting every YAML key the section shows is a real field. The first
   draft offered an `env:` block, which does not exist — a workaround that sends the
   reader to a `ConfigError` is worse than no workaround.
+- **`agent_loop_chaos.interceptors`, and the `intercept` switch that reaches it.**
+  Faults need a call to pass through the engine, and `engine.tool` / `engine.llm` do
+  that by wrapping — which requires editing the agent, and the person running a chaos
+  suite is often not the person who can edit it. Two strategies patch where a call
+  already goes: `httpx.Client.send` / `AsyncClient.send`, which every hosted SDK and
+  every local server reaches its endpoint through; and
+  `BaseChatModel.generate`/`agenerate` plus `BaseTool.run`/`arun`, which covers the
+  in-process case including the fake models a test suite already owns. Reached with
+  `ChaosEngine(intercept=True)`, `intercept: true` in a scenario or a suite's
+  `defaults:`, or `alc run --intercept`. Neither optional dependency becomes a hard
+  one: availability is `find_spec`, the import is inside `attach()`, and a test asserts
+  that listing the strategies imports nothing they patch.
+- With `intercept` on, a plan whose faults need a payload layer no strategy attached is
+  a `ConfigError` naming every strategy tried and why each could not help — D-64 one
+  step earlier: not "the fault never fired" but "there was nothing to fire at". See
+  **D-142**, which also records why the switch is not called `transport`.
 
 ## 0.2.6 — 2026-09-05
 

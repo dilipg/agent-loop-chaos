@@ -2470,3 +2470,39 @@ construction. R4 already reads `keys_removed`, so attribution is unaffected.
 
 Verified against a real ten-node LangGraph 1.2.4 skill: `StateDropFault`,
 `StateTypeFault` and `NodeSkipFault` all fire, and that agent coped with all three.
+
+### D-142 — The interception switch is `intercept`, not `transport`
+*2026-09-07. Affects `docs/02-API.md` §2, §10, §12, `schemas/scenario.schema.json`.*
+
+The plan for the attach registry called the switch `transport:`, after the layer it
+patches. `--transport` was already taken on the same `alc run` parser, where it names
+the SLM judge's wire protocol (`openai|ollama|anthropic`), and argparse refused the
+duplicate outright. Reusing one word for two unrelated axes would have been the real
+mistake, so the switch is named for what it does: `ChaosEngine(intercept=True)`,
+`intercept: true` in a scenario or a suite's `defaults:`, and `alc run --intercept`.
+This also matches vocabulary the engine already uses -- `intercept_tools`,
+`intercept_only`, `_should_intercept`.
+
+Three design decisions settled with it:
+
+- **A streaming model call passes through untouched.** A fault cannot mutate an
+  incremental response, and a streaming call must not fall through to the tool layer:
+  it is a model call, so a tool-layer fault mutating its request would be the library
+  inventing a finding rather than observing one. The pass-through logs at WARNING and
+  the fault records `target_never_called`, which is what actually happened. No new skip
+  reason was invented, because the D-36 precedence list is normative.
+- **The baseline engine is instrumented identically.** `loop._baseline` now receives
+  the scenario's `intercept`. Otherwise `baseline.diff` compares an instrumented run
+  against an uninstrumented one and describes the instrumentation rather than the
+  fault.
+- **A layer nobody attached is a refusal, not a pass.** With `intercept` on, a plan
+  whose faults need `llm` or `tool` and got neither raises `ConfigError` carrying every
+  strategy tried and why each could not help. This is D-64 applied one step earlier:
+  not "the fault never fired" but "there was nothing to fire at". Only layers the plan
+  actually targets are required, so a plan of node or state faults is never refused for
+  want of a model.
+
+`AgentChaos` (arXiv 2608.06790) reaches the same conclusion about the transport being
+the framework-agnostic seam, and independently arrives at D-64: it filters tasks whose
+configured fault never activated, calling it trigger verification.
+

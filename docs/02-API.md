@@ -51,8 +51,14 @@ class ChaosEngine:
         tags: Mapping[str, str] | None = None,
         judge_options: Mapping[str, Any] | None = None,   # model/base_url/transport for SLMJudge
         narrate_all: bool = False,             # narrate passing runs too; off by default
+        intercept: bool = False,               # attach the interceptors for the run
     ) -> None: ...
 ```
+
+`intercept=True` attaches the strategies in `agent_loop_chaos.interceptors` for the
+duration of the run, so an agent that wraps nothing still produces `tool` and `llm`
+crossings. Off by default: patching a process-wide HTTP client is not done behind a
+caller's back. See §12.
 
 ### Registering faults
 
@@ -318,6 +324,7 @@ class Scenario:
     tags: dict[str, str] = field(default_factory=dict)
     description: str | None = None
     matrix: dict[str, list] | None = None        # cartesian expansion over fault params/seeds
+    intercept: bool = False                      # attach the interceptors (§12)
 
     def expand(self) -> list[Scenario]: ...      # applies `matrix`; ids get "[k=v]" suffixes
 
@@ -526,7 +533,7 @@ alc run <suite.yaml|scenario.yaml|module:attr>   [--seed N] [--jobs N] [--judge 
                                                  [--trace-level L] [--filter GLOB] [--fail-fast]
                                                  [--no-baseline] [--dry-run] [--json]
                                                  [--rounds N] [--stop-when …]
-                                                 [--intensity 1-10]
+                                                 [--intensity 1-10] [--intercept]
                                                  [--dashboard] [--port N] [--linger S]
 alc replay <run_dir> [--seed N]
 alc judge <run_dir> [--judge …] [--model …] [--base-url U] [--transport T]
@@ -625,3 +632,54 @@ print(result.to_json())
 
 Both snippets must work verbatim by the end of phase 05. Add them to
 `tests/test_readme_snippets.py` and run them in CI.
+
+## 12. Interceptors
+
+`agent_loop_chaos.interceptors` attaches to an agent that was never wrapped. Reached
+through `ChaosEngine(intercept=True)`, `intercept: true` in a scenario or a suite's
+`defaults:`, or `alc run --intercept`; the names below are not in the top-level
+`__all__` and are not frozen -- only the switch is.
+
+```python
+@dataclass(frozen=True, slots=True)
+class Attachment:
+    layer: Layer          # the crossing layer this point produces
+    strategy: str         # which strategy patched it
+    target: str           # what was patched, e.g. "httpx.Client.send (llm)"
+
+@dataclass(frozen=True, slots=True)
+class AttachReport:
+    attached: Sequence[Attachment]
+    unavailable: dict[str, str]        # strategy name -> why it could not attach
+    seen: dict[str, int]              # calls per Attachment.target, live until detach
+
+    def calls(self, target: str) -> int: ...
+    def layers(self) -> set[Layer]: ...        # attached
+    def used_layers(self) -> set[Layer]: ...   # attached *and* saw traffic
+    def diagnose(self, layer: Layer) -> str: ...
+    def require(self, layer: Layer) -> None: ...   # raises ConfigError
+
+class Registry:
+    def __init__(self, strategies: Iterable[Strategy] | None = None) -> None: ...
+    def attach(self, engine: Any) -> AttachReport: ...
+    def detach(self) -> None: ...
+```
+
+Built-in strategies:
+
+| Strategy | Patches | Reaches |
+|---|---|---|
+| `httpx` | `Client.send`, `AsyncClient.send` | every hosted SDK and every local server -- both are HTTP |
+| `langchain-core` | `BaseChatModel.generate`/`agenerate`, `BaseTool.run`/`arun` | in-process models, including the fakes a test suite already owns |
+
+A recognized model endpoint becomes an `llm` crossing named by its model id, so
+`target_llm="gpt-4*"` works. An unrecognized endpoint is one of the agent's tools and
+becomes a `tool` crossing named `"GET /v1/current"`. A streaming model call passes
+through untouched and logs why: a fault cannot mutate an incremental response, and it
+must not fall through to the tool layer, since mutating a model call at the tool layer
+would be the library inventing a finding rather than observing one.
+
+**Silence is loud.** With `intercept` on, a plan whose faults need a payload layer no
+strategy attached raises `ConfigError` carrying `diagnose()` -- every strategy tried and
+why each could not help. A scenario whose fault had nothing to attach to proves nothing
+(D-64) and must not read as a pass.

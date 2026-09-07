@@ -323,6 +323,10 @@ def _shared_baseline(cache: dict[str, Any], scenario: Scenario, out_dir: Path) -
             redact_keys=scenario.redact_keys,
             strict_schema=False,
             judge="rules",
+            # The baseline must be instrumented exactly like the faulted run, or the
+            # diff between them shows crossings appearing rather than the fault's
+            # effect.
+            intercept=scenario.intercept,
         )
         cache[key] = drive(
             engine,
@@ -432,6 +436,7 @@ def run_suite(
             allow_remote_judge=allow_remote_judge,
             intensity=scenario.intensity,
             redact_keys=scenario.redact_keys,
+            intercept=scenario.intercept,
         )
         specs, dial_skipped = plan_specs(scenario)
         for spec in specs:

@@ -151,6 +151,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="when to stop a --rounds loop (default: no_new_failures)",
     )
     run.add_argument(
+        "--intercept",
+        action="store_true",
+        help=(
+            "attach the interceptors: patch the HTTP client and framework base classes "
+            "so an agent that wraps nothing still produces tool and llm crossings"
+        ),
+    )
+    run.add_argument(
         "--intensity",
         type=int,
         metavar="1-10",
@@ -360,6 +368,9 @@ def _run(args: argparse.Namespace) -> int:
                 *scenario.redact_keys,
                 *(k for k in args.redact_keys if k not in scenario.redact_keys),
             ]
+    if getattr(args, "intercept", False):
+        for scenario in scenarios:
+            scenario.intercept = True
     if getattr(args, "intensity", None) is not None:
         # `profile` raises ConfigError off the dial, which `main` turns into exit 2.
         level = profile(args.intensity).level

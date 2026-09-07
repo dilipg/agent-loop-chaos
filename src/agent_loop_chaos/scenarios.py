@@ -355,6 +355,10 @@ class Scenario:
     #: How hard the plan pushes, 1 (strict) to 10 (creative). 3 is the identity: a
     #: dial nobody turned changes nothing. See `agent_loop_chaos.intensity`.
     intensity: int = DEFAULT_LEVEL
+
+    #: Attach the interceptors for this scenario, so an agent that wraps nothing
+    #: still produces `tool` and `llm` crossings. See `agent_loop_chaos.interceptors`.
+    intercept: bool = False
     #: Extra key patterns to redact, on top of the default deny-list. Belongs in the
     #: suite file because it is a property of the agent, not of one invocation: an
     #: internal credential header is named the same on every run (D-134).
@@ -691,6 +695,7 @@ def _scenario_from_body(body: Mapping[str, Any]) -> Scenario:
         "allow_side_effects",
         "objective_state_key",
         "intensity",
+        "intercept",
         "redact_keys",
         "dry_run",
         "tags",

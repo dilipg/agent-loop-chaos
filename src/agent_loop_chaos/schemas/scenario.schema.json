@@ -420,6 +420,11 @@
             "type": "string"
           },
           "description": "Extra key patterns to redact from the trace and the report, on top of the default deny-list. Name any credential the deny-list cannot guess -- an internal HMAC or signature header. Put it in `defaults:` so it applies to every scenario; it is a property of the agent, not of one run."
+        },
+        "intercept": {
+          "type": "boolean",
+          "default": false,
+          "description": "Attach the interceptors for this scenario: patch the HTTP client and the framework base classes so an agent that wraps nothing still produces tool and llm crossings. Off by default, because patching a process-wide client is not done behind a caller's back."
         }
       }
     },

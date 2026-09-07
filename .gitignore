@@ -18,6 +18,8 @@ venv/
 .coverage.*
 htmlcov/
 coverage.xml
+chaos/
+.chaos/
 
 # Chaos run directories. NEVER commit these: a run directory holds full prompts,
 # tool payloads, state snapshots and source excerpts, and is sensitive by default
