@@ -2506,3 +2506,18 @@ Three design decisions settled with it:
 the framework-agnostic seam, and independently arrives at D-64: it filters tasks whose
 configured fault never activated, calling it trigger verification.
 
+### D-143 — No `litellm` strategy; it rides on `httpx`
+*2026-09-07. Affects `docs/02-API.md` §12.*
+
+The plan listed a `litellm` strategy to cover CrewAI and the hundred providers litellm
+fronts. It is not needed: `litellm.completion` reaches a remote provider over `httpx`,
+so the transport strategy already intercepts those calls, and the shape it sends is the
+OpenAI dialect the transport strategy already translates. The only gap a dedicated
+strategy would close is litellm routing to a model *in the same process*, which is rare
+and which `seams:` covers by name.
+
+So the strategy set is three: `httpx` for anything over the wire, `langchain-core` for
+anything inheriting its base classes, and `seams:` for everything else. A fourth
+strategy for a library that already routes through the first one is code to maintain
+for no reach.
+

@@ -418,10 +418,25 @@ to a different host, and in-process LangChain models including the fakes your te
 suite already owns. A recognized model endpoint becomes an `llm` crossing named by its
 model id; any other HTTP call becomes a `tool` crossing named `GET /v1/current`.
 
-Two things it cannot see: a streaming call, which passes through untouched and logs why
-because a fault cannot mutate an incremental response; and a hand-rolled client that
-neither speaks HTTP nor subclasses `BaseChatModel`. For those, and whenever you want
-the seam to be explicit, wrap the call yourself:
+One thing it cannot see is a streaming call: it passes through untouched and logs why,
+because a fault cannot mutate an incremental response.
+
+The other is a hand-rolled client that neither speaks HTTP nor subclasses
+`BaseChatModel` — an in-house `LLMClient`, or a repository function reading a database
+through its own driver. Name those by dotted path and the library wraps them for you:
+
+```yaml
+defaults:
+  seams:
+    llm:   ["app.llm:LLMClient.chat"]
+    tools: ["app.repositories:fetch_*"]      # a glob over the module's functions
+```
+
+The seam is named by its attribute path, so `tool: fetch_weather` targets it as
+written, and a bad path is a `ConfigError` before the run rather than a mystery during
+it. `alc doctor` prints what it found, which is the fastest way to learn what to name.
+
+Whenever you would rather the seam were explicit in the code, wrap the call yourself:
 
 ```python
 model = engine.llm(model_client, name="summarizer")     # unlocks every prompt-side fault

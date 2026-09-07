@@ -425,6 +425,23 @@
           "type": "boolean",
           "default": false,
           "description": "Attach the interceptors for this scenario: patch the HTTP client and the framework base classes so an agent that wraps nothing still produces tool and llm crossings. Off by default, because patching a process-wide client is not done behind a caller's back."
+        },
+        "seams": {
+          "type": "object",
+          "description": "Callables to wrap by dotted path, per layer, for the calls the built-in interception strategies cannot find. A spec is module:attr, where attr may name a function, a Class.method, or a glob over a module's attributes. Declaring a seam turns interception on by itself.",
+          "propertyNames": {
+            "enum": [
+              "llm",
+              "tool",
+              "tools"
+            ]
+          },
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         }
       }
     },

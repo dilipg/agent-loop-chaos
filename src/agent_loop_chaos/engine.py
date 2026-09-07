@@ -221,6 +221,7 @@ class ChaosEngine:
         narrate_all: bool = False,
         intensity: int = DEFAULT_LEVEL,
         intercept: bool = False,
+        seams: Mapping[str, Sequence[str]] | None = None,
     ) -> None:
         """Initialise an engine.
 
@@ -253,6 +254,10 @@ class ChaosEngine:
                 that wraps nothing still produces `tool` and `llm` crossings. Off by
                 default: patching a process-wide HTTP client is not something to do
                 behind a caller's back.
+            seams: Callables to wrap by dotted path, per layer, for the calls the
+                built-in strategies cannot find. Declaring one turns interception on by
+                itself, since a seam that was silently ignored is the failure this
+                whole area exists to remove.
                 Recorded in `plan.json` and the report. The dial scales **fault
                 specs**, so a suite, a preset or `--intensity` gets scaled faults;
                 a `Fault` object handed to `register_fault` directly is taken as
@@ -283,6 +288,7 @@ class ChaosEngine:
         self._judge_impl: Any | None = None
 
         self.intercept = bool(intercept)
+        self.seams = {str(k): list(v) for k, v in (seams or {}).items()}
         self._attach_report: Any = None
         self._faults: list[_ArmedFault] = []
         self._tools: dict[str, ToolInfo] = {}
@@ -1104,12 +1110,15 @@ class ChaosEngine:
                 agent nothing was injected into, which is the failure this exists to
                 prevent (D-64).
         """
-        if not self.intercept:
+        if not self.intercept and not any(self.seams.values()):
             yield
             return
         from . import interceptors
+        from .interceptors.seams import SeamsStrategy
 
-        registry = interceptors.Registry(interceptors.default_strategies())
+        strategies = [*(interceptors.default_strategies() if self.intercept else [])]
+        strategies.append(SeamsStrategy(self.seams))
+        registry = interceptors.Registry(strategies)
         report = registry.attach(self)
         self._attach_report = report
         try:

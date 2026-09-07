@@ -36,6 +36,16 @@ library — see `docs/04-SCHEMAS.md` §2.
   `defaults:`, or `alc run --intercept`. Neither optional dependency becomes a hard
   one: availability is `find_spec`, the import is inside `attach()`, and a test asserts
   that listing the strategies imports nothing they patch.
+- **`seams:`** — name a call by dotted path when neither built-in strategy can find
+  it: `seams: {llm: ["app.llm:Client.chat"], tools: ["app.repositories:fetch_*"]}`.
+  A spec names a function, a `Class.method`, or a glob over a module's attributes;
+  matches are wrapped for the run and restored after. This is the shape a hand-rolled
+  in-house client has, and "does your code follow a convention we recognise" is not a
+  fair question to make a colleague answer before they can test anything. Declaring a
+  seam turns interception on by itself, and every path is resolved at attach time so a
+  typo is a `ConfigError` before the run rather than an agent failure during it.
+- No `litellm` strategy: it reaches remote providers over `httpx`, so the transport
+  strategy already sees those calls (**D-143**).
 - **`alc doctor`.** Onboarding as a feature of the library rather than a task for
   whoever will read the source. With no argument it reports which strategies can attach
   here; given a `module:attr` entrypoint it runs the agent once with no faults under

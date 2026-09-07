@@ -327,6 +327,7 @@ def _shared_baseline(cache: dict[str, Any], scenario: Scenario, out_dir: Path) -
             # diff between them shows crossings appearing rather than the fault's
             # effect.
             intercept=scenario.intercept,
+            seams=scenario.seams,
         )
         cache[key] = drive(
             engine,
@@ -437,6 +438,7 @@ def run_suite(
             intensity=scenario.intensity,
             redact_keys=scenario.redact_keys,
             intercept=scenario.intercept,
+            seams=scenario.seams,
         )
         specs, dial_skipped = plan_specs(scenario)
         for spec in specs:

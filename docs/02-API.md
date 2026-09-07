@@ -325,6 +325,7 @@ class Scenario:
     description: str | None = None
     matrix: dict[str, list] | None = None        # cartesian expansion over fault params/seeds
     intercept: bool = False                      # attach the interceptors (§12)
+    seams: dict[str, list[str]] = field(default_factory=dict)   # dotted paths (§12)
 
     def expand(self) -> list[Scenario]: ...      # applies `matrix`; ids get "[k=v]" suffixes
 
@@ -673,6 +674,26 @@ Built-in strategies:
 |---|---|---|
 | `httpx` | `Client.send`, `AsyncClient.send` | every hosted SDK and every local server -- both are HTTP |
 | `langchain-core` | `BaseChatModel.generate`/`agenerate`, `BaseTool.run`/`arun` | in-process models, including the fakes a test suite already owns |
+| `seams` | whatever a suite names by dotted path | a hand-rolled client that neither speaks HTTP nor subclasses `BaseChatModel` |
+
+`seams` is the escape hatch, and the one `diagnose()` points a stuck reader at:
+
+```yaml
+defaults:
+  seams:
+    llm:   ["app.llm:LLMClient.chat"]
+    tools: ["app.repositories:fetch_*"]
+```
+
+A spec is `module:attr`, where `attr` names a function, a `Class.method`, or a glob over
+a module's attributes. The seam is named by its attribute path, so `tool: fetch_weather`
+and `llm: "LLMClient.chat"` target it as written. Declaring a seam turns interception on
+by itself: one that was silently ignored is the failure this area exists to remove.
+Every path is resolved at attach time, so a typo is a `ConfigError` before the run
+rather than an agent failure during it.
+
+`litellm` needs no strategy of its own: it reaches a remote provider over `httpx`, so
+the transport strategy already sees those calls (D-143).
 
 A recognized model endpoint becomes an `llm` crossing named by its model id, so
 `target_llm="gpt-4*"` works. An unrecognized endpoint is one of the agent's tools and
