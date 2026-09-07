@@ -428,12 +428,13 @@
         },
         "seams": {
           "type": "object",
-          "description": "Callables to wrap by dotted path, per layer, for the calls the built-in interception strategies cannot find. A spec is module:attr, where attr may name a function, a Class.method, or a glob over a module's attributes. Declaring a seam turns interception on by itself.",
+          "description": "Callables to wrap by dotted path, per layer, for the calls the built-in interception strategies cannot find. A spec is module:attr, optionally name=module:attr, where attr may name a function, a Class.method, or a glob over a module's attributes. `graph:` names a compiled LangGraph object instead, for a service that compiles once at import and reuses it. Declaring a seam turns interception on by itself.",
           "propertyNames": {
             "enum": [
               "llm",
               "tool",
-              "tools"
+              "tools",
+              "graph"
             ]
           },
           "additionalProperties": {

@@ -214,3 +214,25 @@ class TestItFindsAGraphCompiledAtImport:
         out = capsys.readouterr().out
         assert "gather" in out, "the graph's own node names were not shown"
         assert "your_node_name" not in out, "the suite still carries a placeholder"
+
+    def test_the_suite_it_prints_actually_loads(
+        self, tmp_path: Any, monkeypatch: Any, capsys: Any
+    ) -> None:
+        """The flagship flow is "copy this and run it", so the printed suite has to be
+        a valid one. It was not: `seams: {graph: ...}` was accepted by the strategy and
+        rejected by the schema, so `alc run` refused the file `alc doctor` had just
+        written."""
+        pytest.importorskip("langgraph")
+        pytest.importorskip("yaml")
+        from agent_loop_chaos.scenarios import load_suite
+
+        monkeypatch.chdir(tmp_path)
+        main(["doctor", "tests.fakes.internal_graph:run_singleton", "--inputs", "q"])
+        printed = capsys.readouterr().out
+        suite_text = printed[printed.index("version:") :]
+        path = tmp_path / "printed.yaml"
+        path.write_text(suite_text, encoding="utf-8")
+
+        suite = load_suite(path)
+        assert suite.scenarios, "the printed suite has no scenarios"
+        assert any(s.seams for s in suite.scenarios), "the graph seam did not survive"

@@ -36,6 +36,9 @@ library — see `docs/04-SCHEMAS.md` §2.
   `defaults:`, or `alc run --intercept`. Neither optional dependency becomes a hard
   one: availability is `find_spec`, the import is inside `attach()`, and a test asserts
   that listing the strategies imports nothing they patch.
+- `alc doctor` printed a suite `alc run` then refused: `seams: {graph: ...}` was
+  accepted by the strategy and missing from the schema's enum. The flagship flow is
+  "copy this and run it", so a test now loads the suite doctor prints.
 - **Three things a newcomer hits in the first five minutes** (**D-149**), found by
   installing into a clean virtualenv and following the README from scratch: a
   `module:attr` entrypoint failed with `No module named 'app'` unless `PYTHONPATH` was
