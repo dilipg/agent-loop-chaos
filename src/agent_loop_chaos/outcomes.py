@@ -221,6 +221,7 @@ def compute_success(
     assertions: Sequence[AssertionResult],
     symptoms: Sequence[Symptom],
     must_not: Sequence[str] = (),
+    unfaulted: bool = False,
 ) -> bool:
     """Compute the run's pass/fail.
 
@@ -233,12 +234,21 @@ def compute_success(
         assertions: Every evaluated assertion.
         symptoms: Every emitted symptom.
         must_not: Probe codes that always fail the run.
+        unfaulted: True when the plan was empty -- no fault was registered at all.
+            `completed_unaffected` then satisfies whatever was declared, because there
+            was nothing to degrade *from*. Without this, `engine.run(agent)` with
+            nothing registered failed against the default `graceful_degradation`
+            expectation and reported `unknown`, which reads as a bug in the user's
+            agent on the first command anyone types (D-135). An *armed* fault that
+            never fired is deliberately not this: that scenario proved nothing and has
+            to say so.
 
     Returns:
         Whether the run passed.
     """
     blocking = {s.code for s in symptoms} & set(must_not)
-    return not blocking and satisfies(observed, expected) and all(a.ok for a in assertions)
+    met = satisfies(observed, expected) or (unfaulted and observed == "completed_unaffected")
+    return not blocking and met and all(a.ok for a in assertions)
 
 
 def dominant_symptom(symptoms: Sequence[Symptom]) -> Symptom | None:

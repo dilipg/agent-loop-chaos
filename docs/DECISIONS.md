@@ -2254,3 +2254,46 @@ trips no structural probe — the number is real, it is just nobody's — so the
 expectation has to be declared.
 
 The pool is nine shapes and eighteen scenarios: nine naive fail, nine hardened pass.
+
+### D-134 — `redact_keys` belongs in the suite file
+*2026-09-05. Affects `SAFETY.md` §5, `docs/02-API.md` §10, `schemas/scenario.schema.json`.*
+
+`redact_keys` was reachable only by constructing `ChaosEngine` in Python. The common
+path is `alc run suite.yaml`, so anyone pointing this at an agent with an internal
+credential header — an HMAC, a signature, anything the default deny-list cannot guess —
+had no way to declare it, and their credential went into `report.json`. `SAFETY.md`
+carried a placeholder admitting the gap, which is not the same as closing it. **A
+security control the common path cannot reach is not a control.**
+
+It is now a scenario field, so `defaults: {redact_keys: [...]}` applies it to a whole
+suite. That is the right home: an internal credential header is named the same on every
+run, so it is a property of the agent, not of one invocation. `--redact-keys` adds one
+for a single run, **on top of** whatever the file declares — a one-off must not silently
+discard a pattern the suite already named.
+
+Writing the test for this caught three of its own assertions passing vacuously: the
+fixture suite had no `inputs`, so the agent never ran and `_leaks` found nothing in a
+report about nothing. Only the one assertion that expected a leak failed. Every case now
+asserts the agent ran before asserting anything about what it recorded.
+
+### D-135 — An unfaulted run is a baseline, not an unknown failure
+*2026-09-05. Affects `docs/11-OUTCOMES-AND-ASSERTIONS.md` §7.*
+
+`engine.run(agent)` with nothing registered came back
+`success=False, failure_mode="unknown"`. The default expectation is
+`graceful_degradation`; with no fault there is nothing to degrade *from*, so the run
+classifies `completed_unaffected`, which does not satisfy it. The result: the first
+command anyone types — a wiring check, before any scenario exists — reported an
+unclassifiable failure in the user's agent when there was none.
+
+`compute_success` takes `unfaulted`, true when the plan is empty, and
+`completed_unaffected` then satisfies whatever was declared. Scoped deliberately
+narrowly:
+
+- **An empty plan** is the caller saying "just run it". Passing is honest.
+- **An armed fault that never fired** is *not* this. That scenario proved nothing and
+  has to say so — D-64, D-95, D-109 and D-132 all exist to make sure it does, and a
+  test asserts the two cases stay distinct.
+
+`dry_run` is untouched: it means what the caller asked for, and a dry-run scenario
+still declares `ignore_and_continue` as the demo's control does.

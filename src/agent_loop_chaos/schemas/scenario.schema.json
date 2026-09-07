@@ -413,6 +413,13 @@
           "type": "string",
           "maxLength": 78,
           "description": "A short human name for this experiment. `id` is a stable identifier -- it names a directory and feeds `--filter` -- and means nothing to a reader who has not opened this file. The title sits in front of the id in every reader-facing view; it never replaces it."
+        },
+        "redact_keys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Extra key patterns to redact from the trace and the report, on top of the default deny-list. Name any credential the deny-list cannot guess -- an internal HMAC or signature header. Put it in `defaults:` so it applies to every scenario; it is a property of the agent, not of one run."
         }
       }
     },

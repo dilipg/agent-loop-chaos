@@ -156,6 +156,14 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="1-10",
         help="how hard to push: 1 strict, 3 standard (default), 10 creative chaos",
     )
+    run.add_argument(
+        "--redact-keys",
+        dest="redact_keys",
+        metavar="PATTERN",
+        action="append",
+        help="extra key pattern to redact, on top of the default deny-list; repeatable. "
+        "Added to whatever the suite declares, never replacing it",
+    )
     run.add_argument("--dashboard", action="store_true", help="serve the live dashboard (M10)")
     run.add_argument("--port", type=int, default=7717, help="dashboard port (M10)")
     run.add_argument("--linger", type=int, help="seconds to keep serving after the run")
@@ -344,6 +352,14 @@ def _run(args: argparse.Namespace) -> int:
     if getattr(args, "entrypoint", None):
         for scenario in scenarios:
             scenario.entrypoint = args.entrypoint
+    if getattr(args, "redact_keys", None):
+        # Added, never replacing: a one-off must not silently discard a credential
+        # pattern the suite file declared (D-134).
+        for scenario in scenarios:
+            scenario.redact_keys = [
+                *scenario.redact_keys,
+                *(k for k in args.redact_keys if k not in scenario.redact_keys),
+            ]
     if getattr(args, "intensity", None) is not None:
         # `profile` raises ConfigError off the dial, which `main` turns into exit 2.
         level = profile(args.intensity).level

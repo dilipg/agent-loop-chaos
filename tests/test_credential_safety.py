@@ -14,8 +14,9 @@ redacted in `trace.jsonl` and printed in full in the report beside it (D-131).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -152,3 +153,135 @@ def test_the_engine_needs_no_credential_of_its_own(tmp_path: Path) -> None:
         assert not any(word in name for word in carriers), (
             f"ChaosEngine takes {name!r}; it should never need a credential"
         )
+
+
+class TestASuiteCanDeclareItsCredentials:
+    """The path a colleague actually takes: `alc run suite.yaml`.
+
+    `redact_keys` was reachable only by constructing `ChaosEngine` in Python, so
+    anyone running a YAML suite against an agent with an internal credential header
+    had no way to declare it — and `SAFETY.md` carried a placeholder admitting so.
+    A security control the common path cannot reach is not a control (D-134).
+    """
+
+    SUITE: ClassVar[dict[str, Any]] = {
+        "version": "1.0",
+        "defaults": {"redact_keys": ["x_signature"]},
+        "scenarios": [
+            {
+                "id": "auth.drop_key",
+                "title": "A tool leaves out a field the agent needs",
+                "entrypoint": "tests.test_credential_safety:build_authed",
+                "inputs": "what is the status of INV-77?",
+                "faults": [
+                    {
+                        "type": "ToolCorruptionFault",
+                        "params": {"mutation_type": "drop_key", "keys": ["amount_usd"]},
+                        "trigger": {"on_call": 1},
+                    }
+                ],
+            }
+        ],
+    }
+
+    def _write(self, tmp_path: Path, **override: Any) -> Path:
+        document = json.loads(json.dumps(self.SUITE))
+        document["defaults"].update(override)
+        path = tmp_path / "suite.json"
+        path.write_text(json.dumps(document))
+        return path
+
+    def test_a_suite_default_reaches_the_engine(self, tmp_path: Path) -> None:
+        from agent_loop_chaos.loop import run_suite
+        from agent_loop_chaos.scenarios import load_suite
+
+        suite = load_suite(self._write(tmp_path))
+        assert suite.scenarios[0].redact_keys == ["x_signature"]
+        [result] = run_suite(suite.scenarios, out_dir=tmp_path, judge="rules")
+        assert result.tool_calls, "the agent never ran, so this proves nothing"
+        assert not _leaks(result.to_dict(), HMAC)
+
+    def test_without_it_the_custom_header_still_leaks(self, tmp_path: Path) -> None:
+        """The control has to be doing the work, not the deny-list by luck."""
+        from agent_loop_chaos.loop import run_suite
+        from agent_loop_chaos.scenarios import load_suite
+
+        suite = load_suite(self._write(tmp_path, redact_keys=[]))
+        [result] = run_suite(suite.scenarios, out_dir=tmp_path, judge="rules")
+        assert result.tool_calls, "the agent never ran, so this proves nothing"
+        assert _leaks(result.to_dict(), HMAC)
+
+    def test_the_bearer_token_is_redacted_either_way(self, tmp_path: Path) -> None:
+        from agent_loop_chaos.loop import run_suite
+        from agent_loop_chaos.scenarios import load_suite
+
+        suite = load_suite(self._write(tmp_path, redact_keys=[]))
+        [result] = run_suite(suite.scenarios, out_dir=tmp_path, judge="rules")
+        assert result.tool_calls, "the agent never ran, so this proves nothing"
+        assert not _leaks(result.to_dict(), TOKEN)
+
+    def test_the_cli_flag_works_for_a_one_off(self, tmp_path: Path) -> None:
+        from agent_loop_chaos.cli import main
+
+        out = tmp_path / ".chaos"
+        code = main(
+            [
+                "run",
+                str(self._write(tmp_path, redact_keys=[])),
+                "--out",
+                str(out),
+                "--judge",
+                "rules",
+                "--quiet",
+                "--redact-keys",
+                "x_signature",
+            ]
+        )
+        assert code in (0, 1)
+        report = json.loads(next(out.rglob("report.json")).read_text())
+        assert report["tool_calls"], "the agent never ran, so this proves nothing"
+        assert not _leaks(report, HMAC)
+
+    def test_the_flag_and_the_file_combine(self, tmp_path: Path) -> None:
+        """A one-off addition must not silently discard what the suite declared."""
+        from agent_loop_chaos.cli import main
+
+        out = tmp_path / ".chaos"
+        main(
+            [
+                "run",
+                str(self._write(tmp_path, redact_keys=["x_signature"])),
+                "--out",
+                str(out),
+                "--judge",
+                "rules",
+                "--quiet",
+                "--redact-keys",
+                "x_other",
+            ]
+        )
+        report = json.loads(next(out.rglob("report.json")).read_text())
+        assert report["tool_calls"], "the agent never ran, so this proves nothing"
+        assert not _leaks(report, HMAC)
+
+
+def build_authed(engine: Any = None) -> Any:
+    """An authed agent for the suite above to point at.
+
+    Args:
+        engine: The chaos engine, or `None` in production.
+
+    Returns:
+        The agent callable.
+    """
+
+    def fetch_invoice(invoice_id: str, *, authorization: str, x_signature: str) -> dict[str, Any]:
+        return {"invoice_id": invoice_id, "amount_usd": 412}
+
+    fetch = fetch_invoice if engine is None else engine.tool(fetch_invoice, name="fetch_invoice")
+
+    def agent(question: str) -> str:
+        invoice = fetch("INV-77", authorization=f"Bearer {TOKEN}", x_signature=HMAC)
+        return f"Amount: {invoice.get('amount_usd', 'unavailable')}"
+
+    return agent if engine is None else engine.intercept_tools()(agent)

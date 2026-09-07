@@ -557,7 +557,12 @@ def assemble(
     )
     observed = classify_behavior(classification, on_spec_gap=spec_gaps.append)
     success = compute_success(
-        observed, expected_behavior, list(assertions), list(symptoms), must_not
+        observed,
+        expected_behavior,
+        list(assertions),
+        list(symptoms),
+        must_not,
+        unfaulted=not injected_faults,
     )
     failure_mode = classify_failure_mode(
         observed=observed,

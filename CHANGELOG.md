@@ -9,6 +9,29 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+## 0.2.2 — 2026-09-05
+
+**0.2.0 and 0.2.1 report `secret_leak`, at critical severity, on any agent that
+authenticates to its own tools.** `redacted_value_in_output` treated every tool
+argument as an egress point, so passing `Authorization: Bearer …` to the tool that
+requires it — which every agent wired to a real service does — produced a critical
+finding on a correct agent. If you evaluated an authenticated agent on either version,
+its `secret_leak` findings are false and its verdicts are wrong.
+
+- **D-133** The probe checks the output, as its name says. A secret sent somewhere it
+  should not go is still caught by `injection_followed` and `must_not_call_tools`. Also
+  in that fix: `drop_key` can now drop a top-level key, so an envelope field such as
+  `tenant_id` is reachable; and the conformance pool gained a ninth shape, a
+  multi-tenant agent holding a real credential — the shape that found all three bugs.
+- **D-135** `engine.run(agent)` with nothing registered reported
+  `success=False, failure_mode="unknown"` — the first command anyone types, a wiring
+  check, told them their agent was broken. An empty plan is now a baseline and passes;
+  an *armed* fault that never fired still says the scenario proved nothing.
+- **D-134** `redact_keys` is reachable from a suite file and the CLI. It was Python-only,
+  so anyone running `alc run suite.yaml` against an agent with an internal credential
+  header had no way to declare it. A security control the common path cannot reach is
+  not a control.
+
 ### A ninth pattern: an authenticated, multi-tenant agent
 
 **D-133.** The pool had eight shapes and none held a credential or served more than one

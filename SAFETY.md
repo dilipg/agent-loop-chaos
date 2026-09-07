@@ -139,9 +139,16 @@ private keys. Everything in the trace **and** in the report goes through it (D-1
 ChaosEngine(redact_keys=["x_signature", "x_.*_secret"])
 ```
 
+or, in the suite file, where it belongs — an internal credential header is named the
+same on every run, so it is a property of the agent rather than of one invocation:
+
 ```yaml
-# a suite cannot set this yet; pass it when constructing the engine
+defaults:
+  redact_keys: ["x_signature", "x_.*_secret"]
 ```
+
+`alc run --redact-keys x_signature` adds one for a single run, on top of whatever the
+file declares rather than replacing it.
 
 **Check it, do not assume it.** One assertion is enough, and it is worth adding to
 your own test suite:

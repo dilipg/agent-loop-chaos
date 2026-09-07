@@ -320,6 +320,7 @@ def _shared_baseline(cache: dict[str, Any], scenario: Scenario, out_dir: Path) -
             limits=scenario.limits,
             dry_run=True,
             write_bundle=False,
+            redact_keys=scenario.redact_keys,
             strict_schema=False,
             judge="rules",
         )
@@ -430,6 +431,7 @@ def run_suite(
             narrate_all=narrate_all,
             allow_remote_judge=allow_remote_judge,
             intensity=scenario.intensity,
+            redact_keys=scenario.redact_keys,
         )
         specs, dial_skipped = plan_specs(scenario)
         for spec in specs:

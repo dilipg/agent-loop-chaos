@@ -665,3 +665,81 @@ class TestAFailedDispatchIsTheAgentsFault:
             "AttributeError: a real library bug\n"
         )
         assert raised_in(internal) == "harness"
+
+
+class TestAnUnfaultedRunIsABaseline:
+    """D-135: the first command anyone types is a wiring check.
+
+    `engine.run(agent)` with nothing registered used to come back
+    `success=False, failure_mode=unknown` -- the default expectation is
+    `graceful_degradation`, which `completed_unaffected` does not satisfy, so a run
+    with nothing to degrade *from* was scored as an unclassifiable failure. A first
+    experiment that reports a bug in the user's agent when there is none is worse
+    than no first experiment.
+
+    `dry_run` already classifies as an unfaulted baseline (D-12). An empty plan is
+    the same statement, so it classifies the same way.
+    """
+
+    @staticmethod
+    def _run(tmp_path: Any, *, fault: bool) -> Any:
+        from agent_loop_chaos import ChaosEngine
+        from agent_loop_chaos.faults import ToolCorruptionFault
+
+        engine = ChaosEngine(seed=1337, out_dir=tmp_path, judge="rules", write_bundle=False)
+
+        @engine.tool
+        def fetch(x: str) -> dict[str, Any]:
+            return {"amount_usd": 412}
+
+        @engine.intercept_tools()
+        def agent(question: str) -> str:
+            return f"Amount: {fetch('a')['amount_usd']}"
+
+        if fault:
+            engine.register_fault(
+                ToolCorruptionFault(mutation_type="drop_key", keys=["amount_usd"]),
+                target_tool="fetch",
+            )
+        return engine.run(agent, inputs="what do I owe?")
+
+    def test_no_faults_registered_passes(self, tmp_path: Any) -> None:
+        result = self._run(tmp_path, fault=False)
+        assert result.success is True, f"a wiring check reported {result.failure_mode}"
+
+    def test_it_is_not_reported_as_unknown(self, tmp_path: Any) -> None:
+        """`unknown` means "the tooling could not classify this", which was a lie."""
+        result = self._run(tmp_path, fault=False)
+        assert result.failure_mode != "unknown"
+
+    def test_a_registered_fault_still_finds_the_bug(self, tmp_path: Any) -> None:
+        """The point of the whole exercise must not be softened by the fix."""
+        result = self._run(tmp_path, fault=True)
+        assert result.success is False
+        assert result.failure_mode == "crash_unhandled_exception"
+
+    def test_an_armed_fault_that_never_fired_is_not_a_baseline(self, tmp_path: Any) -> None:
+        """A plan that exists and did nothing is a scenario that proved nothing, and
+        the operator needs to hear that -- it is not the same as not asking."""
+        from agent_loop_chaos import ChaosEngine
+        from agent_loop_chaos.faults import ToolCorruptionFault
+        from agent_loop_chaos.targeting import Trigger
+
+        engine = ChaosEngine(seed=1337, out_dir=tmp_path, judge="rules", write_bundle=False)
+
+        @engine.tool
+        def fetch(x: str) -> dict[str, Any]:
+            return {"amount_usd": 412}
+
+        @engine.intercept_tools()
+        def agent(question: str) -> str:
+            return f"Amount: {fetch('a')['amount_usd']}"
+
+        engine.register_fault(
+            ToolCorruptionFault(mutation_type="drop_key", keys=["amount_usd"]),
+            target_tool="fetch",
+            trigger=Trigger(on_call=99),
+        )
+        result = engine.run(agent, inputs="what do I owe?")
+        assert [f for f in result.injected_faults if not f["fired"]], "the fault fired"
+        assert result.failure_mode != "none"

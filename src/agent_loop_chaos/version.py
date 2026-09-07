@@ -6,4 +6,4 @@ bumped in exactly one place (M9 release checklist, step 2).
 
 from __future__ import annotations
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"

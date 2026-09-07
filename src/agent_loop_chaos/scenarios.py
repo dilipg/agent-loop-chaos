@@ -355,6 +355,10 @@ class Scenario:
     #: How hard the plan pushes, 1 (strict) to 10 (creative). 3 is the identity: a
     #: dial nobody turned changes nothing. See `agent_loop_chaos.intensity`.
     intensity: int = DEFAULT_LEVEL
+    #: Extra key patterns to redact, on top of the default deny-list. Belongs in the
+    #: suite file because it is a property of the agent, not of one invocation: an
+    #: internal credential header is named the same on every run (D-134).
+    redact_keys: list[str] = field(default_factory=list)
     #: The preset this scenario named, kept so a high intensity knows where to draw
     #: extra faults from. `resolve_preset` already folded its faults into `faults`.
     preset: str | None = None
@@ -687,6 +691,7 @@ def _scenario_from_body(body: Mapping[str, Any]) -> Scenario:
         "allow_side_effects",
         "objective_state_key",
         "intensity",
+        "redact_keys",
         "dry_run",
         "tags",
         "description",
