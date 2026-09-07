@@ -203,6 +203,12 @@ class Registry:
                 continue
             try:
                 points = strategy.attach(engine, seen)
+            except ConfigError:
+                # A misconfiguration is the caller's to fix and must not be degraded to
+                # "unavailable": a typo in a dotted path would then produce a green run
+                # with no seam, which is the failure `seams:` exists to remove (D-64).
+                self.detach()
+                raise
             except Exception as exc:  # pragma: no cover - defensive
                 logger.warning("interceptor %s failed to attach: %s", strategy.name, exc)
                 unavailable[strategy.name] = f"failed to attach: {exc}"

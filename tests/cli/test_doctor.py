@@ -85,3 +85,23 @@ class TestItSaysWhenItFoundNothing:
     ) -> None:
         monkeypatch.chdir(tmp_path)
         assert main(["doctor", "nope.does.not:exist"]) == 2
+
+
+class TestItDistinguishesACrashFromAnAbsence:
+    """Found by probing a real service with the wrong `--inputs`.
+
+    The agent crashed before calling anything, and `doctor` reported "no tool or llm
+    seam was reached" -- sending the reader after a hand-rolled client when the truth
+    was one bad argument. An absence and a crash need different answers.
+    """
+
+    def test_a_crash_is_reported_as_a_crash(
+        self, capsys: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        code = main(["doctor", "tests.fakes.unwrapped_agent:explodes", "--inputs", "q"])
+        out = capsys.readouterr().out
+        assert code == 2, "a probe that could not run is a usage problem, not a finding"
+        assert "failed before reaching" in out
+        assert "--inputs" in out, "the likeliest cause must be named"
+        assert "No tool or llm seam was reached" not in out, "that diagnosis is misleading here"

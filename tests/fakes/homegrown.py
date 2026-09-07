@@ -27,6 +27,22 @@ class LLMClient:
         return CANNED
 
 
+async def _achat(self: LLMClient, prompt: str) -> str:
+    """Standalone so the async method can be attached below without duplication.
+
+    Args:
+        self: The client.
+        prompt: What to answer.
+
+    Returns:
+        The canned reply.
+    """
+    return CANNED
+
+
+LLMClient.achat = _achat  # type: ignore[attr-defined]
+
+
 def fetch_weather(city: str) -> dict[str, Any]:
     """Read the weather for a city.
 

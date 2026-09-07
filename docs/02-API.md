@@ -683,9 +683,14 @@ Built-in strategies:
 ```yaml
 defaults:
   seams:
-    llm:   ["app.llm:LLMClient.chat"]
+    llm:   ["summarizer=app.llm:LLMClient.chat"]   # `llm: summarizer` targets it
     tools: ["app.repositories:fetch_*"]
 ```
+
+`name=module:attr` aliases a seam, because a suite naturally targets `llm: summarizer`
+rather than `llm: "LLMClient.chat"`. An alias over a glob is refused (D-146). A method
+is bound before the engine sees it, so the payload is the argument the caller passed and
+not the instance.
 
 A spec is `module:attr`, where `attr` names a function, a `Class.method`, or a glob over
 a module's attributes. The seam is named by its attribute path, so `tool: fetch_weather`

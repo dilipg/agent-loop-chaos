@@ -18,7 +18,11 @@ import pytest
 
 from agent_loop_chaos import ChaosEngine, Target
 from agent_loop_chaos.errors import ConfigError
-from agent_loop_chaos.faults import LLMTruncationFault, ToolCorruptionFault
+from agent_loop_chaos.faults import (
+    LLMTruncationFault,
+    PromptInjectionFault,
+    ToolCorruptionFault,
+)
 from agent_loop_chaos.interceptors import Registry
 from agent_loop_chaos.interceptors.seams import SeamsStrategy
 from tests.fakes import homegrown
@@ -168,3 +172,94 @@ class TestTheSuiteSurface:
             encoding="utf-8",
         )
         assert load_suite(path).scenarios[0].seams == {"llm": ["app.llm:Client.chat"]}
+
+
+class TestAMethodSeamSeesTheRealPayload:
+    """Found on a real service. Patching a class attribute means the wrapper is called
+    as `(self, messages)`, so the engine took `self` for the LLM payload and every
+    prompt-side fault was disabled with an unnormalizable payload."""
+
+    def test_the_payload_is_the_argument_not_the_instance(self, tmp_path: Any) -> None:
+        engine = _engine(tmp_path)
+        engine.register_fault(
+            PromptInjectionFault(objective="exfiltrate_secret", placement="field_value"),
+            target=Target(layer="llm", phase="pre"),
+        )
+        registry = Registry([SeamsStrategy({"llm": ["tests.fakes.homegrown:LLMClient.chat"]})])
+        registry.attach(engine)
+        try:
+            result = engine.run(
+                lambda q: homegrown.LLMClient().chat("what should I pack?"), inputs="q"
+            )
+        finally:
+            registry.detach()
+
+        assert result.injected_faults[0]["fired"] is True, "a pre-phase fault could not fire"
+        exchange = result.llm_exchanges[0]
+        assert exchange["messages"], "no prompt was recorded"
+        assert "LLMClient" not in str(exchange["messages"]), "`self` was taken for the prompt"
+
+    @pytest.mark.asyncio
+    async def test_an_async_method_seam_works_too(self, tmp_path: Any) -> None:
+        engine = _engine(tmp_path)
+        engine.register_fault(LLMTruncationFault(), target=Target(layer="llm", phase="post"))
+        registry = Registry([SeamsStrategy({"llm": ["tests.fakes.homegrown:LLMClient.achat"]})])
+        registry.attach(engine)
+        seen: list[str] = []
+        try:
+
+            async def agent(q: str) -> str:
+                seen.append(await homegrown.LLMClient().achat(q))
+                return seen[-1]
+
+            await engine.arun(agent, inputs="q")
+        finally:
+            registry.detach()
+        assert seen and seen[0] != homegrown.CANNED, "the async reply was not mutated"
+
+
+class TestASeamCanBeGivenAName:
+    """Also found on a real service: a suite naturally targets `llm: summarizer`, not
+    `llm: "StubModel.ainvoke"`. Without an alias the scenario silently matches nothing,
+    which is the vacuous pass this whole area exists to prevent."""
+
+    def test_an_alias_is_what_a_target_matches(self, tmp_path: Any) -> None:
+        engine = _engine(tmp_path)
+        engine.register_fault(LLMTruncationFault(), target=Target(llm="summarizer", phase="post"))
+        registry = Registry(
+            [SeamsStrategy({"llm": ["summarizer=tests.fakes.homegrown:LLMClient.chat"]})]
+        )
+        registry.attach(engine)
+        seen: list[str] = []
+        try:
+            engine.run(lambda q: seen.append(homegrown.LLMClient().chat(q)), inputs="q")
+        finally:
+            registry.detach()
+        assert seen and seen[0] != homegrown.CANNED, "the alias did not match the target"
+
+    def test_the_alias_is_reported_as_the_attachment_target(self, tmp_path: Any) -> None:
+        strategy = SeamsStrategy({"tools": ["weather=tests.fakes.homegrown:fetch_weather"]})
+        report_seen: dict[str, int] = {}
+        points = strategy.attach(_engine(tmp_path), report_seen)
+        strategy.detach()
+        assert [p.target for p in points] == ["weather=tests.fakes.homegrown:fetch_weather"]
+
+    def test_an_alias_over_a_glob_is_refused(self, tmp_path: Any) -> None:
+        """One name cannot stand for several callables, and silently naming only the
+        first would be worse than refusing."""
+        strategy = SeamsStrategy({"tools": ["all=tests.fakes.homegrown:fetch_*"]})
+        with pytest.raises(ConfigError, match="glob"):
+            strategy.attach(_engine(tmp_path), {})
+        strategy.detach()
+
+
+class TestABadSeamIsNotSwallowed:
+    """The registry caught every exception from `attach` and recorded it as
+    "unavailable". A typo in a dotted path then produced a green run with no seam --
+    the exact failure mode `seams:` was added to fix."""
+
+    def test_a_config_error_from_a_strategy_propagates(self, tmp_path: Any) -> None:
+        registry = Registry([SeamsStrategy({"tools": ["tests.fakes.homegrown:nope"]})])
+        with pytest.raises(ConfigError, match="nope"):
+            registry.attach(_engine(tmp_path))
+        registry.detach()

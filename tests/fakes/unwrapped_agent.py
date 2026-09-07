@@ -67,6 +67,21 @@ def no_seams(question: str) -> str:
     return f"I cannot help with {question}"
 
 
+def explodes(question: str) -> str:
+    """An agent that fails before it calls anything.
+
+    Args:
+        question: Ignored.
+
+    Returns:
+        Never returns.
+
+    Raises:
+        TypeError: Always, standing in for an entrypoint given the wrong input shape.
+    """
+    raise TypeError("expected a mapping with 'query', got a string")
+
+
 def build(engine: Any = None) -> Any:
     """Builder form, for a scenario `entrypoint`.
 

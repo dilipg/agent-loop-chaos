@@ -38,25 +38,34 @@ __all__ = ["SeamsStrategy"]
 _LAYERS: Mapping[str, Layer] = {"llm": "llm", "tool": "tool", "tools": "tool"}
 
 
-def _split(spec: str) -> tuple[str, str]:
-    """Split a seam spec into its module and attribute path.
+def _split(spec: str) -> tuple[str | None, str, str]:
+    """Split a seam spec into its optional alias, module and attribute path.
+
+    An alias exists because a suite naturally targets `llm: summarizer`, not
+    `llm: "StubModel.ainvoke"`. Without one, a scenario written the obvious way matches
+    nothing and passes having tested nothing.
 
     Args:
-        spec: A ``module:attr`` string.
+        spec: ``module:attr``, or ``alias=module:attr``.
 
     Returns:
-        ``(module, attr_path)``.
+        ``(alias, module, attr_path)``, with `alias` `None` when none was given.
 
     Raises:
-        ConfigError: When the spec has no colon, or either half is empty.
+        ConfigError: When the spec has no colon, or any part is empty.
     """
-    module, _, attr = str(spec).partition(":")
-    if not module or not attr:
+    text = str(spec)
+    alias: str | None = None
+    if "=" in text and text.index("=") < (text.index(":") if ":" in text else len(text)):
+        alias, _, text = text.partition("=")
+        alias = alias.strip()
+    module, _, attr = text.partition(":")
+    if not module or not attr or (alias is not None and not alias):
         raise ConfigError(
-            f"seam {spec!r} must be 'module:attr' -- for example "
-            "'app.llm:LLMClient.chat' or 'app.repositories:fetch_*'"
+            f"seam {spec!r} must be 'module:attr', optionally 'name=module:attr' -- for "
+            "example 'summarizer=app.llm:LLMClient.chat' or 'app.repositories:fetch_*'"
         )
-    return module, attr
+    return alias, module, attr
 
 
 def _resolve(spec: str) -> list[tuple[Any, str, str]]:
@@ -73,7 +82,7 @@ def _resolve(spec: str) -> list[tuple[Any, str, str]]:
         ConfigError: When the module cannot be imported, or the attribute path matches
             nothing. Both are typos, and both must surface before the run.
     """
-    module_name, attr_path = _split(spec)
+    alias, module_name, attr_path = _split(spec)
     try:
         module = importlib.import_module(module_name)
     except ImportError as exc:
@@ -89,7 +98,13 @@ def _resolve(spec: str) -> list[tuple[Any, str, str]]:
             raise ConfigError(f"seam {spec!r}: {module_name}:{'.'.join(walked)} does not exist")
 
     prefix = ".".join([*parents, ""]) if parents else ""
-    if any(ch in leaf for ch in "*?["):
+    is_glob = any(ch in leaf for ch in "*?[")
+    if alias and is_glob:
+        raise ConfigError(
+            f"seam {spec!r}: a name cannot stand for a glob -- {leaf!r} may match several "
+            "callables, and naming only the first would be worse than refusing"
+        )
+    if is_glob:
         matches = [
             name
             for name in dir(owner)
@@ -103,7 +118,7 @@ def _resolve(spec: str) -> list[tuple[Any, str, str]]:
 
     if not callable(getattr(owner, leaf, None)):
         raise ConfigError(f"seam {spec!r}: {attr_path} is not a callable attribute")
-    return [(owner, leaf, attr_path)]
+    return [(owner, leaf, alias or attr_path)]
 
 
 class SeamsStrategy:
@@ -153,12 +168,20 @@ class SeamsStrategy:
                 raise ConfigError(f"seams: unknown layer {key!r}; expected one of: {allowed}")
             for spec in specs:
                 for owner, attribute, label in _resolve(spec):
-                    target = f"{_split(spec)[0]}:{label}"
+                    target = spec if "=" in spec else f"{_split(spec)[1]}:{label}"
                     self._originals.append((owner, attribute, getattr(owner, attribute)))
                     setattr(
                         owner,
                         attribute,
-                        _wrap(engine, seen, getattr(owner, attribute), layer, label, target),
+                        _wrap(
+                            engine,
+                            seen,
+                            getattr(owner, attribute),
+                            layer,
+                            label,
+                            target,
+                            is_method=isinstance(owner, type),
+                        ),
                     )
                     points.append(Attachment(layer=layer, strategy=self.name, target=target))
         return points
@@ -171,13 +194,27 @@ class SeamsStrategy:
 
 
 def _wrap(
-    engine: Any, seen: dict[str, int], original: Any, layer: Layer, label: str, target: str
+    engine: Any,
+    seen: dict[str, int],
+    original: Any,
+    layer: Layer,
+    label: str,
+    target: str,
+    *,
+    is_method: bool,
 ) -> Any:
     """Wrap one named callable so its calls become crossings.
 
     The engine's own wrapper handles async parity, payload normalization and the
-    crossing itself. This adds only the tally, and the fact that an unarmed engine
-    passes the call straight through.
+    crossing itself. This adds the tally, the pass-through when the engine is unarmed,
+    and one thing that is easy to get wrong.
+
+    **A method is bound before the engine sees it.** Patching a class attribute means
+    the wrapper is called as ``(self, messages)``, so the engine would take `self` for
+    the payload and disable every prompt-side fault with an unnormalizable payload.
+    Binding first makes the payload the argument the caller actually passed. The engine
+    wrapper is then built per call, which is safe: `call_index` lives on the run context
+    keyed by ``layer:name``, not on the wrapper.
 
     Args:
         engine: The engine.
@@ -186,6 +223,7 @@ def _wrap(
         layer: Which crossing layer it produces.
         label: The seam's name, as a target would write it.
         target: The tally key.
+        is_method: Whether `original` was found on a class rather than a module.
 
     Returns:
         The wrapper, a coroutine function when `original` is one.
@@ -194,10 +232,9 @@ def _wrap(
     import inspect
 
     wrap = engine.llm if layer == "llm" else engine.tool
-    # The cassette goes *under* the engine's wrapper, replacing the real call. Faults
-    # then apply on top of whatever the tape supplied, which is what makes a recorded
-    # run testable rather than merely reproducible.
-    routed = wrap(taped(engine, original, layer, label), name=label)
+
+    def route(bound: Any) -> Any:
+        return wrap(taped(engine, bound, layer, label), name=label)
 
     if inspect.iscoroutinefunction(original):
 
@@ -206,7 +243,14 @@ def _wrap(
             if not engine.is_active():
                 return await original(*args, **kwargs)
             seen[target] = seen.get(target, 0) + 1
-            return await routed(*args, **kwargs)
+            if is_method and args:
+                instance, rest = args[0], args[1:]
+
+                async def bound(*inner: Any, **inner_kw: Any) -> Any:
+                    return await original(instance, *inner, **inner_kw)
+
+                return await route(bound)(*rest, **kwargs)
+            return await route(original)(*args, **kwargs)
 
         return awrapper
 
@@ -215,6 +259,9 @@ def _wrap(
         if not engine.is_active():
             return original(*args, **kwargs)
         seen[target] = seen.get(target, 0) + 1
-        return routed(*args, **kwargs)
+        if is_method and args:
+            instance, rest = args[0], args[1:]
+            return route(functools.partial(original, instance))(*rest, **kwargs)
+        return route(original)(*args, **kwargs)
 
     return wrapper

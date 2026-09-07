@@ -963,8 +963,10 @@ def _doctor(args: argparse.Namespace) -> int:
         args: Parsed `doctor` arguments.
 
     Returns:
-        `0` when there is nothing to report, `1` when the probe found no payload seam
-        -- that is a finding, not a clean bill of health -- and `2` on a bad target.
+        `0` when seams were found, `1` when the probe ran but reached no payload seam
+        -- that is a finding, not a clean bill of health -- and `2` when the probe
+        itself could not run: a bad target, or an agent that crashed on the given
+        input before calling anything.
     """
     from . import interceptors
 
@@ -1012,6 +1014,22 @@ def _doctor(args: argparse.Namespace) -> int:
         print("Tools found (target with `tool:`)")
         for name in tools:
             print(f"  ok  {name}")
+    if not found and not result.success and not result.metrics.get("steps"):
+        # Found while probing a real service: the agent crashed on the input given, and
+        # reporting that as "no seam found" sent the reader after a hand-rolled client
+        # when the truth was one bad argument. Say what actually happened.
+        print(f"The probe run failed before reaching a model or a tool: {result.failure_mode}")
+        detail = result.error or {}
+        if detail:
+            print(f"  {detail.get('type', 'error')}: {str(detail.get('message', ''))[:300]}")
+        print(
+            "\nThis is about the probe, not your agent's resilience. The usual cause is "
+            "`--inputs`:\nit has to be the shape your entrypoint expects, and a graph "
+            "usually wants a mapping\nrather than a string. Nothing was injected, so "
+            "nothing here is a finding about your code."
+        )
+        return 2
+
     if not found:
         print(
             "No tool or llm seam was reached.\n\n"

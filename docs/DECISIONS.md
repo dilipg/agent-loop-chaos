@@ -2590,3 +2590,31 @@ collection failure rather than an import error in one test. That is arguably the
 loud failure, but it is a sharper edge than a library normally has, so it is documented
 rather than discovered.
 
+### D-146 — Three seam defects, all found by pointing `seams:` at a real service
+*2026-09-07. Affects `docs/02-API.md` §12.*
+
+`seams:` passed its own tests and then failed on the first real codebase, three ways at
+once. Each is the same shape of mistake: something that worked on a module-level
+function did not work on the thing a real project actually has.
+
+- **A method seam took `self` for the payload.** Patching a class attribute means the
+  wrapper is called as ``(self, messages)``, and the engine reads the first positional
+  argument as the payload -- so it normalized the *instance*, found it unnormalizable,
+  and silently disabled every `pre`-phase fault. Methods are now bound before the engine
+  wrapper is built. Building that wrapper per call is safe because `call_index` lives on
+  the run context keyed by ``layer:name``, not on the wrapper (D-03).
+- **A seam could not be given a name.** A suite naturally writes
+  ``target: {llm: summarizer}``; the seam was named ``StubModel.ainvoke``, so the
+  scenario matched nothing and passed having tested nothing. `seams:` now accepts
+  ``summarizer=module:attr``. An alias over a glob is refused: one name cannot stand for
+  several callables, and silently naming only the first would be worse.
+- **The registry swallowed the `ConfigError`.** `Registry.attach` caught every exception
+  from a strategy and recorded it as "unavailable", so a typo in a dotted path produced
+  a green run with no seam -- exactly the vacuous pass `seams:` was added to remove. A
+  `ConfigError` now propagates, after detaching what had already attached.
+
+The first two were invisible to a fixture-backed test because a fixture reaches for a
+module-level function and writes the target to match whatever the code produced. This is
+the same lesson as D-136 and D-141: the tests that find real defects are the ones run
+against a codebase nobody wrote for the library.
+

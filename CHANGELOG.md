@@ -36,6 +36,12 @@ library — see `docs/04-SCHEMAS.md` §2.
   `defaults:`, or `alc run --intercept`. Neither optional dependency becomes a hard
   one: availability is `find_spec`, the import is inside `attach()`, and a test asserts
   that listing the strategies imports nothing they patch.
+- Three `seams:` defects, all found by pointing it at a real service and none
+  reachable from a fixture-backed test (**D-146**): a method seam took `self` for the
+  LLM payload and so silently disabled every prompt-side fault; a seam could not be
+  aliased, so a scenario written the obvious way (`llm: summarizer`) matched nothing and
+  passed having tested nothing; and `Registry.attach` swallowed the `ConfigError` a bad
+  dotted path raises, turning a typo into a green run with no seam.
 - **A pytest plugin.** `chaos_engine` is available as soon as the library is installed
   — a `pytest11` entry point, nothing to add to `conftest.py` — so a project's own
   fixtures build the agent and the library supplies only the engine. Configure with
