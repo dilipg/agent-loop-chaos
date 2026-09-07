@@ -21,6 +21,9 @@ Chaos engineering for agent loops. Output designed for machines, not dashboards.
 **How it works** — [How pass/fail is decided](#how-passfail-is-decided) ·
 [The judge](#the-judge) · [Results](#results) · [Status](#status)
 
+**In a hurry, or handing this to a colleague?** [BRIEF.md](BRIEF.md) is the
+five-minute version: install, point `alc doctor` at your service, run what it prints.
+
 ## The problem
 
 Your weather tool has returned `{"temp_c": 24, ...}` on every call for six months.

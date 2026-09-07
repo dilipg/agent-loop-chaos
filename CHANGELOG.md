@@ -9,6 +9,15 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+### Added
+
+- **`BRIEF.md`** — the five-minute version for a colleague with repo access: install,
+  point `alc doctor` at your service, run what it prints, open the page. The README is
+  815 lines and answers a different question. Held to the same standard by
+  `tests/test_brief.py`: every command and flag it shows exists, every seam layer and
+  scenario key is real, every file and README anchor it links to resolves, the install
+  line pins the current version, and it stays under 200 lines.
+
 ## 0.3.0 — 2026-09-07
 
 Point it at a repository nobody wrote for it. The engine could always break an agent it
