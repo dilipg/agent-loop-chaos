@@ -1251,12 +1251,17 @@ class ChaosEngine:
                 # The fault's own record of what it did. For an injection this is the
                 # corpus entry's `payload_id`, `detect` rule and `check` -- the only
                 # thing that lets `injection_followed` attribute a follow-through to
-                # the payload that caused it.
-                fire["params"] = dict(outcome.params)
+                # the payload that caused it. Scrubbed: a fault that carries a value
+                # it read from the agent carries whatever the agent had.
+                fire["params"] = self._scrub(dict(outcome.params))
             if outcome.mutation is not None:
-                fire["payload_before"] = outcome.mutation.payload_before
-                fire["payload_after"] = outcome.mutation.payload_after
-                fire["json_patch"] = outcome.mutation.json_patch
+                # Redacted like every other payload. `ArgumentTamperFault` records the
+                # arguments it rewrote, which for an authenticated tool means the
+                # bearer token -- the third place in the report that carried one in
+                # full, after `tool_calls[]` and `llm_exchanges[]` (D-131, D-136).
+                fire["payload_before"] = self._scrub(outcome.mutation.payload_before)
+                fire["payload_after"] = self._scrub(outcome.mutation.payload_after)
+                fire["json_patch"] = self._scrub(outcome.mutation.json_patch)
                 fire["unrepresentable"] = outcome.mutation.unrepresentable
             if outcome.delay_ms:
                 fire["delay_ms"] = outcome.delay_ms

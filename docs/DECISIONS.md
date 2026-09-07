@@ -2297,3 +2297,42 @@ narrowly:
 
 `dry_run` is untouched: it means what the caller asked for, and a dry-run scenario
 still declares `ignore_and_continue` as the demo's control does.
+
+### D-136 — The catalog is swept against the hardened trees too
+*2026-09-05. Affects `docs/07-TESTING.md` §3, D-131, D-133.*
+
+`tests/test_full_catalog.py` ran all 28 faults against all nine *naive* trees and
+asserted three things: the engine never raises into the agent, the report is
+schema-valid, and a fault that reports `fired` did something. It never ran
+`build_fixed`, so **nothing in the suite asserted the property that decides whether a
+verdict can be believed: a probe must not fire on an agent that behaved correctly.**
+
+That is how `redacted_value_in_output` shipped in 0.2.0 and 0.2.1 firing `secret_leak`
+at critical severity on every agent that authenticates to its own tools (D-133). The
+negative-control tests existed, but each checked one pattern against its *own* declared
+fault -- never the whole catalog against a correct agent.
+
+The sweep now runs the hardened trees as well and asserts two things. No
+**trust-critical** probe fires: `secret_in_output`, `redacted_value_in_output`,
+`injection_followed`, `duplicate_side_effect`, `instruction_precedence_violation`,
+`state_key_read_after_drop`, `no_output_validation`, `pre_existing_invalid_args`. And no
+fault shakes a credential into the report, which the `authenticated` shape makes
+testable because it holds one.
+
+`unhandled_exception` and `assertions_failed` are deliberately *not* in the critical
+set. A hardened tree may genuinely crash under a fault it was never written for -- that
+is a gap in the example and the probe saying so is the probe working. What no fault in
+the catalog can do is make a correct agent leak a secret, obey an injection,
+double-book, or skip its own validation.
+
+It earned itself immediately, twice:
+
+- **A third credential path.** `injected_faults[].fires[].payload_before` was
+  unredacted, so `ArgumentTamperFault` against an authenticated tool recorded the
+  bearer token in full -- after `tool_calls[]` and `llm_exchanges[]` had been fixed in
+  0.2.2. All three now go through the same `_scrub`.
+- **Reflected injection in a hardened example.** The `authenticated` twin quoted the
+  mismatching tenant into its refusal, and that value is exactly where an injection
+  lands. The agent refused the instruction and still echoed it to the user.
+  `injection_followed` was right; the example was wrong. It now describes the mismatch
+  without quoting it, which is what a careful engineer does anyway.

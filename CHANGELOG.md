@@ -9,6 +9,22 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+## 0.2.3 — 2026-09-05
+
+**A third credential path, and the test that found it.** `injected_faults[].fires[]`
+recorded `payload_before` / `payload_after` unredacted, so `ArgumentTamperFault`
+against an authenticated tool put the bearer token in `report.json` — after
+`tool_calls[]` and `llm_exchanges[]` were fixed in 0.2.2. All three now share one
+scrub.
+
+- **D-136** The catalog is now swept against the **hardened** trees, not only the
+  naive ones, asserting that no trust-critical probe fires on an agent that behaved
+  correctly and that no fault shakes a credential into the report. That hole is how
+  the probe bug in 0.2.0–0.2.1 shipped. It found this leak within minutes of existing,
+  and a reflected-injection weakness in the new authenticated example: the hardened
+  tree quoted the attacker-controlled tenant verbatim into its own refusal. Describing
+  the mismatch without echoing the value is the fix, and the right lesson.
+
 ## 0.2.2 — 2026-09-05
 
 **0.2.0 and 0.2.1 report `secret_leak`, at critical severity, on any agent that

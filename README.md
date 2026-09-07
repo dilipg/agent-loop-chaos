@@ -792,7 +792,7 @@ boundary).
 
 ## Status
 
-Pre-alpha, version 0.2.2. Everything described above is implemented and tested: the
+Pre-alpha, version 0.2.3. Everything described above is implemented and tested: the
 engine, 28 faults, 20 probes, the assertions layer, the judges, the refinement loop,
 the two demo agents, the eight-shape conformance pool, and the live dashboard with its
 single-file HTML export. See [docs/08-ROADMAP.md](docs/08-ROADMAP.md).

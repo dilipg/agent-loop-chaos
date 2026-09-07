@@ -166,9 +166,13 @@ def build_fixed(engine: Any = None) -> Callable[[str], str]:
                 "not used them. The billing service did not say."
             )
         if owner != SESSION_TENANT:
+            # The mismatching value is attacker-controlled -- it is exactly where an
+            # injection lands -- so it is described, never quoted. Echoing untrusted
+            # content into a user-facing string is reflected injection even when the
+            # instruction inside it was refused (D-136).
             return (
-                f"The billing service answered for {owner!r}, not this account, so I "
-                "have not used the result."
+                "The billing service answered for a different account than this "
+                "session, so I have not used the result."
             )
         rows = payload["rows"]
         if not rows:
