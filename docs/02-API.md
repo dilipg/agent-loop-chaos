@@ -543,6 +543,8 @@ alc report <run_dir|out_dir> [--format md|json|html] [-o FILE] [--max-trace-even
 alc validate <report.json|suite.yaml>
 alc list-faults [--json]
 alc init                                           # scaffold chaos/ dir + example scenario
+alc doctor [module:attr] [--inputs S] [--json]     # what interception can attach to here
+                                                   # exit 1 when no tool/llm seam was reached
 alc dashboard [--out DIR] [--port 7717] [--host 127.0.0.1] [--open]
               [--poll-ms 250] [--max-events N] [--no-sse] [--once]
 ```

@@ -261,6 +261,27 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--dir", default="chaos", help="where to scaffold (default: chaos)")
     init.add_argument("--force", action="store_true", help="overwrite existing files")
 
+    doctor = sub.add_parser(
+        "doctor",
+        help="report what the interceptors can attach to in this project",
+        description=(
+            "With no target, report which strategies can attach here. With a "
+            "module:attr entrypoint, run it once with no faults under interception and "
+            "report the tool and llm seams it found, plus a suite that targets them."
+        ),
+        epilog="example:\n  alc doctor your_package.agent:main --inputs 'hello'",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    doctor.add_argument(
+        "target",
+        nargs="?",
+        help="module:attr entrypoint to probe (default: report the environment)",
+    )
+    doctor.add_argument("--inputs", help="what to pass the entrypoint for the probe run")
+    doctor.add_argument(
+        "--json", action="store_true", help="print one JSON object and nothing else"
+    )
+
     dashboard = sub.add_parser("dashboard", help="serve the read-only trace dashboard (M10)")
     dashboard.add_argument("--out", help="run directory to serve")
     dashboard.add_argument("--port", type=int, default=7717, help="port to serve on")
@@ -893,6 +914,131 @@ failure writes an `AGENT_TASK.md` under `.chaos/` — hand it to a coding agent 
 """
 
 
+def _doctor(args: argparse.Namespace) -> int:
+    """Report what can be attached here, and what a probe run actually saw.
+
+    Onboarding a repository should be a feature of the library, not a task for whoever
+    is willing to read the source. With no target this reports which strategies can
+    attach; with an entrypoint it runs the agent once with no faults and reports the
+    seams interception found.
+
+    Args:
+        args: Parsed `doctor` arguments.
+
+    Returns:
+        `0` when there is nothing to report, `1` when the probe found no payload seam
+        -- that is a finding, not a clean bill of health -- and `2` on a bad target.
+    """
+    from . import interceptors
+
+    strategies = {}
+    for strategy in interceptors.default_strategies():
+        strategies[strategy.name] = strategy.available() or "available"
+
+    if args.target is None:
+        if args.json:
+            print(json.dumps({"strategies": strategies}))
+            return 0
+        print("Interception strategies")
+        width = max(len(name) for name in strategies)
+        for name, state in sorted(strategies.items()):
+            mark = "ok " if state == "available" else "-- "
+            print(f"  {mark}{name:<{width}}  {state}")
+        print(
+            "\nPoint me at an entrypoint to see what it actually calls:"
+            "\n  alc doctor your_package.agent:main --inputs 'hello'"
+        )
+        return 0
+
+    from .engine import ChaosEngine
+    from .loop import drive, resolve_entrypoint
+
+    engine = ChaosEngine(seed=1337, dry_run=True, write_bundle=False, judge="rules", intercept=True)
+    # A ConfigError here is a bad target, which `main` turns into exit 2.
+    agent = resolve_entrypoint(args.target, engine)
+    result = drive(engine, agent, inputs=args.inputs)
+
+    llms = sorted({str(x.get("llm")) for x in result.llm_exchanges if x.get("llm")})
+    tools = sorted({str(x.get("tool")) for x in result.tool_calls if x.get("tool")})
+    found = bool(llms or tools)
+
+    if args.json:
+        print(json.dumps({"strategies": strategies, "llm": llms, "tools": tools}))
+        return 0 if found else 1
+
+    print(f"Probed {args.target} with no faults injected.\n")
+    if llms:
+        print("Models found (target with `llm:`)")
+        for name in llms:
+            print(f"  ok  {name}")
+    if tools:
+        print("Tools found (target with `tool:`)")
+        for name in tools:
+            print(f"  ok  {name}")
+    if not found:
+        print(
+            "No tool or llm seam was reached.\n\n"
+            "Payload faults -- corruption, injection, truncation, the hallucination "
+            "inducers -- have nothing to attach to here, so a scenario using one would "
+            "arm and never fire. Three usual causes:\n"
+            "  1. the agent never called a model or a tool on this input\n"
+            "  2. it reaches its model in-process through a client that is neither "
+            "httpx-backed nor a BaseChatModel\n"
+            "  3. it streams, which interception passes through untouched\n\n"
+            "Node, edge, state and checkpoint faults still work under LangGraph."
+        )
+        return 1
+
+    print("\nA suite that targets what was found:\n")
+    print(_doctor_suite(args.target, args.inputs, llms, tools))
+    return 0
+
+
+def _doctor_suite(
+    target: str, inputs: str | None, llms: Sequence[str], tools: Sequence[str]
+) -> str:
+    """Render a starter suite for the seams a probe found.
+
+    Args:
+        target: The entrypoint that was probed.
+        inputs: What it was given.
+        llms: Model names discovered.
+        tools: Tool names discovered.
+
+    Returns:
+        YAML, ready to paste into a file and run.
+    """
+    lines = [
+        'version: "1.0"',
+        "defaults:",
+        f"  entrypoint: {target}",
+        f"  inputs: {json.dumps(inputs or 'your question here')}",
+        "  intercept: true",
+        "  seed: 1337",
+        "scenarios:",
+    ]
+    if llms:
+        lines += [
+            "  - id: llm.reply_is_truncated",
+            '    title: "The model stops mid-sentence"',
+            "    expected_behavior: graceful_degradation",
+            "    faults:",
+            "      - type: LLMTruncationFault",
+            f"        target: {{ llm: {json.dumps(llms[0])}, phase: post }}",
+        ]
+    if tools:
+        lines += [
+            "  - id: tool.loses_a_key",
+            '    title: "A tool response arrives missing a field"',
+            "    expected_behavior: graceful_degradation",
+            "    faults:",
+            "      - type: ToolCorruptionFault",
+            f"        target: {{ tool: {json.dumps(tools[0])}, phase: post }}",
+            "        params: { mutation_type: drop_key }",
+        ]
+    return "\n".join(lines)
+
+
 def _init(args: argparse.Namespace) -> int:
     """Scaffold a chaos directory, refusing to clobber anything.
 
@@ -1310,6 +1456,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "judge": _judge,
         "replay": _replay,
         "init": _init,
+        "doctor": _doctor,
         "dashboard": _dashboard,
     }
     handler = handlers.get(args.command)

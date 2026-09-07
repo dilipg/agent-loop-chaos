@@ -463,9 +463,33 @@ the model resisted the injection or declined to invent a number — `no_unsource
 and `no_fabricated_citations` only start meaning something once a real model is
 answering. Record a cassette against the real endpoint before reading those as green.
 
+### Start by asking what can be reached
+
+Before writing a scenario, have the library tell you what it can see in your project:
+
+```console
+$ alc doctor your_package.agent:main --inputs "what should I pack for Paris?"
+Probed your_package.agent:main with no faults injected.
+
+Models found (target with `llm:`)
+  ok  gpt-4o
+Tools found (target with `tool:`)
+  ok  GET /v1/current
+
+A suite that targets what was found:
+...
+```
+
+It runs your agent once with no faults injected, under interception, and prints a
+suite targeting the seams it found — paste it into a file and run it. If it finds
+nothing it says so and exits `1`, because an empty result means every payload fault
+would arm and never fire, and that is a finding rather than a clean bill of health.
+With no argument it just reports which strategies can attach here.
+
 ### The shortest path that works
 
 ```bash
+alc doctor your_package.agent:main          # what can be reached
 alc init                                    # writes chaos/quickstart.yaml
 # point its entrypoint at a builder that returns your app, wired offline
 alc run chaos/quickstart.yaml --judge rules
@@ -740,6 +764,7 @@ alc validate <report.json|suite.yaml>
 alc list-faults [--json]
 alc dashboard [--out .chaos] [--port 7717] [--once]
 alc init                      # scaffold chaos/quickstart.yaml
+alc doctor [module:attr]      # what can be attached here, and what a probe run saw
 ```
 
 ## The dashboard

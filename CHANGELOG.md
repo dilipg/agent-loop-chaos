@@ -36,6 +36,13 @@ library — see `docs/04-SCHEMAS.md` §2.
   `defaults:`, or `alc run --intercept`. Neither optional dependency becomes a hard
   one: availability is `find_spec`, the import is inside `attach()`, and a test asserts
   that listing the strategies imports nothing they patch.
+- **`alc doctor`.** Onboarding as a feature of the library rather than a task for
+  whoever will read the source. With no argument it reports which strategies can attach
+  here; given a `module:attr` entrypoint it runs the agent once with no faults under
+  interception and prints the tool and llm seams it found, plus a suite targeting them.
+  Finding no payload seam exits `1` and explains the three usual causes, because an
+  empty result means every payload fault would arm and never fire — a finding, not a
+  clean bill of health.
 - With `intercept` on, a plan whose faults need a payload layer no strategy attached is
   a `ConfigError` naming every strategy tried and why each could not help — D-64 one
   step earlier: not "the fault never fired" but "there was nothing to fire at". See
