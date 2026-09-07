@@ -393,6 +393,94 @@ class TestTheReadmeCoversRunningAgainstARealAgent:
         assert shown <= declared, f"the README shows checks that do not exist: {shown - declared}"
 
 
+class TestTheReadmeOnboardsARealRepo:
+    """The section that exists so nobody needs a coding agent to write a harness.
+
+    Onboarding one real repository (a 10-node LangGraph pipeline with Mongo behind it)
+    took ~200 lines of hand-written harness before a single fault could fire. Every
+    blocker hit on the way is documented here with its workaround, because the next
+    person hits the same eight and has no transcript to read.
+    """
+
+    @staticmethod
+    def _section() -> str:
+        body = _readme().split("## Onboarding a real repo")
+        assert len(body) == 2, "the onboarding section is gone"
+        return body[1].split("\n## ")[0]
+
+    def test_the_section_exists(self) -> None:
+        assert self._section().strip()
+
+    @pytest.mark.parametrize(
+        "blocker",
+        [
+            "env",  # settings validated at import
+            "constructor",  # a DB client built before the graph exists
+            "no model",  # nothing to answer offline
+            "async",  # a coroutine entrypoint (D-114)
+            "no tool or llm layer",  # nothing for a payload fault to attach to
+            "never fire",  # armed, inert, proves nothing (D-64/D-132)
+            "side-effecting",  # the safety gate
+            "virtualenv",  # uv/monorepo/hidden-.pth (D-125)
+        ],
+    )
+    def test_it_covers_each_blocker(self, blocker: str) -> None:
+        assert blocker in self._section().lower(), f"{blocker!r} is undocumented"
+
+    def test_it_quotes_the_warning_the_library_actually_prints(self, repo_root: Path) -> None:
+        """A reader greps the message they saw. It has to be the real one."""
+        printed = "this scenario proves nothing"
+        source = (repo_root / "src" / "agent_loop_chaos" / "cli.py").read_text()
+        assert printed in source, "the warning moved; update the README quote with it"
+        assert printed in self._section(), "the README no longer quotes the real warning"
+
+    def test_it_warns_that_a_stub_model_narrows_the_result(self) -> None:
+        """The vacuous pass: the fault fires, but a canned reply cannot respond to it.
+
+        Read as a clean bill of health, this is the most misleading green in the tool.
+        """
+        section = self._section().lower()
+        assert "stub" in section
+        assert "does not prove" in section or "not prove" in section
+
+    def test_every_yaml_key_it_shows_is_real(self) -> None:
+        """The first draft of this section offered an `env:` block. There is no such key.
+
+        A workaround naming a field that does not exist sends the reader to a
+        `ConfigError` at load time, which is worse than sending them nowhere.
+        """
+        import dataclasses
+        import json
+        import re
+
+        from agent_loop_chaos import Scenario, Target, Trigger
+
+        schemas = Path(__file__).resolve().parents[1] / "schemas"
+        schema = json.loads((schemas / "chaos_report.schema.json").read_text())
+        real = (
+            {f.name for cls in (Scenario, Target, Trigger) for f in dataclasses.fields(cls)}
+            | {"faults", "type", "params", "target", "trigger", "preset", "scenarios", "defaults"}
+            # Names the section quotes from output rather than offers as config: a
+            # report field, the CLI itself, and a log level.
+            | set(schema["properties"])
+            | {"alc", "warning"}
+        )
+        shown = set(re.findall(r"`([a-z_]+):(?: |`|\")", self._section()))
+        assert shown, "the section shows no keys at all; did it lose its examples?"
+        assert shown <= real, f"the README shows keys that do not exist: {sorted(shown - real)}"
+
+    def test_the_commands_it_shows_exist(self) -> None:
+        """A workaround naming a flag we never shipped is worse than no workaround."""
+        import re
+
+        from agent_loop_chaos.cli import build_parser
+
+        parser = build_parser()
+        subcommands = set(parser._subparsers._group_actions[0].choices)  # type: ignore[union-attr,attr-defined]
+        for shown in set(re.findall(r"\balc ([a-z-]+)", self._section())):
+            assert shown in subcommands, f"the README shows `alc {shown}`, which does not exist"
+
+
 class TestTheInstallLineIsUsable:
     """Until it is on PyPI, the install line is the first thing that can be wrong.
 

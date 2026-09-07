@@ -341,6 +341,114 @@ the nine hardened ones pass.
 alc run examples/scenarios/patterns_suite.yaml --judge rules
 ```
 
+## Onboarding a real repo
+
+The examples above start from a clean sheet. Your repository does not, and the gap
+between them is where the time goes. The first real service this was pointed at — a
+ten-node LangGraph pipeline with Mongo behind it — needed about two hundred lines of
+harness before one fault could fire. None of that was fault configuration. All of it
+was getting the application to run at all with no network and no database.
+
+So the honest version of the promise: **the fault engine works on any shape, and
+getting your app to start offline is the work.** Everything below is a blocker hit in
+practice, with what it looks like and what to do about it.
+
+| What you see | Cause | Fix |
+|---|---|---|
+| `ValidationError` / `KeyError` on import | settings or environment variables validated at import time | export them before the run, or let your app load its own `.env` — dummy values are fine, the engine never dials out |
+| a connection timeout before any node runs | a DB or HTTP client built in a module-level constructor | build the app in a builder function, and hand it a test double — your own test suite's fixture is usually the fastest one to reach for |
+| `failure_mode: unknown` and no trace events | **no model** that answers without a network call | see below |
+| `ConfigError: … names \`arun\`` | an **async** entrypoint invoked synchronously (D-114) | name the coroutine; the engine drives it |
+| faults arm, `coverage` is empty | **no tool or llm layer** — nothing wrapped for a payload fault to attach to | see below |
+| `warning: … this scenario proves nothing` | the fault fired into a shape it could not change | see below |
+| `ConfigError` naming a **side-effecting** tool | the safety gate: three faults perform real actions | declare `side_effecting=True` and opt in per scenario with `allow_side_effects` ([SAFETY.md](SAFETY.md) §1) |
+| `alc: command not found`, or imports that resolve in your editor but not here | the wrong **virtualenv** — a workspace tool re-resolving, or a hidden `.pth` file that CPython skips (D-125) | install the library into the same interpreter your app runs in, and check `python -c "import agent_loop_chaos"` before blaming a scenario |
+
+### A model that answers offline
+
+Do not write a stub by hand. If you have LangChain, `langchain_core` already ships
+`GenericFakeChatModel`, and it supports `with_structured_output`, so a graph expecting
+a Pydantic object gets one:
+
+```python
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+model = GenericFakeChatModel(messages=iter(["a plausible reply"] * 100))
+```
+
+If you have a real endpoint and a credential, record once instead and replay forever:
+
+```python
+from agent_loop_chaos.cassettes import Cassette
+
+cassette = Cassette("chaos/cassettes/digest.json", mode="record")   # then "replay"
+model = engine.llm(cassette.wrap(real_model), name="summarizer")
+cassette.save()
+```
+
+A miss in replay mode raises rather than inventing a response, which is the whole
+point of recording — see [D-45](docs/DECISIONS.md).
+
+### Giving a payload fault something to attach to
+
+Under LangGraph, node, edge, state and checkpoint faults need nothing from you: hand
+over the graph and the adapter finds the nodes. **Tool and llm faults are different.**
+They mutate a payload, so they need the call to pass through the engine:
+
+```python
+model = engine.llm(model_client, name="summarizer")     # unlocks every prompt-side fault
+fetch = engine.tool(fetch_notifications)                # unlocks the data-shape faults
+```
+
+One line each, and both are inert outside a run, so they can stay in the code you ship.
+If your nodes reach a repository or a collection directly, there is no tool layer for a
+fault to attach to and the data-shape faults will arm and never fire. Wrapping the
+model is usually the cheaper of the two: it unlocks injection, truncation, malformed
+output and the hallucination inducers in a single line.
+
+### When a fault arms but never fires
+
+```
+warning: data.drop_subject: no fault fired (no reason recorded);
+         this scenario proves nothing. Check the target's tool/llm name.
+```
+
+Take this as seriously as a failure. The scenario ran, the agent passed, and nothing
+was tested — the most expensive kind of green. Three causes, in order of likelihood:
+
+1. **The target names something that does not exist.** A `tool: "fetch_notifications"`
+   that never got wrapped, or a typo. `coverage` in `suite.json` tells you which fault
+   types actually fired.
+2. **The fault could not change the payload.** A mutation that produces no difference is
+   not a fire ([D-132](docs/DECISIONS.md)) — dropping the middle of a one-message prompt
+   removes nothing, and re-routing an edge to the branch it already took changes nothing.
+   Pick a fault that matches the shape you are pointing it at.
+3. **The trigger never came up.** `on_call: 3` against an agent that calls once.
+
+### What a pass proves, and what it does not prove
+
+If a canned reply is standing in for the model, a prompt-side scenario is narrower than
+it looks. The injection is real and the trace records it, but a **stub** that ignores
+its input cannot answer differently because of it. Such a pass proves the pipeline
+tolerated a hostile prompt without crashing or persisting garbage. It **does not prove**
+the model resisted the injection or declined to invent a number — `no_unsourced_numbers`
+and `no_fabricated_citations` only start meaning something once a real model is
+answering. Record a cassette against the real endpoint before reading those as green.
+
+### The shortest path that works
+
+```bash
+alc init                                    # writes chaos/quickstart.yaml
+# point its entrypoint at a builder that returns your app, wired offline
+alc run chaos/quickstart.yaml --judge rules
+alc explain .chaos/<scenario>/<run>         # what actually happened
+```
+
+Start with `graph.*`-style faults — node skips, state drops, retyped channels. They
+need no fixture data, they exercise the routing and reducer logic where a multi-node
+pipeline is most likely to be wrong, and they will fire on the first run. Add the
+payload faults once a model or a tool is wrapped.
+
 ## Writing a scenario
 
 `alc init` writes a working one. Here is the whole surface, annotated:

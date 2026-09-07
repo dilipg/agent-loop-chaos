@@ -9,6 +9,22 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+### Added
+
+- **README: "Onboarding a real repo".** Onboarding the first real service took ~200
+  lines of hand-written harness before one fault could fire, and none of it was fault
+  configuration — it was getting the app to start with no network and no database. The
+  new section documents all eight blockers hit on the way with their workarounds: env
+  validated at import, a client built in a module-level constructor, no offline model,
+  an async entrypoint, no tool or llm layer to attach to, a fault that arms and never
+  fires, the side-effect gate, and the wrong virtualenv. It also says plainly what a
+  pass with a stub model does *not* prove, since a canned reply cannot answer an
+  injection differently and reading that green as model resilience is the most
+  misleading result the tool can produce.
+- A README test asserting every YAML key the section shows is a real field. The first
+  draft offered an `env:` block, which does not exist — a workaround that sends the
+  reader to a `ConfigError` is worse than no workaround.
+
 ## 0.2.6 — 2026-09-05
 
 Two more found by running against a real LangGraph codebase. Neither was reachable
