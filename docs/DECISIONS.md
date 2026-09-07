@@ -2657,3 +2657,35 @@ Two sweep tests are the guard, in `tests/cli/test_declared_options_are_honoured.
 every parser `dest` has a reader in the library source, and every `scenarioBody`
 property has a `Scenario` field. Both would have caught D-144 on the day it landed.
 
+### D-148 — Two ways to reach a graph nobody hands over
+*2026-09-07. Affects `docs/02-API.md` §12.*
+
+`instrument_graph(app, engine)` needs the graph object, and a real service usually has
+none to give. Verifying the interceptors against one showed both shapes that defeat it,
+and neither was reachable before:
+
+- **Compiled inside the call.** `run(...)` builds, compiles, invokes and returns a
+  result, with the graph never leaving the function. `interceptors/langgraph.py` patches
+  `StateGraph.compile` for the duration of the run, exactly as the LangChain strategy
+  patches `BaseChatModel.generate`, so any graph compiled while a run is active comes
+  back instrumented.
+- **Compiled at import.** `_workflow = build_workflow()` at module level, reused across
+  invocations -- the warm-start singleton every Lambda-shaped service has. By the time a
+  run starts there is no compile left to intercept, so the graph is named instead:
+  `seams: {graph: ["app.graph.runner:_workflow"]}`.
+
+The second one needed care, and its test is the interesting one. `instrument_graph`
+works **in place**: it replaces the `func`/`afunc` inside the `RunnableCallable`
+LangGraph built and stamps a marker on the container so a second pass is a no-op. That
+is right for a graph compiled per run. For a module-level singleton it means the graph
+stays instrumented after the run, and -- because of the marker -- the *next* scenario's
+`instrument_graph` does nothing, so every crossing keeps routing to the first scenario's
+dead engine. A suite of ten scenarios would have had one working scenario and nine
+silent ones. `SeamsStrategy` therefore snapshots the inner callables and the marker
+before instrumenting, and restores them on detach.
+
+Verified against a real ten-node LangGraph service with no harness file: nine nodes
+instrumented, `NodeSkipFault` and `StateDropFault` both firing, from two dummy env vars,
+the service's own `AsyncMongoMockClient` test pattern, `GenericFakeChatModel` from
+langchain-core, and one `seams: {graph: ...}` line.
+

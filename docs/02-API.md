@@ -682,7 +682,8 @@ Built-in strategies:
 |---|---|---|
 | `httpx` | `Client.send`, `AsyncClient.send` | every hosted SDK and every local server -- both are HTTP |
 | `langchain-core` | `BaseChatModel.generate`/`agenerate`, `BaseTool.run`/`arun` | in-process models, including the fakes a test suite already owns |
-| `seams` | whatever a suite names by dotted path | a hand-rolled client that neither speaks HTTP nor subclasses `BaseChatModel` |
+| `langgraph` | `StateGraph.compile` | a graph built and compiled inside the function that runs it |
+| `seams` | whatever a suite names by dotted path | a hand-rolled client that neither speaks HTTP nor subclasses `BaseChatModel`, and a graph compiled at import |
 
 `seams` is the escape hatch, and the one `diagnose()` points a stuck reader at:
 
@@ -692,6 +693,12 @@ defaults:
     llm:   ["summarizer=app.llm:LLMClient.chat"]   # `llm: summarizer` targets it
     tools: ["app.repositories:fetch_*"]
 ```
+
+`graph:` names a compiled LangGraph object rather than a callable and supplies the node,
+edge, state and checkpoint layers at once. It is for the shape patching
+`StateGraph.compile` cannot reach: a service that compiles at import and reuses one
+graph across invocations (`_workflow = build_workflow()`). The instrumentation is undone
+on detach, which matters more than it sounds — see D-148.
 
 `name=module:attr` aliases a seam, because a suite naturally targets `llm: summarizer`
 rather than `llm: "LLMClient.chat"`. An alias over a glob is refused (D-146). A method

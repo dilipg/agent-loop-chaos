@@ -456,6 +456,7 @@ class TestTheReadmeOnboardsARealRepo:
         import re
 
         from agent_loop_chaos import Scenario, Target, Trigger
+        from agent_loop_chaos.interceptors import seams
 
         schemas = Path(__file__).resolve().parents[1] / "schemas"
         schema = json.loads((schemas / "chaos_report.schema.json").read_text())
@@ -466,6 +467,10 @@ class TestTheReadmeOnboardsARealRepo:
             # report field, the CLI itself, and a log level.
             | set(schema["properties"])
             | {"alc", "warning"}
+            # The layer keys that live *inside* a `seams:` block, read from the code so
+            # this cannot drift from what the strategy accepts.
+            | set(seams._LAYERS)
+            | {"graph"}
         )
         shown = set(re.findall(r"`([a-z_]+):(?: |`|\")", self._section()))
         assert shown, "the section shows no keys at all; did it lose its examples?"

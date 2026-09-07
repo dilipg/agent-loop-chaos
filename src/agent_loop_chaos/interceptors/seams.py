@@ -22,7 +22,9 @@ Everything is validated at attach time. A typo in a dotted path must surface as 
 
 from __future__ import annotations
 
+import contextlib
 import importlib
+import logging
 from collections.abc import Mapping, Sequence
 from fnmatch import fnmatchcase
 from typing import Any
@@ -34,8 +36,15 @@ from .tape import taped
 
 __all__ = ["SeamsStrategy"]
 
+logger = logging.getLogger("agent_loop_chaos")
+
 #: Suite key to crossing layer. `tools` is plural because a suite lists many.
 _LAYERS: Mapping[str, Layer] = {"llm": "llm", "tool": "tool", "tools": "tool"}
+
+#: `graph:` names a compiled LangGraph object rather than a callable, and supplies four
+#: layers at once. It exists for the shape `StateGraph.compile` patching cannot reach: a
+#: service that compiles its graph at import and reuses it across invocations.
+_GRAPH_LAYERS: tuple[Layer, ...] = ("node", "edge", "state", "checkpoint")
 
 
 def _split(spec: str) -> tuple[str | None, str, str]:
@@ -68,11 +77,13 @@ def _split(spec: str) -> tuple[str | None, str, str]:
     return alias, module, attr
 
 
-def _resolve(spec: str) -> list[tuple[Any, str, str]]:
+def _resolve(spec: str, *, require_callable: bool = True) -> list[tuple[Any, str, str]]:
     """Find every attribute a seam spec names.
 
     Args:
         spec: A ``module:attr`` string, where `attr` may be `Class.method` or a glob.
+        require_callable: Whether a match must be callable. A `graph:` seam names a
+            compiled graph object, which is not.
 
     Returns:
         One ``(owner, name, label)`` per match. `owner` is the module or class holding
@@ -110,15 +121,63 @@ def _resolve(spec: str) -> list[tuple[Any, str, str]]:
             for name in dir(owner)
             if not name.startswith("_")
             and fnmatchcase(name, leaf)
-            and callable(getattr(owner, name, None))
+            and (callable(getattr(owner, name, None)) or not require_callable)
         ]
         if not matches:
             raise ConfigError(f"seam {spec!r}: nothing in {module_name} matches {leaf!r}")
         return [(owner, name, f"{prefix}{name}") for name in sorted(matches)]
 
-    if not callable(getattr(owner, leaf, None)):
+    if getattr(owner, leaf, None) is None:
+        raise ConfigError(f"seam {spec!r}: {attr_path} does not exist")
+    if require_callable and not callable(getattr(owner, leaf, None)):
         raise ConfigError(f"seam {spec!r}: {attr_path} is not a callable attribute")
     return [(owner, leaf, alias or attr_path)]
+
+
+#: What `adapters.langgraph._wrap_node` replaces inside a `RunnableCallable`, plus the
+#: marker it stamps on the container to make a second pass a no-op.
+_INNER = ("func", "afunc", "__alc_instrumented__")
+
+
+def _snapshot(graph: Any) -> list[tuple[Any, str, Any]]:
+    """Capture what instrumenting a graph will overwrite, so it can be undone.
+
+    The adapter instruments a node **in place**: it replaces the `func`/`afunc` inside
+    the `RunnableCallable` LangGraph built and stamps a marker on the container, which
+    is right for a graph compiled per run and handed over once. A graph named as a seam
+    is usually a module-level singleton that outlives the run, and two things follow. It
+    would stay instrumented afterwards; and because the marker makes the next
+    `instrument_graph` a no-op, a second scenario's crossings would keep routing to the
+    first scenario's dead engine.
+
+    Args:
+        graph: A compiled LangGraph object.
+
+    Returns:
+        ``(container, attribute, original)`` triples, ready to replay in `detach`.
+        `original` is `_MISSING` for an attribute that did not exist, so restoring
+        deletes it rather than inventing one.
+    """
+    from ..adapters.langgraph import branch_slots, node_slots
+
+    containers: list[Any] = [get_() for _name, get_, _set in node_slots(graph)]
+    try:
+        containers += [get_() for _src, _name, get_, _set in branch_slots(graph)]
+    except Exception:  # pragma: no cover - a graph with no conditional edges
+        logger.debug("no branch slots to snapshot")
+
+    saved: list[tuple[Any, str, Any]] = []
+    for container in containers:
+        for attribute in _INNER:
+            saved.append((container, attribute, getattr(container, attribute, _MISSING)))
+    return saved
+
+
+class _Missing:
+    """Marks an attribute that did not exist before instrumentation."""
+
+
+_MISSING = _Missing()
 
 
 class SeamsStrategy:
@@ -134,6 +193,7 @@ class SeamsStrategy:
         """
         self._seams = {str(k): list(v) for k, v in (seams or {}).items()}
         self._originals: list[tuple[Any, str, Any]] = []
+        self._graphs: list[tuple[Any, list[tuple[Any, str, Any]]]] = []
 
     def available(self) -> str | None:
         """Report whether any seam was declared.
@@ -162,6 +222,9 @@ class SeamsStrategy:
         """
         points: list[Attachment] = []
         for key, specs in self._seams.items():
+            if key == "graph":
+                points += self._attach_graphs(engine, seen, specs)
+                continue
             layer = _LAYERS.get(key)
             if layer is None:
                 allowed = ", ".join(sorted(_LAYERS))
@@ -186,11 +249,66 @@ class SeamsStrategy:
                     points.append(Attachment(layer=layer, strategy=self.name, target=target))
         return points
 
+    def _attach_graphs(
+        self, engine: Any, seen: dict[str, int], specs: Sequence[str]
+    ) -> list[Attachment]:
+        """Instrument each compiled graph a suite names.
+
+        Args:
+            engine: The engine to route crossings through.
+            seen: Shared call tally.
+            specs: ``module:attr`` paths, each naming a compiled graph.
+
+        Returns:
+            Four `Attachment`s per graph -- node, edge, state and checkpoint all come
+            from one instrumentation and which a run uses is not knowable in advance.
+
+        Raises:
+            ConfigError: When a path names something that is not a compiled graph.
+                Refusing here beats a run that quietly instruments nothing.
+        """
+        from ..adapters.langgraph import instrument_graph
+
+        points: list[Attachment] = []
+        for spec in specs:
+            alias, module_name, _attr_path = _split(spec)
+            for owner, attribute, label in _resolve(spec, require_callable=False):
+                graph = getattr(owner, attribute)
+                if not (hasattr(graph, "invoke") and hasattr(graph, "get_graph")):
+                    raise ConfigError(
+                        f"seam {spec!r}: graph: expects a compiled LangGraph object; "
+                        f"{type(graph).__name__} has no `invoke`/`get_graph`. Name the "
+                        "compiled graph a service reuses, e.g. 'app.graph.runner:_workflow'"
+                    )
+                # `instrument_graph` wraps the graph's own node and branch slots in
+                # place and hands back the same object, so putting the attribute back
+                # would not undo anything. A module-level graph outlives the run, and a
+                # second scenario would then route its crossings to the first
+                # scenario's engine -- so the slots are snapshotted and restored.
+                self._graphs.append((graph, _snapshot(graph)))
+                self._originals.append((owner, attribute, graph))
+                setattr(owner, attribute, instrument_graph(graph, engine))
+                target = spec if alias else f"{module_name}:{label}"
+                seen[target] = seen.get(target, 0) + 1
+                points += [
+                    Attachment(layer=layer, strategy=self.name, target=target)
+                    for layer in _GRAPH_LAYERS
+                ]
+        return points
+
     def detach(self) -> None:
-        """Restore every wrapped callable. Safe to call twice."""
+        """Restore every wrapped callable and every instrumented graph. Safe twice."""
         while self._originals:
             owner, attribute, original = self._originals.pop()
             setattr(owner, attribute, original)
+        while self._graphs:
+            _graph, snapshot = self._graphs.pop()
+            for container, attribute, value in snapshot:
+                if isinstance(value, _Missing):
+                    with contextlib.suppress(AttributeError):
+                        delattr(container, attribute)
+                else:
+                    setattr(container, attribute, value)
 
 
 def _wrap(

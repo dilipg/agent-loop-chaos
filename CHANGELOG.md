@@ -36,6 +36,15 @@ library — see `docs/04-SCHEMAS.md` §2.
   `defaults:`, or `alc run --intercept`. Neither optional dependency becomes a hard
   one: availability is `find_spec`, the import is inside `attach()`, and a test asserts
   that listing the strategies imports nothing they patch.
+- **Node, edge, state and checkpoint faults now reach a graph nobody hands over**
+  (**D-148**). `instrument_graph(app, engine)` needs the graph object and a real service
+  usually has none to give, which is what harness files were for. Two shapes are now
+  covered: a graph compiled inside the function that runs it, via a new `langgraph`
+  strategy patching `StateGraph.compile`; and a graph compiled at import and reused —
+  the warm-start singleton — via `seams: {graph: ["app.graph.runner:_workflow"]}`.
+  Instrumentation of a named graph is undone on detach, because it happens in place and
+  would otherwise leave every later scenario routing crossings to the first scenario's
+  dead engine.
 - **A run writes `index.html` beside `suite.json`,** so looking at a result is opening
   a file rather than remembering a second command. The data is inline, so it needs no
   server. `--no-html` skips it, and an export failure never fails the run — the page is

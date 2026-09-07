@@ -445,7 +445,14 @@ defaults:
   seams:
     llm:   ["summarizer=app.llm:LLMClient.chat"]   # target it as `llm: summarizer`
     tools: ["app.repositories:fetch_*"]            # a glob over the module's functions
+    graph: ["app.graph.runner:_workflow"]          # a graph compiled at import
 ```
+
+`graph:` is the one to reach for when your service compiles its graph once at module
+level and reuses it — `_workflow = build_workflow()`. Node, edge, state and checkpoint
+faults need the graph object, and that shape never hands it to anyone; naming it is
+enough. A graph compiled *inside* the function that runs it needs nothing at all,
+because `--intercept` patches `StateGraph.compile`.
 
 `name=` in front gives the seam whatever name your scenarios already use; without it,
 the seam is named by its attribute path, so `tool: fetch_weather` targets it as

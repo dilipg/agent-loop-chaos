@@ -247,5 +247,6 @@ def default_strategies() -> list[Strategy]:
     """
     from .http import HttpxStrategy
     from .langchain import LangChainStrategy
+    from .langgraph import LangGraphStrategy
 
-    return [HttpxStrategy(), LangChainStrategy()]
+    return [HttpxStrategy(), LangChainStrategy(), LangGraphStrategy()]
