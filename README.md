@@ -168,10 +168,19 @@ such, because those two things should never be confused in a bug report.
 
 ## Integrating with your agent
 
-**The one thing to understand:** the engine can only break what it can see. It sees a
-call by wrapping the callable that makes it, so integration is "hand your tool
-functions and your model call to the engine once" — after that every fault in the
-catalog can reach them, and nothing else about your code changes.
+**The one thing to understand:** the engine can only break what it can see. There are
+two ways to let it see a call, and they compose.
+
+**Let it find them.** `alc run --intercept` (or `intercept: true` in a suite) patches
+`httpx` and the LangChain base classes for the duration of the run. Nothing in your
+code changes — not one import — and every hosted SDK, every local model server and
+every in-process LangChain model is reached, because the first two are the same HTTP
+call and the third inherits the same base class. Start here.
+
+**Or hand them over.** Wrapping the callable yourself makes the seam explicit, names
+it whatever you like, and works on a client that neither speaks HTTP nor subclasses
+`BaseChatModel`. It is one line per call and inert outside a run, so it can live in the
+code you ship.
 
 Nothing here is framework-specific. Pick the shape that matches your code.
 
@@ -359,7 +368,7 @@ practice, with what it looks like and what to do about it.
 | a connection timeout before any node runs | a DB or HTTP client built in a module-level constructor | build the app in a builder function, and hand it a test double — your own test suite's fixture is usually the fastest one to reach for |
 | `failure_mode: unknown` and no trace events | **no model** that answers without a network call | see below |
 | `ConfigError: … names \`arun\`` | an **async** entrypoint invoked synchronously (D-114) | name the coroutine; the engine drives it |
-| faults arm, `coverage` is empty | **no tool or llm layer** — nothing wrapped for a payload fault to attach to | see below |
+| faults arm, `coverage` is empty | **no tool or llm layer** — nothing wrapped for a payload fault to attach to | `--intercept`, or wrap one call; see below |
 | `warning: … this scenario proves nothing` | the fault fired into a shape it could not change | see below |
 | `ConfigError` naming a **side-effecting** tool | the safety gate: three faults perform real actions | declare `side_effecting=True` and opt in per scenario with `allow_side_effects` ([SAFETY.md](SAFETY.md) §1) |
 | `alc: command not found`, or imports that resolve in your editor but not here | the wrong **virtualenv** — a workspace tool re-resolving, or a hidden `.pth` file that CPython skips (D-125) | install the library into the same interpreter your app runs in, and check `python -c "import agent_loop_chaos"` before blaming a scenario |
@@ -393,7 +402,26 @@ point of recording — see [D-45](docs/DECISIONS.md).
 
 Under LangGraph, node, edge, state and checkpoint faults need nothing from you: hand
 over the graph and the adapter finds the nodes. **Tool and llm faults are different.**
-They mutate a payload, so they need the call to pass through the engine:
+They mutate a payload, so they need the call to pass through the engine.
+
+The cheapest way is to let the library find the calls itself:
+
+```bash
+alc run chaos/quickstart.yaml --intercept --judge rules
+```
+
+That patches `httpx` and the LangChain base classes for the duration of the run, so a
+model call reaches the engine with no change to the agent at all. It covers every
+hosted SDK (openai, anthropic, azure, bedrock) because they all ride on `httpx`, every
+local server (Ollama, vLLM, LM Studio, llama.cpp) because those are the same HTTP call
+to a different host, and in-process LangChain models including the fakes your test
+suite already owns. A recognized model endpoint becomes an `llm` crossing named by its
+model id; any other HTTP call becomes a `tool` crossing named `GET /v1/current`.
+
+Two things it cannot see: a streaming call, which passes through untouched and logs why
+because a fault cannot mutate an incremental response; and a hand-rolled client that
+neither speaks HTTP nor subclasses `BaseChatModel`. For those, and whenever you want
+the seam to be explicit, wrap the call yourself:
 
 ```python
 model = engine.llm(model_client, name="summarizer")     # unlocks every prompt-side fault
