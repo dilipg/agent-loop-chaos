@@ -389,8 +389,8 @@ If you have a real endpoint and a credential, **record the run once and replay i
 forever** — nobody should be hand-writing fixtures:
 
 ```bash
-alc run chaos/quickstart.yaml --intercept --record chaos/tape.json   # calls out once
-alc run chaos/quickstart.yaml --intercept --replay-cassette chaos/tape.json
+alc run chaos/quickstart.yaml --intercept --record chaos/cassettes/tape.json   # calls out once
+alc run chaos/quickstart.yaml --intercept --replay-cassette chaos/cassettes/tape.json
 ```
 
 The second command needs no credential and makes no network call, and the faults still

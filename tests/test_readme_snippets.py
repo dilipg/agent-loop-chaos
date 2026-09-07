@@ -334,8 +334,10 @@ class TestTheReadmePathsExist:
         assert main(["init"]) == 0
         scaffolded = {str(p.relative_to(tmp_path)) for p in (tmp_path / "chaos").iterdir()}
 
-        # `(?<![.\w])` so `.chaos/suite.json` -- the *output* directory -- is not
-        # mistaken for a scenario file the scaffold was supposed to write.
+        # Scope: files the README tells a reader to *read*. `(?<![.\w])` keeps
+        # `.chaos/suite.json` -- the output directory -- out of it, and the flat
+        # `chaos/*.ext` shape keeps out nested paths like `chaos/cassettes/tape.json`,
+        # which the command shown creates rather than expects to exist.
         referenced = set(
             re.findall(r"(?<![.\w])chaos/[A-Za-z0-9_.-]+\.(?:yaml|yml|json)", _readme())
         )
