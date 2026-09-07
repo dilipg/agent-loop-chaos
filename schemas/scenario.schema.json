@@ -442,6 +442,13 @@
               "type": "string"
             }
           }
+        },
+        "cassette": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Path to a recorded cassette to replay instead of calling out, so the scenario runs with no credential and no network. Record one with `alc run --record <path>`. Faults apply on top of a replayed payload."
         }
       }
     },

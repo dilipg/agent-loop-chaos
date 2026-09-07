@@ -295,13 +295,41 @@ def drive(engine: Any, agent: Any, **kwargs: Any) -> ChaosResult:
     return cast("ChaosResult", engine.run(agent, **kwargs))
 
 
-def _shared_baseline(cache: dict[str, Any], scenario: Scenario, out_dir: Path) -> Any:
+def _tape_for(scenario: Scenario, cache: dict[str, Any]) -> Any:
+    """Open the cassette a scenario named, at most once per path.
+
+    Args:
+        scenario: The scenario, carrying `cassette:` or not.
+        cache: Per-suite cache, keyed by path, so every scenario sharing a tape shares
+            its playback position too.
+
+    Returns:
+        A `Cassette` in replay mode, or `None` when the scenario named none. Replay,
+        because a suite that records as a side effect of running is a suite that
+        quietly rewrites its own fixtures.
+    """
+    path = getattr(scenario, "cassette", None)
+    if not path:
+        return None
+    if path not in cache:
+        from .cassettes import Cassette
+
+        cache[path] = Cassette(path, mode="replay")
+    return cache[path]
+
+
+def _shared_baseline(
+    cache: dict[str, Any], scenario: Scenario, out_dir: Path, cassette: Any = None
+) -> Any:
     """Run the scenario's entrypoint unfaulted once, and reuse it.
 
     Args:
         cache: The per-suite cache, keyed by entrypoint and inputs.
         scenario: The scenario needing a baseline.
         out_dir: Where run directories are written.
+        cassette: The suite's tape, so the baseline reads the same recording as the
+            faulted run. Without it the baseline would need the real endpoint, and the
+            diff would compare two different sources rather than one fault.
 
     Returns:
         The baseline `ChaosResult`, or `None` when it could not be produced. A
@@ -328,6 +356,7 @@ def _shared_baseline(cache: dict[str, Any], scenario: Scenario, out_dir: Path) -
             # effect.
             intercept=scenario.intercept,
             seams=scenario.seams,
+            cassette=cassette,
         )
         cache[key] = drive(
             engine,
@@ -357,6 +386,7 @@ def run_suite(
     narrate_all: bool = False,
     allow_remote_judge: bool = False,
     on_result: Callable[[ChaosResult], None] | None = None,
+    cassette: Any = None,
 ) -> list[ChaosResult]:
     """Run every scenario once, in order.
 
@@ -384,6 +414,9 @@ def run_suite(
         narrate_all: Narrate passing runs too.
         allow_remote_judge: Consent to a non-loopback judge endpoint (D-22).
         on_result: Called with each result as it completes, for progress output.
+        cassette: A `cassettes.Cassette` shared by every scenario, so one tape covers
+            the whole suite. A scenario's own `cassette:` path is used when this is
+            `None`.
 
     Returns:
         One result per scenario that ran.
@@ -395,6 +428,7 @@ def run_suite(
     # One baseline per (entrypoint, inputs). Recomputing it per scenario would double
     # the cost of every suite for an answer that cannot have changed.
     baselines: dict[str, Any] = {}
+    tapes: dict[str, Any] = {}
 
     planned = [s.id for s in scenarios]
 
@@ -424,6 +458,7 @@ def run_suite(
 
     def _one(scenario: Scenario) -> ChaosResult:
         """Run a single scenario in its own engine."""
+        tape = cassette if cassette is not None else _tape_for(scenario, tapes)
         engine = ChaosEngine(
             seed=seed if seed is not None else scenario.seed,
             out_dir=out_dir,
@@ -439,6 +474,7 @@ def run_suite(
             redact_keys=scenario.redact_keys,
             intercept=scenario.intercept,
             seams=scenario.seams,
+            cassette=tape,
         )
         specs, dial_skipped = plan_specs(scenario)
         for spec in specs:
@@ -472,7 +508,12 @@ def run_suite(
         # two scenarios different references.
         for scenario in scenarios:
             if not scenario.dry_run:
-                _shared_baseline(baselines, scenario, out_dir)
+                _shared_baseline(
+                    baselines,
+                    scenario,
+                    out_dir,
+                    cassette if cassette is not None else _tape_for(scenario, tapes),
+                )
 
     if jobs > 1 and not fail_fast and len(scenarios) > 1:
         from concurrent.futures import ThreadPoolExecutor

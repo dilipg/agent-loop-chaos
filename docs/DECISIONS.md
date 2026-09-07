@@ -2521,3 +2521,44 @@ anything inheriting its base classes, and `seams:` for everything else. A fourth
 strategy for a library that already routes through the first one is code to maintain
 for no reach.
 
+### D-144 — `--record` and `--replay-cassette` were dead flags; the cassette now covers any crossing
+*2026-09-07. Affects `docs/02-API.md` §10, `src/agent_loop_chaos/cassettes.py`.*
+
+Both flags were declared on the `alc run` parser and read by no code at all. The only
+test covering them asserted that they *parse*, so it passed for as long as they did
+nothing: `alc run --record tape.json` wrote no cassette, printed no warning and exited
+0. `Cassette`'s own miss message told readers to "Re-record with: alc run <suite>
+--record", pointing at a flag that had never worked. A test that asserts parsing and
+not behaviour is worse than no test, because it reads as coverage.
+
+No `alc record` subcommand, against the plan: the flags already existed and are already
+what the error messages name.
+
+Five things settled here:
+
+- **The cassette keys any crossing, not just a prompt.** `crossing_key(layer, name,
+  payload)` folds the layer and the name in, so two seams taking the same argument are
+  not mistaken for each other. A payload the encoder cannot handle falls back to
+  `repr`, because a real repository takes objects and refusing to key one would refuse
+  to record the calls this exists for.
+- **`record` mode records every call.** It previously short-circuited on a key it had
+  already seen, so a second identical call was never recorded -- contradicting `mode`'s
+  own documented contract ("calls the model and stores every response"). A model asked
+  the same thing twice may answer differently, and a tape keeping only the first reply
+  cannot reproduce the run it recorded. `play()` now delegates to `play_key()` so the
+  two cannot drift apart again.
+- **The cassette sits under the engine's wrapper, not over it.** The tape replaces the
+  real call; faults apply on top of what it supplied. The other order would record the
+  faulted value and replay a fixed finding forever, making a recorded run reproducible
+  but untestable.
+- **Redaction happens on write.** A cassette is committed, which makes a credential in
+  one worse than a credential in a report. Response headers are dropped entirely rather
+  than redacted, since they carry the credentials the recording run authenticated with
+  and nothing downstream reads them.
+- **A missing tape is exit 2, not a failing scenario.** Reporting an absent fixture file
+  as an agent failure blames the agent for the harness. It is checked before the run.
+
+One hazard worth writing down: `Cassette` defines `__len__`, so a freshly opened one is
+**falsy**. `cassette or fallback()` silently discarded it and the first recording run
+stored nothing. Use `is not None` for any object with a length.
+

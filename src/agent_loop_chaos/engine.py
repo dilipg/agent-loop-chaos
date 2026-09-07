@@ -222,6 +222,7 @@ class ChaosEngine:
         intensity: int = DEFAULT_LEVEL,
         intercept: bool = False,
         seams: Mapping[str, Sequence[str]] | None = None,
+        cassette: Any = None,
     ) -> None:
         """Initialise an engine.
 
@@ -258,6 +259,10 @@ class ChaosEngine:
                 built-in strategies cannot find. Declaring one turns interception on by
                 itself, since a seam that was silently ignored is the failure this
                 whole area exists to remove.
+            cassette: A `cassettes.Cassette`. In `record` mode every intercepted call
+                is stored; in `replay` mode the real call never happens, so a suite
+                runs with no credential and no network. Faults apply on top of a
+                replayed payload, which is what makes a recording testable.
                 Recorded in `plan.json` and the report. The dial scales **fault
                 specs**, so a suite, a preset or `--intensity` gets scaled faults;
                 a `Fault` object handed to `register_fault` directly is taken as
@@ -289,6 +294,7 @@ class ChaosEngine:
 
         self.intercept = bool(intercept)
         self.seams = {str(k): list(v) for k, v in (seams or {}).items()}
+        self.cassette = cassette
         self._attach_report: Any = None
         self._faults: list[_ArmedFault] = []
         self._tools: dict[str, ToolInfo] = {}

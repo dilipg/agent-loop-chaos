@@ -364,6 +364,10 @@ class Scenario:
     #: -- for the calls the built-in strategies cannot find. Turns interception on by
     #: itself. See `agent_loop_chaos.interceptors.seams`.
     seams: dict[str, list[str]] = field(default_factory=dict)
+
+    #: A recorded cassette to replay instead of calling out, so a suite runs with no
+    #: credential and no network. Record one with `alc run --record <path>`.
+    cassette: str | None = None
     #: Extra key patterns to redact, on top of the default deny-list. Belongs in the
     #: suite file because it is a property of the agent, not of one invocation: an
     #: internal credential header is named the same on every run (D-134).
@@ -702,6 +706,7 @@ def _scenario_from_body(body: Mapping[str, Any]) -> Scenario:
         "intensity",
         "intercept",
         "seams",
+        "cassette",
         "redact_keys",
         "dry_run",
         "tags",

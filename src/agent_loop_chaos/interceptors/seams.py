@@ -30,6 +30,7 @@ from typing import Any
 from ..context import Layer
 from ..errors import ConfigError
 from .base import Attachment
+from .tape import taped
 
 __all__ = ["SeamsStrategy"]
 
@@ -193,7 +194,10 @@ def _wrap(
     import inspect
 
     wrap = engine.llm if layer == "llm" else engine.tool
-    routed = wrap(original, name=label)
+    # The cassette goes *under* the engine's wrapper, replacing the real call. Faults
+    # then apply on top of whatever the tape supplied, which is what makes a recorded
+    # run testable rather than merely reproducible.
+    routed = wrap(taped(engine, original, layer, label), name=label)
 
     if inspect.iscoroutinefunction(original):
 

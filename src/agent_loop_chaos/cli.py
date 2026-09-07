@@ -96,13 +96,16 @@ def build_parser() -> argparse.ArgumentParser:
     cassette.add_argument(
         "--record",
         metavar="CASSETTE",
-        help="record every model response to a cassette file, so the suite replays later",
+        help=(
+            "call out for real and record every intercepted call, so the suite "
+            "replays offline later"
+        ),
     )
     cassette.add_argument(
         "--replay-cassette",
         dest="replay_cassette",
         metavar="CASSETTE",
-        help="replay model responses from a cassette; never calls the model",
+        help="replay a recorded cassette; never calls out, so it needs no credential",
     )
     run.add_argument(
         "--quiet", "-q", action="store_true", help="summary only, no per-scenario lines"
@@ -422,6 +425,7 @@ def _run(args: argparse.Namespace) -> int:
         if not quiet:
             _warn_if_nothing_fired(result)
 
+    tape = _open_cassette(args)
     results = run_suite(
         scenarios,
         out_dir=out_dir,
@@ -434,7 +438,12 @@ def _run(args: argparse.Namespace) -> int:
         narrate_all=getattr(args, "narrate_all", False),
         allow_remote_judge=getattr(args, "allow_remote_judge", False),
         on_result=report,
+        cassette=tape,
     )
+    if tape is not None and getattr(args, "record", None):
+        written = tape.save()
+        if not args.json and not quiet:
+            print(f"  cassette: {len(tape)} call(s) recorded to {written}", file=sys.stderr)
 
     # `run_suite` already published `suite.json` -- live during the run and once more
     # as `completed` at the end (`docs/10` §2). Writing it again here would clobber
@@ -912,6 +921,34 @@ Edit `entrypoint` and the tool name in `quickstart.yaml` to match your agent. Ev
 failure writes an `AGENT_TASK.md` under `.chaos/` — hand it to a coding agent as-is.
 `alc list-faults` shows what else you can inject.
 """
+
+
+def _open_cassette(args: argparse.Namespace) -> Any:
+    """Open the cassette the flags asked for.
+
+    Args:
+        args: Parsed `run` arguments.
+
+    Returns:
+        A `Cassette`, or `None` when neither flag was given -- in which case a
+        scenario's own `cassette:` still applies, resolved per scenario by the loop.
+        The two flags are a mutually exclusive argparse group, so both cannot arrive.
+    """
+    record = getattr(args, "record", None)
+    replay = getattr(args, "replay_cassette", None)
+    if not record and not replay:
+        return None
+    from pathlib import Path
+
+    from .cassettes import Cassette
+
+    if replay and not Path(replay).is_file():
+        # A missing tape is a configuration problem, and reporting it as a failing
+        # scenario would blame the agent for the harness -- exit 2, before the run.
+        raise ConfigError(
+            f"no cassette at {replay}. Record one first:\n  alc run <suite> --record {replay}"
+        )
+    return Cassette(str(record or replay), mode="record" if record else "replay")
 
 
 def _doctor(args: argparse.Namespace) -> int:

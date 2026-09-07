@@ -27,7 +27,7 @@ from typing import Any, ClassVar, Literal
 
 from .errors import ChaosError
 
-__all__ = ["Cassette", "CassetteMiss", "CassetteMode", "messages_hash"]
+__all__ = ["Cassette", "CassetteMiss", "CassetteMode", "crossing_key", "messages_hash"]
 
 CassetteMode = Literal["record", "replay", "auto"]
 
@@ -54,6 +54,34 @@ def messages_hash(messages: Any, *, model: str | None = None) -> str:
     """
     payload = {"model": model, "messages": _canonical(messages)}
     blob = json.dumps(payload, sort_keys=True, default=repr)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:_KEY_CHARS]
+
+
+def crossing_key(layer: str, name: str, payload: Any, *, model: str | None = None) -> str:
+    """Key any crossing by what was sent to it.
+
+    A prompt is not the only payload worth recording: a repository read and an HTTP
+    tool call are the ones that make the data-shape faults bite, and neither is a
+    message list. The layer and the name are part of the key, so two seams that happen
+    to take the same argument are not mistaken for the same call.
+
+    Args:
+        layer: The crossing layer -- `llm`, `tool`.
+        name: The seam's name, as a target would write it.
+        payload: What was sent. Canonicalized, so an unrelated key reordering is not
+            a cassette miss; an object the encoder cannot handle falls back to `repr`,
+            because a real repository takes objects and refusing to key one would
+            refuse to record the calls this exists for.
+        model: Folded in when the caller tracks a model identity separately.
+
+    Returns:
+        A short hex digest, in the same shape as `messages_hash`.
+    """
+    blob = json.dumps(
+        {"layer": layer, "name": name, "model": model, "payload": _canonical(payload)},
+        sort_keys=True,
+        default=repr,
+    )
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:_KEY_CHARS]
 
 
@@ -133,11 +161,16 @@ class Cassette:
         Returns:
             The path written.
         """
+        from .redact import redact
+
         self.path.parent.mkdir(parents=True, exist_ok=True)
         document = {
             "schema_version": SCHEMA_VERSION,
             "model": self.model,
-            "entries": {k: self._entries[k] for k in sorted(self._entries)},
+            # A cassette is committed, which makes a credential in one worse than a
+            # credential in a report. Redaction happens on the way to disk, never on
+            # the value the run itself used.
+            "entries": {k: redact(self._entries[k]) for k in sorted(self._entries)},
         }
         self.path.write_text(
             json.dumps(document, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8"
@@ -145,6 +178,81 @@ class Cassette:
         return self.path
 
     # -- playback --------------------------------------------------------------
+
+    def play_key(self, key: str, *, live: Callable[[], Any] | None = None) -> Any:
+        """Return the recorded value for a precomputed key.
+
+        Args:
+            key: From `crossing_key` or `messages_hash`.
+            live: The real call, invoked only in `record` and `auto` modes.
+
+        Returns:
+            The recorded value, or what `live` produced.
+
+        Raises:
+            CassetteMiss: In `replay` mode when this key was never recorded. Inventing
+                a value here would reintroduce exactly the non-determinism a cassette
+                removes.
+        """
+        # `record` stores *every* response, which is its documented contract: a model
+        # asked the same thing twice may answer differently, and a cassette that keeps
+        # only the first reply cannot reproduce the run it recorded. `auto` replays a
+        # hit, which is what makes it useful while a scenario is being written.
+        recorded = self._entries.get(key)
+        if recorded and self.mode != "record":
+            index = self._played.get(key, 0)
+            self._played[key] = index + 1
+            return recorded[min(index, len(recorded) - 1)]
+        if self.mode == "replay":
+            raise CassetteMiss(self._miss(key))
+        if live is None:
+            raise CassetteMiss(f"{key} is not recorded and no live call was supplied")
+        value = live()
+        self._entries.setdefault(key, []).append(value)
+        return value
+
+    async def aplay_key(self, key: str, *, live: Callable[[], Any] | None = None) -> Any:
+        """Async twin of `play_key`.
+
+        Args:
+            key: From `crossing_key` or `messages_hash`.
+            live: The real call, awaited only in `record` and `auto` modes.
+
+        Returns:
+            The recorded value, or what `live` produced.
+
+        Raises:
+            CassetteMiss: As `play_key`.
+        """
+        recorded = self._entries.get(key)
+        if recorded and self.mode != "record":
+            index = self._played.get(key, 0)
+            self._played[key] = index + 1
+            return recorded[min(index, len(recorded) - 1)]
+        if self.mode == "replay":
+            raise CassetteMiss(self._miss(key))
+        if live is None:
+            raise CassetteMiss(f"{key} is not recorded and no live call was supplied")
+        value = await live()
+        self._entries.setdefault(key, []).append(value)
+        return value
+
+    def _miss(self, key: str) -> str:
+        """Explain a replay miss, and how to fix it.
+
+        Args:
+            key: The key that was not found.
+
+        Returns:
+            The message.
+        """
+        if not self.path.is_file():
+            return f"no cassette at {self.path}. Record one first: alc run <suite> --record"
+        return (
+            f"{key} is not recorded in {self.path}. The agent did something the "
+            "cassette has never seen -- either it changed, or the cassette is stale. "
+            "Re-record with: alc run <suite> --record"
+        )
 
     def play(self, messages: Any, *, live: Callable[[Any], Any] | None = None) -> Any:
         """Return the recorded response for a prompt.
@@ -161,34 +269,13 @@ class Cassette:
                 when the cassette file does not exist. Inventing a response here
                 would reintroduce exactly the non-determinism this removes.
         """
-        key = messages_hash(messages, model=self.model)
-        recorded = self._entries.get(key)
-
-        if recorded:
-            index = self._played.get(key, 0)
-            self._played[key] = index + 1
-            # Past the end the last response repeats. An extra call is a difference
-            # in the agent, and it belongs in a divergence report rather than as a
-            # crash that hides every later finding.
-            return recorded[min(index, len(recorded) - 1)]
-
-        if self.mode == "replay":
-            if not self.path.is_file():
-                raise CassetteMiss(
-                    f"no cassette at {self.path}. Record one first: "
-                    f"alc run <suite> --record {self.path}"
-                )
-            raise CassetteMiss(
-                f"prompt {key} is not recorded in {self.path}. The agent asked "
-                "something the cassette has never seen -- either it changed, or the "
-                f"cassette is stale. Re-record with: alc run <suite> --record {self.path}"
-            )
-
-        if live is None:
-            raise CassetteMiss(f"prompt {key} is not recorded and no live model was supplied")
-        response = live(messages)
-        self._entries.setdefault(key, []).append(response)
-        return response
+        # Past the end of a recording the last response repeats: an extra call is a
+        # difference in the agent, and it belongs in a divergence report rather than as
+        # a crash that hides every later finding.
+        return self.play_key(
+            messages_hash(messages, model=self.model),
+            live=None if live is None else lambda: live(messages),
+        )
 
     def wrap(self, model: Callable[..., Any]) -> Callable[..., Any]:
         """Wrap a model callable so every call goes through the cassette.

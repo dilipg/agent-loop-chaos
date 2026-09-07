@@ -232,6 +232,117 @@ def _rebuild_response(response: Any, body: Mapping[str, Any]) -> Any:
         return response
 
 
+def _capture(response: Any) -> dict[str, Any]:
+    """Reduce a response to something a cassette can hold.
+
+    Args:
+        response: The `httpx.Response`.
+
+    Returns:
+        Status and decoded body. Headers are deliberately dropped: they carry the
+        credentials this run was authenticated with, and a cassette is committed.
+    """
+    return {"status": response.status_code, "json": _response_body(response)}
+
+
+def _restore(recorded: Mapping[str, Any], request: Any) -> Any:
+    """Rebuild a response from a cassette entry.
+
+    Args:
+        recorded: What `_capture` stored.
+        request: The request being answered, so the response knows its own.
+
+    Returns:
+        An `httpx.Response`.
+    """
+    import httpx
+
+    body = recorded.get("json")
+    return httpx.Response(
+        int(recorded.get("status", 200)),
+        json=body if body is not None else {},
+        request=request,
+    )
+
+
+def _send(
+    engine: Any, original: Any, layer: Layer, name: str, client: Any, request: Any, kwargs: Any
+) -> Any:
+    """Make one real request, or replay one from the cassette.
+
+    Args:
+        engine: The engine, which may carry a cassette.
+        original: The unpatched `send`.
+        layer: The crossing layer, part of the key.
+        name: The model id or tool name, part of the key.
+        client: The client instance.
+        request: The outgoing request.
+        kwargs: The keyword arguments to `send`.
+
+    Returns:
+        The response, whether it came from the network or the tape.
+    """
+    cassette = getattr(engine, "cassette", None)
+    if cassette is None:
+        return original(client, request, **kwargs)
+    key = _tape_key(layer, name, request)
+    recorded = cassette.play_key(key, live=lambda: _capture(original(client, request, **kwargs)))
+    return _restore(recorded, request) if isinstance(recorded, Mapping) else recorded
+
+
+async def _asend(
+    engine: Any, original: Any, layer: Layer, name: str, client: Any, request: Any, kwargs: Any
+) -> Any:
+    """Async twin of `_send`.
+
+    Args:
+        engine: The engine, which may carry a cassette.
+        original: The unpatched `send`.
+        layer: The crossing layer, part of the key.
+        name: The model id or tool name, part of the key.
+        client: The client instance.
+        request: The outgoing request.
+        kwargs: The keyword arguments to `send`.
+
+    Returns:
+        The response, whether it came from the network or the tape.
+    """
+    cassette = getattr(engine, "cassette", None)
+    if cassette is None:
+        return await original(client, request, **kwargs)
+    key = _tape_key(layer, name, request)
+
+    async def live() -> Any:
+        return _capture(await original(client, request, **kwargs))
+
+    recorded = await cassette.aplay_key(key, live=live)
+    return _restore(recorded, request) if isinstance(recorded, Mapping) else recorded
+
+
+def _tape_key(layer: Layer, name: str, request: Any) -> str:
+    """Key an HTTP call for the cassette.
+
+    The method and path are part of it, so two endpoints that happen to take the same
+    body are not mistaken for each other.
+
+    Args:
+        layer: The crossing layer.
+        name: The model id or tool name.
+        request: The outgoing request.
+
+    Returns:
+        The key.
+    """
+    from ..cassettes import crossing_key
+
+    payload = {
+        "method": request.method,
+        "path": request.url.path,
+        "body": _request_body(request),
+    }
+    return crossing_key(layer, name, payload)
+
+
 def _is_streaming(body: Mapping[str, Any] | None, kwargs: Mapping[str, Any]) -> bool:
     """Report whether this call streams, at either layer it can be requested.
 
@@ -356,15 +467,16 @@ def _sync_wrapper(
         if shape is None or body is None:
             return _tool_call_sync(engine, seen, original, keys, client, request, kwargs, body)
         seen[keys["llm"]] = seen.get(keys["llm"], 0) + 1
+        model = str(body.get("model") or "default")
         held: dict[str, Any] = {}
 
         def call(messages: Any) -> Any:
             outgoing = _rebuild_request(request, shape.write(body, messages))
-            held["response"] = original(client, outgoing, **kwargs)
+            held["response"] = _send(engine, original, "llm", model, client, outgoing, kwargs)
             held["body"] = _response_body(held["response"])
             return shape.read_reply(held["body"]) if held["body"] is not None else None
 
-        text = engine.llm(call, name=str(body.get("model") or "default"))(shape.read(body))
+        text = engine.llm(call, name=model)(shape.read(body))
         return _apply_reply(shape, held, text)
 
     return send
@@ -397,16 +509,23 @@ def _async_wrapper(
                 engine, seen, original, keys, client, request, kwargs, body
             )
         seen[keys["llm"]] = seen.get(keys["llm"], 0) + 1
+        model = str(body.get("model") or "default")
         held: dict[str, Any] = {}
 
         async def call(messages: Any) -> Any:
-            held["response"] = await original(
-                client, _rebuild_request(request, shape.write(body, messages)), **kwargs
+            held["response"] = await _asend(
+                engine,
+                original,
+                "llm",
+                model,
+                client,
+                _rebuild_request(request, shape.write(body, messages)),
+                kwargs,
             )
             held["body"] = _response_body(held["response"])
             return shape.read_reply(held["body"]) if held["body"] is not None else None
 
-        wrapped = engine.llm(call, name=str(body.get("model") or "default"))
+        wrapped = engine.llm(call, name=model)
         text = await wrapped(shape.read(body))
         return _apply_reply(shape, held, text)
 
@@ -474,7 +593,9 @@ def _tool_call_sync(
 
     def call(payload: Any = None) -> Any:
         outgoing = request if payload is None else _rebuild_request(request, payload)
-        held["response"] = original(client, outgoing, **kwargs)
+        held["response"] = _send(
+            engine, original, "tool", _tool_name(request), client, outgoing, kwargs
+        )
         held["body"] = _response_body(held["response"])
         return held["body"]
 
@@ -512,7 +633,9 @@ async def _tool_call_async(
 
     async def call(payload: Any = None) -> Any:
         outgoing = request if payload is None else _rebuild_request(request, payload)
-        held["response"] = await original(client, outgoing, **kwargs)
+        held["response"] = await _asend(
+            engine, original, "tool", _tool_name(request), client, outgoing, kwargs
+        )
         held["body"] = _response_body(held["response"])
         return held["body"]
 

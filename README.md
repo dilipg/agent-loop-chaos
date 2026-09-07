@@ -385,7 +385,22 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 model = GenericFakeChatModel(messages=iter(["a plausible reply"] * 100))
 ```
 
-If you have a real endpoint and a credential, record once instead and replay forever:
+If you have a real endpoint and a credential, **record the run once and replay it
+forever** — nobody should be hand-writing fixtures:
+
+```bash
+alc run chaos/quickstart.yaml --intercept --record chaos/tape.json   # calls out once
+alc run chaos/quickstart.yaml --intercept --replay-cassette chaos/tape.json
+```
+
+The second command needs no credential and makes no network call, and the faults still
+bite: the tape replaces the real call, and faults apply on top of what it supplied.
+Everything interception can see is recorded, so a repository read and an HTTP tool call
+are on the tape too — those are the payloads that make the data-shape faults work.
+Cassettes are redacted on write, because a cassette gets committed. Commit yours and
+your suite becomes reproducible for everyone.
+
+The same thing from Python, when you want the seam explicit:
 
 ```python
 from agent_loop_chaos.cassettes import Cassette

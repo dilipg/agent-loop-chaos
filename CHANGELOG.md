@@ -36,6 +36,15 @@ library — see `docs/04-SCHEMAS.md` §2.
   `defaults:`, or `alc run --intercept`. Neither optional dependency becomes a hard
   one: availability is `find_spec`, the import is inside `attach()`, and a test asserts
   that listing the strategies imports nothing they patch.
+- **`alc run --record` / `--replay-cassette` now do something.** Both flags were
+  declared on the parser and read by no code; the only test covering them asserted that
+  they parse, so it passed for as long as they were dead. Recording covers every
+  intercepted call rather than only prompts, so a repository read and an HTTP tool call
+  — the payloads that make the data-shape faults bite — are on the tape too. Faults
+  apply on top of a replayed payload, which is what makes a recorded run testable and
+  not merely reproducible. Cassettes are redacted on write, and a missing tape is exit
+  2 rather than a failing scenario. `cassette:` also works per scenario. See **D-144**,
+  which records the `__len__`-is-falsy bug that made the first wiring store nothing.
 - **`seams:`** — name a call by dotted path when neither built-in strategy can find
   it: `seams: {llm: ["app.llm:Client.chat"], tools: ["app.repositories:fetch_*"]}`.
   A spec names a function, a `Class.method`, or a glob over a module's attributes;
