@@ -108,6 +108,26 @@ def sanitize_floats(obj: Any) -> Any:
     return obj
 
 
+def _stringify_keys(obj: Any) -> Any:
+    """Coerce every mapping key to `str`, recursively.
+
+    `json.dumps` refuses a key that is not str/int/float/bool/None, and `sort_keys`
+    cannot compare mixed key types. Both raise rather than degrade, and a plan hash
+    that raises takes the run with it (D-140).
+
+    Args:
+        obj: Any value.
+
+    Returns:
+        The value with string keys throughout.
+    """
+    if isinstance(obj, dict):
+        return {str(k): _stringify_keys(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_stringify_keys(v) for v in obj]
+    return obj
+
+
 def canonical_json(obj: Any) -> str:
     """Serialize deterministically, for hashing.
 
@@ -125,7 +145,7 @@ def canonical_json(obj: Any) -> str:
         TypeError: If the value contains something not JSON-serializable.
     """
     return json.dumps(
-        sanitize_floats(obj),
+        _stringify_keys(sanitize_floats(obj)),
         sort_keys=True,
         ensure_ascii=False,
         separators=(",", ": "),

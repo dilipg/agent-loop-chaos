@@ -185,7 +185,14 @@ def _walk(
     if isinstance(obj, bool) or obj is None or isinstance(obj, (int, float)):
         return obj
     if isinstance(obj, Mapping):
-        return {k: _walk(v, str(k), allowed, key_res) for k, v in obj.items()}
+        # Keys are coerced to `str`, not just read as one. `json.dumps` refuses a key
+        # that is not str/int/float/bool/None outright -- `default=` covers values
+        # only -- and `sort_keys=True` cannot compare mixed key types either. A
+        # Mongo-backed agent keys dicts by `ObjectId` routinely, so the trace sink
+        # died mid-run on the first real agent this met (D-140). `json` stringifies
+        # int keys anyway, so coercing every key is the consistent choice as well as
+        # the safe one.
+        return {str(k): _walk(v, str(k), allowed, key_res) for k, v in obj.items()}
     if isinstance(obj, (set, frozenset)):
         # Sorted by repr so the output is order-stable; a set's iteration order is not.
         return sorted((_walk(v, None, allowed, key_res) for v in obj), key=repr)

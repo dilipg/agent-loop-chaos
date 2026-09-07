@@ -2412,3 +2412,61 @@ unwrapped function. A silent no-op is precisely what this library exists to catc
 Detection is duck-typed (`name`, `invoke`, and a `func` or `coroutine`, while not being
 callable) rather than an `isinstance` check, because importing `langchain_core` to
 decide would make an optional extra mandatory.
+
+### D-140 — A payload's *keys* are serialized too
+*2026-09-05. Affects `docs/04-SCHEMAS.md` §3, `SAFETY.md` §2.*
+
+`json.dumps(..., default=str)` covers a **value** the encoder cannot handle -- a
+LangChain message, a connection object, an `ObjectId`. It does nothing for a **key**:
+
+```
+TypeError: keys must be str, int, float, bool or None, not ObjectId
+```
+
+`sort_keys=True` compounds it, because mixed key types cannot be compared either. A
+Mongo-backed agent keys dicts by `ObjectId` as a matter of course --
+`signals_by_id: dict[PyObjectId, Signal]` in the codebase this was found in -- so
+`JsonlSink` raised on its first real payload, was dropped mid-run, and the run
+continued with no trace. The engine caught it and kept going, which is the rule
+working, but a lost trace is a lost run.
+
+Keys are now coerced to `str` in `redact._walk`, which every payload already passes
+through, and in `canonical_json`, which `plan_hash` and `fault_key` run through.
+Coercing *every* key rather than only the exotic ones is the consistent choice as well
+as the safe one: `json` stringifies int keys anyway.
+
+Found by pointing the library at a real LangGraph codebase. No fixture-backed agent in
+this repo had ever produced a non-string key, which is exactly the class of thing a
+first real user finds in ten minutes.
+
+### D-141 — A Pydantic model is a state shape
+*2026-09-05. Affects `docs/06-LANGGRAPH-ADAPTER.md` §2.4, `docs/03-FAULT-CATALOG.md` §C.*
+
+`StateGraph(MyModel)` with a Pydantic `BaseModel` -- `Annotated[list[...], operator.add]`
+reducer channels on a model -- is LangGraph's own recommended pattern and what real
+projects use. Three places only understood `dict`:
+
+- `StateView.keys()` returned `[]`, and `get`/`set` walked mappings only.
+- `targeting._state_paths` enumerated mappings and lists, so no `state_key` could ever
+  *select* a crossing on a model state.
+- `StateDropFault`'s own `_expand`/`_parent` walked mappings, so even a selected
+  crossing had nothing to remove.
+
+The result was the worst possible one: every state fault **armed and never fired**, with
+no reason recorded. Not refused, not skipped -- silently inert, and the run scored as
+though the fault had been tried. All three now understand a model, via `model_fields`
+so only *declared* fields count: an arbitrary attribute is not state, and a write that
+invented a field would corrupt the shape.
+
+Two deliberate limits. `mode="remove"` sets a model field to `None` rather than
+deleting it, because a declared field cannot be removed and `None` is what its absence
+looks like to every consumer -- which is the weakness being tested. And a frozen or
+validating model refuses the write, which is reported as "the write did not land"
+rather than raised into the agent.
+
+`keys_removed` rather than `json_patch` is the evidence for a model state: a model has
+no JSON form, so `MutationLog.of` cannot diff one and the patch is empty by
+construction. R4 already reads `keys_removed`, so attribution is unaffected.
+
+Verified against a real ten-node LangGraph 1.2.4 skill: `StateDropFault`,
+`StateTypeFault` and `NodeSkipFault` all fire, and that agent coped with all three.

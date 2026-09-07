@@ -203,6 +203,12 @@ def _state_paths(value: Any, depth: int, prefix: str = "") -> Iterator[str]:
         items: Iterable[tuple[str, Any]] = ((str(k), v) for k, v in value.items())
     elif isinstance(value, (list, tuple)):
         items = ((str(i), v) for i, v in enumerate(value))
+    elif isinstance(fields := getattr(type(value), "model_fields", None), dict):
+        # A Pydantic model is a state shape too -- `StateGraph(MyModel)` is
+        # LangGraph's own recommended pattern. Without this branch no `state_key`
+        # could ever select a crossing on such a state, so every state fault armed
+        # and never fired, with no reason recorded (D-141).
+        items = ((str(k), getattr(value, k, None)) for k in fields)
     else:
         return
     for key, child in items:

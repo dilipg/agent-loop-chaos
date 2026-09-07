@@ -9,6 +9,23 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+## 0.2.6 — 2026-09-05
+
+Two more found by running against a real LangGraph codebase. Neither was reachable
+from a fixture-backed agent, which is the point.
+
+- **D-140** A payload's *keys* are serialized too. `default=str` covers a value the
+  encoder cannot handle; it does nothing for a key, and `json.dumps` refuses a
+  non-string one outright. A Mongo-backed agent keys dicts by `ObjectId` routinely, so
+  the trace sink raised on its first real payload and was dropped mid-run. Keys are now
+  coerced in `redact._walk` and `canonical_json`.
+- **D-141** A Pydantic `BaseModel` is a state shape. `StateGraph(MyModel)` is
+  LangGraph's own recommended pattern, and `StateView`, `state_key` targeting and
+  `StateDropFault` all understood `dict` only — so **every state fault armed and never
+  fired**, silently, with no reason recorded. All three now read `model_fields`.
+  Verified against a real ten-node skill: `StateDropFault`, `StateTypeFault` and
+  `NodeSkipFault` all fire.
+
 ## 0.2.5 — 2026-09-05
 
 **Two blockers for any current LangGraph or LangChain codebase**, both found by

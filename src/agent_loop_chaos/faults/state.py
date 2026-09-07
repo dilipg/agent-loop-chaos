@@ -56,6 +56,21 @@ _WHOLE_PAYLOAD_MUTATIONS: frozenset[str] = frozenset(
 )
 
 
+def _fields_of(value: Any) -> tuple[str, ...] | None:
+    """The declared field names of a model-like state, or `None`.
+
+    Args:
+        value: The candidate.
+
+    Returns:
+        Field names for a Pydantic model, else `None`.
+    """
+    if isinstance(value, (dict, list, str, bytes)) or value is None:
+        return None
+    fields = getattr(type(value), "model_fields", None)
+    return tuple(fields) if isinstance(fields, dict) else None
+
+
 def _expand(state: Any, pattern: str, prefix: str = "") -> list[str]:
     """Expand a dotted path that may contain globs into concrete paths.
 
@@ -68,6 +83,11 @@ def _expand(state: Any, pattern: str, prefix: str = "") -> list[str]:
         Every concrete path the pattern selects.
     """
     head, _, rest = pattern.partition(".")
+    if _fields_of(state) is not None:
+        # A Pydantic model is a state shape too. Without this a state fault against
+        # `StateGraph(MyModel)` -- LangGraph's own recommended pattern -- expanded to
+        # no paths and removed nothing while still reporting that it fired (D-141).
+        state = {name: getattr(state, name, None) for name in _fields_of(state) or ()}
     if isinstance(state, dict):
         keys = [k for k in state if fnmatchcase(str(k), head)]
     elif isinstance(state, list):
@@ -99,13 +119,17 @@ def _parent(state: Any, path: str) -> tuple[Any, str] | None:
     parts = path.split(".")
     node = state
     for part in parts[:-1]:
-        if isinstance(node, dict) and part in node:
+        if _fields_of(node) is not None and part in (_fields_of(node) or ()):
+            node = getattr(node, part, None)
+        elif isinstance(node, dict) and part in node:
             node = node[part]
         elif isinstance(node, list) and part.isdigit() and int(part) < len(node):
             node = node[int(part)]
         else:
             return None
     leaf = parts[-1]
+    if _fields_of(node) is not None and leaf in (_fields_of(node) or ()):
+        return node, leaf
     if isinstance(node, dict) and leaf in node:
         return node, leaf
     if isinstance(node, list) and leaf.isdigit() and int(leaf) < len(node):
@@ -223,7 +247,16 @@ class StateDropFault(Fault):
                 if found is None:
                     continue
                 container, leaf = found
-                if mode == "null":
+                if _fields_of(container) is not None:
+                    # A declared field cannot be deleted from a model, and inventing a
+                    # new shape would be worse than the failure being modelled. `None`
+                    # is what its absence looks like to every consumer, which is the
+                    # weakness the fault is testing for (D-141).
+                    try:
+                        setattr(container, leaf, None)
+                    except Exception:
+                        continue
+                elif mode == "null":
                     container[int(leaf) if isinstance(container, list) else leaf] = None
                 elif isinstance(container, list):
                     del container[int(leaf)]

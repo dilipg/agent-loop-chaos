@@ -10,6 +10,7 @@ engine instead of needing six (`docs/01-ARCHITECTURE.md` §4).
 
 from __future__ import annotations
 
+import dataclasses
 import random
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
@@ -208,6 +209,30 @@ class Crossing:
     invoke_return_from: str = "first"
 
 
+def _is_field(node: Any, name: str) -> bool:
+    """Whether `name` is a declared field on a model-like state object.
+
+    Declared fields only, never arbitrary attributes: a write that invents a field
+    would corrupt the state shape, and a read that reaches a method would report a
+    bound method as state.
+
+    Args:
+        node: The candidate container.
+        name: The field name.
+
+    Returns:
+        True when `node` declares `name` as a field.
+    """
+    if isinstance(node, (dict, list, str, bytes)) or node is None:
+        return False
+    fields = getattr(type(node), "model_fields", None)
+    if isinstance(fields, dict):
+        return name in fields
+    if dataclasses.is_dataclass(node) and not isinstance(node, type):
+        return name in {f.name for f in dataclasses.fields(node)}
+    return False
+
+
 class StateView:
     """Get, set and delete over the agent's visible state by dotted path.
 
@@ -242,6 +267,13 @@ class StateView:
         """
         if isinstance(self._state, dict):
             return sorted(str(k) for k in self._state)
+        # A Pydantic model is what `StateGraph(MyModel)` is built on and what real
+        # projects use, so its fields are state keys too. Without this every state
+        # fault was silently inert against such an agent -- armed, never fired, no
+        # crossing to attach to (D-141).
+        fields = getattr(type(self._state), "model_fields", None)
+        if isinstance(fields, dict):
+            return sorted(str(k) for k in fields)
         return []
 
     def get(self, path: str, default: Any = None) -> Any:
@@ -260,6 +292,8 @@ class StateView:
                 node = node[part]
             elif isinstance(node, list) and part.isdigit() and int(part) < len(node):
                 node = node[int(part)]
+            elif _is_field(node, part):
+                node = getattr(node, part)
             else:
                 return default
         return node
@@ -284,6 +318,15 @@ class StateView:
             return True
         if isinstance(node, list) and last.isdigit() and int(last) < len(node):
             node[int(last)] = value
+            return True
+        if _is_field(node, last):
+            try:
+                setattr(node, last, value)
+            except Exception:
+                # A frozen or validating model refuses the write. Reporting that the
+                # write did not land is the honest answer; raising into the agent over
+                # the shape of its own state never is.
+                return False
             return True
         return False
 
@@ -322,6 +365,8 @@ class StateView:
                 node = node[part]
             elif isinstance(node, list) and part.isdigit() and int(part) < len(node):
                 node = node[int(part)]
+            elif _is_field(node, part):
+                node = getattr(node, part)
             else:
                 return None
         return node
