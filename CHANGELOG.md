@@ -9,6 +9,11 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+## 0.3.1 — 2026-09-07
+
+Found by deleting every scaffold from a production service and running the library
+against it cold.
+
 ### Fixed
 
 - **An agent that could not be called was reported as a high-severity finding.** A

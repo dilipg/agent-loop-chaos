@@ -42,7 +42,7 @@ agent handled it, and writes the finding as a work order a coding agent can exec
 
 ```bash
 # not on PyPI yet -- install from the tag
-pip install "agent-loop-chaos[yaml] @ git+https://github.com/dilipg/agent-loop-chaos@v0.3.0"
+pip install "agent-loop-chaos[yaml] @ git+https://github.com/dilipg/agent-loop-chaos@v0.3.1"
 ```
 
 Once it is published, `pip install "agent-loop-chaos[yaml]"`.

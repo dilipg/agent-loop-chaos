@@ -20,7 +20,7 @@ call at all.
 ## Install
 
 ```bash
-pip install "agent-loop-chaos[yaml,langgraph] @ git+https://github.com/dilipg/agent-loop-chaos@v0.3.0"
+pip install "agent-loop-chaos[yaml,langgraph] @ git+https://github.com/dilipg/agent-loop-chaos@v0.3.1"
 ```
 
 Drop `,langgraph` if you are not on LangGraph. From a clone: `pip install -e ".[dev,all]"`.
