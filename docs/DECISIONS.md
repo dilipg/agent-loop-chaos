@@ -2751,3 +2751,26 @@ Two things this round confirmed that are not defects:
 - **The "no fault fired" warning said "check the target's tool/llm name".** For a node
   target that points the reader at the wrong thing; it now names nodes and graphs too.
 
+### D-151 — `doctor` looks through a shim entrypoint
+*2026-09-07. Affects `docs/02-API.md` §10.*
+
+D-150 has `doctor` tell a service that needs live handles to write a small entrypoint
+that builds them and calls the real pipeline. The graph is then in the module that
+entrypoint *imports*, and the scan looked only at the entrypoint's own module -- so the
+command recommended a pattern it could not then see through. On a real service that
+meant "no tool or llm seam was reached" with no mention of the ten-node graph one
+import away.
+
+The scan now covers the entrypoint's module plus the modules its own callables come
+from, found by reading `__module__` off what the entrypoint references. That reaches
+the shim case and stops there: widening to the top-level package finds graphs the run
+never touched, and a suggestion pointing at an unrelated graph is worse than none. A
+test asserts both halves -- the graph behind a shim is found, and an unrelated project
+graph is not.
+
+Measured on that service: a 38-line entrypoint is what stands between a cold clone and
+`NodeSkipFault`, `StateDropFault` and `StateTypeFault` all firing against the real
+ten-node graph. Two of its eight parameters are `AsyncIOMotorDatabase` handles, and no
+suite file can express a Motor client -- so those lines are irreducible, not
+scaffolding the library failed to eliminate.
+

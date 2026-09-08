@@ -1222,15 +1222,17 @@ def _compiled_graphs(target: str) -> list[str]:
     Returns:
         ``module:attr`` paths, sorted, or an empty list when there are none.
     """
-    # The entrypoint's own module, and no wider. Scanning the whole top-level package
-    # finds graphs in modules this run never touched, and a suggestion pointing at an
-    # unrelated graph is worse than none. A service keeps the singleton beside the
-    # function that invokes it -- `_workflow` and `run_user_pipeline` in one file -- so
-    # this is where it actually is.
+    # The entrypoint's module, plus the modules whose functions it references. A
+    # service keeps the singleton beside the function that invokes it, and a shim
+    # entrypoint -- the pattern this command recommends when a service needs live
+    # handles -- puts it one import away (D-151). Wider than that finds graphs the run
+    # never touched, and a suggestion pointing at an unrelated graph is worse than none.
     name = str(target).partition(":")[0]
-    module = sys.modules.get(name)
     found: list[str] = []
-    if module is not None:
+    for module_name in _related_modules(name):
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
         for attribute in dir(module):
             if attribute.startswith("__"):
                 continue
@@ -1239,8 +1241,34 @@ def _compiled_graphs(target: str) -> list[str]:
             except Exception:  # pragma: no cover - a module with exotic descriptors
                 continue
             if hasattr(value, "invoke") and hasattr(value, "get_graph"):
-                found.append(f"{name}:{attribute}")
+                found.append(f"{module_name}:{attribute}")
     return sorted(set(found))
+
+
+def _related_modules(name: str) -> list[str]:
+    """The entrypoint's module, and the modules its own callables come from.
+
+    Args:
+        name: The entrypoint's module name.
+
+    Returns:
+        Module names to scan, the entrypoint's own first.
+    """
+    module = sys.modules.get(name)
+    if module is None:
+        return []
+    related = [name]
+    for attribute in dir(module):
+        if attribute.startswith("__"):
+            continue
+        try:
+            value = getattr(module, attribute)
+        except Exception:  # pragma: no cover - exotic descriptors
+            continue
+        origin = getattr(value, "__module__", None)
+        if callable(value) and isinstance(origin, str) and origin not in related:
+            related.append(origin)
+    return related
 
 
 def _doctor_suite(

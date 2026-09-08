@@ -9,6 +9,12 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+### Fixed
+
+- `alc doctor` looks through a shim entrypoint to find the graph behind it. D-150 tells
+  a service needing live handles to write one, and the scan then could not see through
+  the pattern the command had just recommended (**D-151**).
+
 ## 0.3.1 — 2026-09-07
 
 Found by deleting every scaffold from a production service and running the library

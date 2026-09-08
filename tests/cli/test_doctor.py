@@ -285,3 +285,35 @@ def test_the_nothing_fired_warning_does_not_blame_only_tools() -> None:
     ).read_text()
     assert "or a node on a graph that was actually invoked" in source
     assert "Check the target's tool/llm name" not in source
+
+
+class TestItFindsAGraphBehindAShimEntrypoint:
+    """The pattern `doctor` itself recommends, which it then could not see through.
+
+    A service needing live handles gets a small entrypoint that builds them and calls
+    the real pipeline. The graph then lives in the module that entrypoint *imports*, and
+    scanning only the entrypoint's own module found nothing -- so the reader was told
+    "no tool or llm seam was reached" with no mention of the ten-node graph one import
+    away.
+    """
+
+    def test_it_looks_through_the_callables_the_entrypoint_references(
+        self, tmp_path: Any, monkeypatch: Any, capsys: Any
+    ) -> None:
+        pytest.importorskip("langgraph")
+        monkeypatch.chdir(tmp_path)
+        main(["doctor", "tests.fakes.shim_entry:arun", "--inputs", "q"])
+        out = capsys.readouterr().out
+        assert "internal_graph:COMPILED" in out, "the graph behind the shim was not found"
+        assert "seams" in out
+
+    def test_it_still_ignores_unrelated_project_modules(
+        self, tmp_path: Any, monkeypatch: Any, capsys: Any
+    ) -> None:
+        """Widening must not become "every graph anywhere". A suggestion pointing at a
+        graph this run never touched is worse than none."""
+        pytest.importorskip("langgraph")
+        monkeypatch.chdir(tmp_path)
+        main(["doctor", "tests.fakes.unwrapped_agent:no_seams", "--inputs", "q"])
+        out = capsys.readouterr().out
+        assert "COMPILED" not in out, "an unrelated graph was suggested"
