@@ -3071,6 +3071,40 @@ class ChaosEngine:
             if state.ctx.dry_run:
                 self._note_skip(armed.record, "dry_run")
 
+    @staticmethod
+    def _check_callable(
+        resolved: Any, target: Any, inputs: Any, initial_state: Mapping[str, Any] | None
+    ) -> None:
+        """Refuse a run whose agent cannot be called with these inputs.
+
+        The invocation is resolved again later, against the instrumented callable, and
+        a failure there is caught and recorded as an agent error. That is right for an
+        agent that raises and wrong for one that was never entered: a service whose
+        entrypoint takes seven arguments, given a placeholder string, produced
+        `steps: 0`, an empty output and a `silent_wrong_answer` verdict at high
+        severity, with a work order attached (D-150). Anyone handed that would go
+        looking for a bug in a function that had not run.
+
+        The engine already refuses to make this mistake about its own step limit. This
+        is the same rule one step earlier: check before opening a run, so nothing is
+        written and the caller gets a configuration error naming the signature.
+
+        Args:
+            resolved: The adapter, since LangGraph binds its own inputs.
+            target: The agent, before instrumentation -- a wrapper preserves the
+                signature, so this is the same question.
+            inputs: What the scenario passes.
+            initial_state: The scenario's starting state.
+
+        Raises:
+            ConfigError: When the call cannot be bound, naming the signature.
+        """
+        if resolved.name == "langgraph" or not callable(target):
+            return
+        from .adapters.vanilla import resolve_invocation
+
+        resolve_invocation(target, inputs, initial_state)
+
     def _resolve_adapter(self, target: Any, requested: str) -> Any:
         """Choose an adapter.
 
@@ -3131,6 +3165,9 @@ class ChaosEngine:
             The assembled `ChaosResult`.
         """
         resolved = self._resolve_adapter(target, adapter)
+        # Before `_prepare`, which opens a run directory and a trace sink: a run that
+        # cannot start should leave nothing behind.
+        self._check_callable(resolved, target, inputs, initial_state)
         entrypoint = getattr(target, "__qualname__", None) or type(target).__name__
         state, run_dir, _plan, plan_hash = self._prepare(
             scenario_id=scenario_id,
@@ -3237,6 +3274,9 @@ class ChaosEngine:
             The assembled `ChaosResult`.
         """
         resolved = self._resolve_adapter(target, adapter)
+        # Before `_prepare`, which opens a run directory and a trace sink: a run that
+        # cannot start should leave nothing behind.
+        self._check_callable(resolved, target, inputs, initial_state)
         entrypoint = getattr(target, "__qualname__", None) or type(target).__name__
         state, run_dir, _plan, plan_hash = self._prepare(
             scenario_id=scenario_id,

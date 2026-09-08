@@ -236,3 +236,52 @@ class TestItFindsAGraphCompiledAtImport:
         suite = load_suite(path)
         assert suite.scenarios, "the printed suite has no scenarios"
         assert any(s.seams for s in suite.scenarios), "the graph seam did not survive"
+
+
+class TestItStillReportsWhatItFoundWhenItCannotInvoke:
+    """Found in the final round, on a service whose entrypoint takes eight arguments.
+
+    `doctor` discovered the ten-node graph and then lost it, because refusing an
+    uncallable agent aborted the whole command. The discovery is the useful half and it
+    is static -- the signature problem should be reported *beside* it, not instead of it.
+    """
+
+    def test_it_names_the_signature_and_the_graph(
+        self, tmp_path: Any, monkeypatch: Any, capsys: Any
+    ) -> None:
+        pytest.importorskip("langgraph")
+        monkeypatch.chdir(tmp_path)
+        code = main(["doctor", "tests.fakes.internal_graph:needs_arguments"])
+        out = capsys.readouterr().out
+
+        assert code == 2, "a probe that could not run is a configuration problem"
+        assert "Signature is" in out, "the reader must learn what to pass"
+        assert "COMPILED" in out, "the graph it found was not reported"
+        assert "seams" in out, "nor how to reach it"
+
+    def test_it_points_at_the_fixture_route_for_a_service_needing_live_handles(
+        self, tmp_path: Any, monkeypatch: Any, capsys: Any
+    ) -> None:
+        """Eight arguments including two database handles cannot come from `--inputs`.
+        The way in is the project's own test fixtures."""
+        pytest.importorskip("langgraph")
+        monkeypatch.chdir(tmp_path)
+        main(["doctor", "tests.fakes.internal_graph:needs_arguments"])
+        out = capsys.readouterr().out
+        assert "chaos_engine" in out, "the pytest route was not offered"
+
+
+def test_the_nothing_fired_warning_does_not_blame_only_tools() -> None:
+    """A node fault that never fired was told to "check the target's tool/llm name".
+
+    Found on a service whose offline tests call node functions directly and never
+    invoke the compiled graph, so a node target had nothing to match. Pointing that
+    reader at tool names sends them looking in the wrong place.
+    """
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[2] / "src" / "agent_loop_chaos" / "cli.py"
+    ).read_text()
+    assert "or a node on a graph that was actually invoked" in source
+    assert "Check the target's tool/llm name" not in source

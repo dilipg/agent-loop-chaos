@@ -2717,3 +2717,37 @@ top-level package finds graphs in modules the run never touched, and a suggestio
 pointing at an unrelated graph is worse than none. A service keeps the singleton beside
 the function that invokes it, which is where this looks.
 
+### D-150 — An agent that could not be called is not a finding
+*2026-09-07. Affects `docs/02-API.md` §10.*
+
+Final round of testing, against a production service with every scaffold deleted. Its
+entrypoint takes eight parameters -- three ObjectIds, a datetime, two
+`AsyncIOMotorDatabase` handles, a config object -- and the suite carried the placeholder
+`inputs` that `alc doctor` prints. `resolve_invocation` raised `ConfigError`, the
+engine's `except Exception` recorded it as an agent error, and the run reported
+`silent_wrong_answer` at **high** severity with a work order attached. `steps` was 0.
+The auto-assertion `output_non_empty` had failed on an output that was never produced.
+
+Anyone handed that work order would go looking for a bug in a function that had not run.
+The engine already refuses to make this mistake about its own step limit -- "reporting
+it in `error` would blame the agent for our limit, exactly as D-06 forbids" -- and this
+is the same rule one step earlier. The call is now checked before `_prepare` opens a run
+directory, so a run that cannot start leaves nothing behind and the caller gets exit 2
+naming the signature.
+
+`doctor` reports the failure *beside* what it found rather than instead of it: the graph
+scan is static, and on that service it was the useful half -- ten nodes, named. It also
+names the two ways on, because for a service needing live handles there is no
+`--inputs` that works, and the honest answer is the `chaos_engine` pytest fixture over
+the project's own conftest.
+
+Two things this round confirmed that are not defects:
+
+- **Their offline test suite never invokes the compiled graph.** Every test calls node
+  functions directly and hand-rolls the reducer semantics. So a `graph` seam naming the
+  module-level singleton correctly changes nothing for those tests -- the graph is not in
+  the path. It also means the graph's own wiring, the parallel fan-in and the barrier
+  are untested offline, which is worth knowing on its own.
+- **The "no fault fired" warning said "check the target's tool/llm name".** For a node
+  target that points the reader at the wrong thing; it now names nodes and graphs too.
+

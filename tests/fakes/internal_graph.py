@@ -80,3 +80,21 @@ def run_singleton(query: str = "what should I pack?") -> str:
         The answer.
     """
     return str(COMPILED.invoke({"query": query})["answer"])
+
+
+def needs_arguments(entity_id: str, user_id: str, db: Any, config: Any) -> str:
+    """An entrypoint that cannot be called from `--inputs` alone.
+
+    The shape of a real service: identifiers and live handles, none of which a probe
+    can synthesise.
+
+    Args:
+        entity_id: Which entity.
+        user_id: Which user.
+        db: A database handle.
+        config: Service configuration.
+
+    Returns:
+        Never returns in tests; the call cannot be bound.
+    """
+    return "unreachable"

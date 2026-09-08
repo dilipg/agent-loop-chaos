@@ -17,7 +17,7 @@ import logging
 import os
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -629,7 +629,8 @@ def _warn_if_nothing_fired(result: Any) -> None:
     print(
         f"  warning: {result.scenario_id}: no fault fired "
         f"({', '.join(reasons) or 'no reason recorded'}); this scenario proves nothing. "
-        "Check the target's tool/llm name.",
+        "Check that the target names something this run reaches -- a tool or llm that "
+        "was called, or a node on a graph that was actually invoked.",
         file=sys.stderr,
     )
 
@@ -1066,7 +1067,13 @@ def _doctor(args: argparse.Namespace) -> int:
     engine = ChaosEngine(seed=1337, dry_run=True, write_bundle=False, judge="rules", intercept=True)
     # A ConfigError here is a bad target, which `main` turns into exit 2.
     agent = resolve_entrypoint(args.target, engine)
-    result = drive(engine, agent, inputs=args.inputs)
+    try:
+        result = drive(engine, agent, inputs=args.inputs)
+    except ConfigError as exc:
+        # The agent cannot be called with these inputs. That is worth reporting, but
+        # not instead of what was already discovered: the graph scan is static, and it
+        # is the useful half for a service whose entrypoint needs live handles (D-150).
+        return _doctor_uncallable(args, str(exc), strategies)
 
     llms = sorted({str(x.get("llm")) for x in result.llm_exchanges if x.get("llm")})
     tools = sorted({str(x.get("tool")) for x in result.tool_calls if x.get("tool")})
@@ -1158,6 +1165,47 @@ def _graph_nodes(path: str) -> list[str]:
         return [name for name, _get, _set in node_slots(graph)]
     except Exception:  # pragma: no cover - an unfamiliar graph shape
         return []
+
+
+def _doctor_uncallable(
+    args: argparse.Namespace, problem: str, strategies: Mapping[str, str]
+) -> int:
+    """Report a probe that could not invoke the entrypoint, and what was found anyway.
+
+    Args:
+        args: Parsed `doctor` arguments.
+        problem: The `ConfigError` message, which names the signature.
+        strategies: Which interception strategies are available here.
+
+    Returns:
+        `2`. The probe could not run, which is a configuration problem -- but the
+        static discovery is printed first, because it is the half that is still true.
+    """
+    graphs = _compiled_graphs(args.target)
+    if args.json:
+        print(json.dumps({"strategies": dict(strategies), "graphs": graphs, "error": problem}))
+        return EXIT_USAGE
+
+    print(f"Probed {args.target}, which could not be called with these inputs.\n")
+    if graphs:
+        print("Graphs compiled at import (these were found without running anything)")
+        for name in graphs:
+            nodes = _graph_nodes(name)
+            detail = (
+                f"  ({len(nodes)} nodes: {', '.join(nodes[:6])}{' …' if len(nodes) > 6 else ''})"
+            )
+            print(f"  ok  {name}{detail if nodes else ''}")
+        print(f"\n  seams:\n    graph: [{json.dumps(graphs[0])}]\n")
+    print(f"{problem}\n")
+    print(
+        "Two ways on, depending on what those parameters are:\n"
+        "  1. Values you can write down -- pass them as a mapping of parameter names:\n"
+        '     `inputs: {entity_id: "...", run_date: "..."}` in a suite.\n'
+        "  2. Live handles -- a database, a session, a client -- which no probe can\n"
+        "     synthesise. Use the `chaos_engine` pytest fixture instead and let your\n"
+        "     own conftest fixtures build them; your test suite has already solved it."
+    )
+    return EXIT_USAGE
 
 
 def _compiled_graphs(target: str) -> list[str]:

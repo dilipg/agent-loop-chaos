@@ -9,6 +9,20 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+### Fixed
+
+- **An agent that could not be called was reported as a high-severity finding.** A
+  service whose entrypoint takes eight parameters, given the placeholder `inputs` that
+  `alc doctor` prints, produced `steps: 0`, an empty output and a `silent_wrong_answer`
+  verdict with a work order — because the `ConfigError` from resolving the call was
+  caught as an agent error. It is now checked before a run directory is opened, so
+  nothing is written and the caller gets exit 2 naming the signature (**D-150**).
+- `alc doctor` reports an uninvokable entrypoint *beside* what it discovered rather than
+  instead of it, and names the two ways on — a mapping of parameter names, or the
+  `chaos_engine` fixture when the parameters are live handles no probe can synthesise.
+- The "no fault fired" warning said "check the target's tool/llm name", which points a
+  reader with a node fault at the wrong thing.
+
 ### Added
 
 - **`BRIEF.md`** — the five-minute version for a colleague with repo access: install,
