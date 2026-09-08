@@ -77,6 +77,12 @@ defaults:
     graph: ["app.graph.runner:_workflow"]          # a graph compiled once at import
 ```
 
+**Name the call site, not the definition.** If a module did
+`from app.repositories import fetch_cards`, it holds its own reference — patching
+`app.repositories:fetch_cards` never reaches it. Name `app.nodes.reader:fetch_cards`
+instead. Same rule as `unittest.mock.patch`; the symptom is a seam that attaches and
+never fires.
+
 A bad dotted path is an error before the run, not a mystery during it.
 
 ## If your project has tests, use them

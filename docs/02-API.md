@@ -712,6 +712,13 @@ by itself: one that was silently ignored is the failure this area exists to remo
 Every path is resolved at attach time, so a typo is a `ConfigError` before the run
 rather than an agent failure during it.
 
+**Name the call site, not the definition.** A seam is a patched attribute, so it follows
+`unittest.mock.patch`'s rule: if a module did `from app.repositories import fetch_cards`,
+it holds its own reference and patching `app.repositories:fetch_cards` never reaches it.
+Name `app.nodes.reader:fetch_cards` instead. The symptom is a seam that attaches and
+sees no calls, which `AttachReport` reports and `alc doctor` shows as an absent tool
+layer (D-152).
+
 `litellm` needs no strategy of its own: it reaches a remote provider over `httpx`, so
 the transport strategy already sees those calls (D-143).
 

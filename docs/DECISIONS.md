@@ -2774,3 +2774,24 @@ ten-node graph. Two of its eight parameters are `AsyncIOMotorDatabase` handles, 
 suite file can express a Motor client -- so those lines are irreducible, not
 scaffolding the library failed to eliminate.
 
+### D-152 — A seam names the call site, not the definition
+*2026-09-07. Affects `docs/02-API.md` §12, `README.md`, `BRIEF.md`.*
+
+Running the full preset battery against a real service, three scenarios armed five
+tool-layer faults each and fired none. The seams were named at the definition --
+`app.repositories.cards:fetch_*` -- and the node module had done
+`from app.repositories.cards import fetch_open_cards`, so it held its own reference and
+the patched attribute was never the one called. Naming the call site instead
+(`app.graph.nodes.fetch_open_cards:fetch_open_cards`) took that service from 11 fault
+kinds firing to 14, and from three scenarios proving nothing to none.
+
+This is `unittest.mock.patch`'s oldest rule and the documentation did not mention it,
+which is the actual defect. The symptom is specific and now documented: a seam that
+*attaches* and sees no calls. `AttachReport` already separates those two states, so the
+information was there.
+
+Not changed: resolution still accepts a definition-site path. It is often the right one
+-- a module that does `from app import repositories` and calls
+`repositories.fetch_cards()` looks the attribute up at call time -- and refusing it
+would break that shape to protect against the other.
+

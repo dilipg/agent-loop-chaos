@@ -9,6 +9,15 @@ library — see `docs/04-SCHEMAS.md` §2.
 
 ## Unreleased
 
+### Documentation
+
+- **A seam names the call site, not the definition** (**D-152**). Three scenarios in a
+  real run armed five tool-layer faults each and fired none, because the seams pointed
+  at `app.repositories:fetch_*` while the calling module had imported the function by
+  name and held its own reference. `unittest.mock.patch`'s oldest rule, undocumented
+  here until it cost a run. Naming the call site took that service from 11 fault kinds
+  firing to 14, and from three scenarios proving nothing to none.
+
 ### Fixed
 
 - `alc doctor` looks through a shim entrypoint to find the graph behind it. D-150 tells

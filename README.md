@@ -457,6 +457,11 @@ faults need the graph object, and that shape never hands it to anyone; naming it
 enough. A graph compiled *inside* the function that runs it needs nothing at all,
 because `--intercept` patches `StateGraph.compile`.
 
+Name the seam where the call is *looked up*, not where it is defined: a module that did
+`from app.repositories import fetch_cards` holds its own reference, so patching the
+repository module never reaches it. This is `unittest.mock.patch`'s rule, and the
+symptom is a seam that attaches and never fires.
+
 `name=` in front gives the seam whatever name your scenarios already use; without it,
 the seam is named by its attribute path, so `tool: fetch_weather` targets it as
 written. A bad path is a `ConfigError` before the run rather than a mystery during it. `alc doctor` prints what it found, which is the fastest way to learn what to name.

@@ -110,3 +110,12 @@ def test_the_readme_points_at_it() -> None:
     """A brief nobody is told about is a brief nobody reads."""
     readme = (REPO / "README.md").read_text(encoding="utf-8")
     assert "BRIEF.md" in readme
+
+
+def test_it_warns_about_patching_the_definition_instead_of_the_call_site(brief: str) -> None:
+    """The gotcha that cost a real run three silent scenarios.
+
+    Seams named at the definition attached and never fired, because the calling module
+    had imported the function by name. Without this note a reader repeats it.
+    """
+    assert "Name the call site, not the definition" in brief
